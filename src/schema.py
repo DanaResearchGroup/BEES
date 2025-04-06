@@ -12,7 +12,7 @@ from t3.common import DATA_BASE_PATH, VALID_CHARS
 
 
 class TerminationTimeEnum(str, Enum):
-    """
+    """"
     The supported termination type units in an RMG reactor.
     """
     micro_s = 'micro-s'
