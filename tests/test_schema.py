@@ -2,10 +2,11 @@
 # encoding: utf-8
 
 """
-schema test module
+Test schema validation for BEES input models
 """
 
 import pytest
+import schema
 from pydantic import ValidationError
 
 from bees.schema import (T3Options,
