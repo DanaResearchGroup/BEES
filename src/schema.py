@@ -250,29 +250,11 @@ class RMGSpecies(BaseModel):
         return value
 
 
-class RMGReactor(BaseModel):
-    """
-    A class for validating input.RMG.reactors arguments
-    """
-    type: str
-    T: Union[confloat(gt=0), List[confloat(gt=0)]]
-    P: Optional[Union[confloat(gt=0), List[confloat(gt=0)]]] = None
-    V: Optional[Union[confloat(gt=0), List[confloat(gt=0)]]] = None
-    termination_conversion: Optional[Dict[str, confloat(gt=0, lt=1)]] = None
-    termination_time: Optional[List[Union[confloat(gt=0), TerminationTimeEnum]]] = None
-    termination_rate_ratio: Optional[confloat(gt=0, lt=1)] = None
-    conditions_per_iteration: conint(gt=0) = 12
-
-    class Config:
-        extra = "forbid"
-
-    @validator('type')
-    def check_reactor_type(cls, value):
-        """RMGReactor.type validator"""
-        supported_reactors = ['gas batch constant T P', 'liquid batch constant T V']
-        # all supporter reactors must contain a 'gas' or 'liquid' keyword, other schema validations depend on it
-        if value not in supported_reactors:
-            raise ValueError(f'Supported RMG reactors are\n{supported_reactors}\nGot: "{value}"')
+    @validator('ionic_strength')
+    def validate_ionic_strength(cls, value):
+        """BEESEnvironment.ionic_strength validator"""
+        if value is not None and value < 0:
+            raise ValueError(f'Ionic strength cannot be negative. Got: {value}')
         return value
 
     @validator('T')
