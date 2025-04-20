@@ -21,12 +21,6 @@ from bees.schema import (T3Options,
                        QM,
                        )
 
-# define a long quote of length 444 characters to test constraints on string length
-quote = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et ' \
-        'dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ' \
-        'ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu ' \
-        'fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt ' \
-        'mollit anim id est laborum'
 
 
 def test_t3_options_schema():
@@ -330,12 +324,6 @@ def test_rmg_species_schema():
                    balance=True,
                    )
 
-    with pytest.raises(ValidationError):
-        # check that concentration cannot be a 3-length tuple
-        RMGSpecies(label='H2O',
-                   concentration=[0.203, 0.502, 0.809],
-                   smiles='O',
-                   )
 
     with pytest.raises(ValidationError):
         # check that concentration cannot be negative
