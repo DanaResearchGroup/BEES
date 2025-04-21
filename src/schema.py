@@ -48,7 +48,7 @@ class BEESCompounds(BaseModel):
         extra = "forbid"
 
 
-    @validator('concentrations')
+    @validator('concentration')
     def check_concentration_range_order(cls, value, values):
         """Ensure range is valid and ordered"""
         label = values.get('label')
