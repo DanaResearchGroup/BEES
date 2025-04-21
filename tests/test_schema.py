@@ -224,4 +224,3 @@ def test_BEESInputBase():
     assert bees_input.rules[0].name == "test"
     assert bees_input.model_settings.end_time == 100.0
 
-I want to test it in this Schema
