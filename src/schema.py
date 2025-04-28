@@ -5,8 +5,8 @@ used for input validation
 
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Union, Literal 
-
-from pydantic import BaseModel, conint, confloat, constr, root_validator, validator
+import pydantic 
+from pydantic import BaseModel, conint, confloat, constr, model_validator, field_validator
 from rdkit import Chem
 
 
@@ -48,7 +48,7 @@ class BEESCompounds(BaseModel):
         extra = "forbid"
 
 
-    @validator('concentration')
+    @field_validator('concentration')
     def check_concentration_range_order(cls, value, values):
         """Ensure range is valid and ordered"""
         label = values.get('label')
@@ -68,46 +68,49 @@ class BEESCompounds(BaseModel):
                 raise ValueError(f"Concentration cannot be negative")
         return value
 
-    @validator('constant')
+    @field_validator('constant')
     def check_constant_species(cls, value, values):
         if value and isinstance(values.get('concentration'), tuple):
             raise ValueError("Constant species cannot have a concentration range.")
         return value
     
-    #@validator('reactive') 
+    #@field_validator('reactive') 
     #def check_reactive(cls, value, values):
         #"""Check if the compound is reactive"""
-        if value and values.get('constant'):
+        #if value and values.get('constant'):
             #raise ValueError("Reactive species cannot be constant.")
         #return value
 
-    #@validator('observable')       
+    #@field_validator('observable')       
     #def check_observable(cls, value, values):  
         #"""Check if the compound is observable"""
         #if value and values.get('constant'):
             #raise ValueError("Observable species cannot be constant.")
         #return value
 
-    #@validator('structure_smiles')
-    #def check_structure_smiles(cls, value):
-            """Check if the structure is valid"""
+    @field_validator('structure_smiles')
+    def check_structure_smiles(cls, value):
+        """Check if the structure is valid"""
         if value and not isinstance(value, str):
             raise ValueError("Structure must be a string.")
         if Chem.MolFromSmiles(value) is None:
             raise ValueError(f"Invalid SMILES string: {value}")
-        #return value
-    #@validator('structure_inchi')
-    #def validate_inchi(cls, value):
-    #"""Check that InChI string is chemically valid"""
-    #if value is None:
         return value
-    #try:
-        mol = inchi.MolFromInchi(value)
-        if mol is None:
-            raise ValueError
-    #except Exception:
-        raise ValueError(f"Invalid InChI string: {value}")
-    #return value
+
+    @field_validator('structure_inchi')
+    def validate_inchi(cls, value):
+        """Check that InChI string is chemically valid"""
+        if value is None:
+            return value
+        try:
+            from rdkit.Chem import inchi
+            mol = inchi.MolFromInchi(value)
+            if mol is None:
+                raise ValueError
+        except Exception:
+            raise ValueError(f"Invalid InChI string: {value}")
+        return value
+
 
 class BEESSpeciesConstraints(BaseModel):
     """
@@ -128,9 +131,9 @@ class BEESSpeciesConstraints(BaseModel):
     class Config:
         extra = "forbid"
 
-    @validator('allowed')
+    @field_validator('allowed')
     def check_allowed(cls, value):
-        """BEESSpeciesConstraints.allowed validator"""
+        """BEESSpeciesConstraints.allowed field_validator"""
         for val in value:
             if val not in ['input species', 'seed mechanisms', 'reaction libraries']:
                 raise ValueError(f"The allowed species in the BEES species constraints list must be in\n"
@@ -174,37 +177,37 @@ class BEESEnvironment(BaseModel):
     seed_mechanisms: List[str] = list()
 
 
-    @validator('temperature')
+    @field_validator('temperature')
     def check_t(cls, value):
-        """BEESEnvironment.temperature validator"""
+        """BEESEnvironment.temperature field_validator"""
         if isinstance(value, list) and len(value) != 2:
             raise ValueError(f'When specifying the temperature as a list, only two values are allowed (T min, T max),\n'
                              f'got {len(value)} values: {value}.')
         return value
-    @validator('pH')
+    @field_validator('pH')
     def validate_pH(cls, value):
         if not (0 <= value <= 14):
             raise ValueError(f'pH must be between 0 and 14. Got: {value}')
         return value
     
 
-    @validator('ionic_strength')
+    @field_validator('ionic_strength')
     def validate_ionic_strength(cls, value):
-        """BEESEnvironment.ionic_strength validator"""
+        """BEESEnvironment.ionic_strength field_validator"""
         if value is not None and value < 0:
             raise ValueError(f'Ionic strength cannot be negative. Got: {value}')
         return value
 
-    @validator('Oxygen_level')
+    @field_validator('Oxygen_level')
     def validate_oxygen_level(cls, value):
-        """BEESEnvironment.Oxgen_level validator"""
+        """BEESEnvironment.Oxgen_level field_validator"""
         if value is not None and not (0 <= value <= 1):
             raise ValueError(f'Oxygen level must be between 0 and 1. Got: {value}')
         return value
     
-    #@validator('V', always=True)
+    #@field_validator('V', always=True)
     #def check_v(cls, value, values):
-        """BEESEnvironment.volume validator"""
+        """BEESEnvironment.volume field_validator"""
         if isinstance(value, list) and len(value) != 2:
             raise ValueError(f'When specifying the volume as a list, only two values are allowed (V min, V max),\n'
                              f'got {len(value)} values: {value}.')
@@ -226,13 +229,13 @@ class BEESModelSettings(BaseModel):
 
     class Config:
         extra = "forbid"
-    @validator('time_step')
+    @field_validator('time_step')
     def validate_time_step(cls, value, values):
         if 'end_time' in values and value >= values['end_time']:
             raise ValueError(f"'time_step' must be smaller than total simulation time {values['end_time']}. Got: {value}")
         return value
 
-    @validator('termination_conversion')
+    @field_validator('termination_conversion')
     def validate_termination_conversion(cls, value):
         if value:
             for species, frac in value.items():
@@ -240,7 +243,7 @@ class BEESModelSettings(BaseModel):
                     raise ValueError(f"termination_conversion values must be between 0 and 1. Got: {species}: {frac}")
         return value
 
-    @validator('termination_rate_ratio')
+    @field_validator('termination_rate_ratio')
     def validate_rate_ratio(cls, value):
         if value and not (0 < value < 1):
             raise ValueError("termination_rate_ratio must be between 0 and 1 (exclusive).")
@@ -267,18 +270,18 @@ class BEESInputBase(BaseModel):
     class Config:
         extra = "forbid"
 
-    #@validator('t3', always=True)
+    #@field_validator('t3', always=True)
     #def check_t3(cls, value):
-        #"""InputBase.t3 validator"""
+        #"""InputBase.t3 field_validator"""
         #return value or T3()
 
-    #@validator('qm', always=True)
+    #@field_validator('qm', always=True)
     #def check_qm(cls, value):
-        """InputBase.qm validator"""
+        """InputBase.qm field_validator"""
         # Removed invalid return statement
         pass
 
-    #@root_validator(pre=True)
+    #@root_field_validator(pre=True)
     #def validate_rmg_t3(cls, values):
        # """InputBase.validate_rmg_t3"""
         #if 'rmg' in values and 't3' in values and values['t3']:
