@@ -25,7 +25,7 @@ def test_BEESCompounds():
     compound = BEESCompounds(
         label="ATP",
         type="cofactor",
-        initial_concentration=0.01,
+        concentration=0.01,
         charge=-3,
         reactive=True,
         constant=False,
@@ -33,23 +33,23 @@ def test_BEESCompounds():
     )
     assert compound.label == "ATP"
     assert compound.type == "cofactor"
-    assert compound.initial_concentration == 0.01
+    assert compound.concentration == 0.01
     assert compound.reactive is True
 
     # Tuple concentration range is allowed if valid
     compound = BEESCompounds(
         label="Glucose",
         type="substrate",
-        initial_concentration=(0.1, 1.0),
+        concentration=(0.1, 1.0),
     )
-    assert compound.initial_concentration == (0.1, 1.0)
+    assert compound.concentration == (0.1, 1.0)
 
     # Invalid range: same values
     with pytest.raises(ValidationError):
         BEESCompounds(
             label="Test",
             type="substrate",
-            initial_concentration=(0.5, 0.5),
+            concentration=(0.5, 0.5),
         )
 
     # Constant with range should fail
@@ -57,7 +57,7 @@ def test_BEESCompounds():
         BEESCompounds(
             label="Test",
             type="substrate",
-            initial_concentration=(0.1, 0.9),
+            concentration=(0.1, 0.9),
             constant=True,
             observable=True,
         )
@@ -67,7 +67,7 @@ def test_BEESCompounds():
     compound = BEESCompounds(
         label="Ethanol",
         type="substrate",
-        initial_concentration=0.1,
+        concentration=0.1,
         structure_smiles="CCO",
         structure_inchi="InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3"
     )
@@ -79,7 +79,7 @@ def test_BEESCompounds():
         BEESCompounds(
             label="BadSMILES",
             type="substrate",
-            initial_concentration=0.1,
+            concentration=0.1,
             structure_smiles="not-a-smiles"
         )
 
@@ -88,7 +88,7 @@ def test_BEESCompounds():
         BEESCompounds(
             label="BadInChI",
             type="substrate",
-            initial_concentration=0.1,
+            concentration=0.1,
             structure_inchi="not-an-inchi"
         )
 
@@ -208,7 +208,7 @@ def test_speciesconstraints():
 def test_BEESInputBase():
     """Test BEESInputBase with minimal valid input"""
     env = BEESEnvironment(temperature=37, pH=7, seed_mechanisms=["base"])
-    compound = BEESCompounds(label="H2O", type="solvent", initial_concentration=1.0)
+    compound = BEESCompounds(label="H2O", type="solvent", concentration=1.0)
     rule = BEESReactionRule(name="test", rate_law="MassAction", parameter_estimator="ML")
     model = BEESModelSettings(end_time=100.0, time_step=1.0, solver="odeint")
     

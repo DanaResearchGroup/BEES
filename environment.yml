@@ -15,5 +15,6 @@ dependencies:
   - scipy
   - anaconda::ipython
   - pydantic
-  - redkit
+  - rdkit
+  - pytest
 
