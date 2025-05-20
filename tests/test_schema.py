@@ -6,23 +6,47 @@ Test schema validation for BEES input models
 """
 
 import pytest
-import schema
 from pydantic import BaseModel, Field
 from typing import List, Dict, Union, Optional
 from pydantic import ValidationError
-from schema import (
-    BEESCompounds,
-    BEESEnvironment,
-    BEESModelSettings,
-    BEESReactionRule,
-    BEESInputBase,
-    BEESSpeciesConstraints
+from src.schema import (
+    Enzyme,
+    Species,
+    Environment,
+    Settings,
+    Database,
+    InputBase,
+    SpeciesConstraints
 )
 
 
-def test_BEESCompounds():  
-    """Test BEESCompounds schema, Creates a compound with a single float concentration: 0.01"""
-    compound = BEESCompounds(
+def test_Species(): # TODO: add test for species
+    """Test Species schema"""       
+    species = Species(
+        label="Glucose",
+        type="substrate",
+        concentration=0.1,
+        charge=0,
+        reactive=True,
+        constant=False,
+        observable=True,
+    )
+    assert species.label == "Glucose"
+    assert species.type == "substrate"
+    assert species.concentration == 0.1
+    assert species.reactive is True
+
+    # Tuple concentration range is allowed if valid
+    species = Species(
+        label="Fructose",
+        type="substrate",
+        concentration=(0.1, 1.0),
+    )
+    assert species.concentration == (0.1, 1.0)
+
+def test_Enzyme():  
+    """Test Enzyme schema, Creates a compound with a single float concentration: 0.01"""
+    compound = Enzyme(
         label="ATP",
         type="cofactor",
         concentration=0.01,
@@ -37,7 +61,7 @@ def test_BEESCompounds():
     assert compound.reactive is True
 
     # Tuple concentration range is allowed if valid
-    compound = BEESCompounds(
+    compound = Enzyme(
         label="Glucose",
         type="substrate",
         concentration=(0.1, 1.0),
@@ -46,7 +70,7 @@ def test_BEESCompounds():
 
     # Invalid range: same values
     with pytest.raises(ValidationError):
-        BEESCompounds(
+        Enzyme(
             label="Test",
             type="substrate",
             concentration=(0.5, 0.5),
@@ -54,7 +78,7 @@ def test_BEESCompounds():
 
     # Constant with range should fail
     with pytest.raises(ValidationError):
-        BEESCompounds(
+        Enzyme(
             label="Test",
             type="substrate",
             concentration=(0.1, 0.9),
@@ -64,7 +88,7 @@ def test_BEESCompounds():
 
 
         # Valid SMILES and InChI
-    compound = BEESCompounds(
+    compound = Enzyme(
         label="Ethanol",
         type="substrate",
         concentration=0.1,
@@ -76,7 +100,7 @@ def test_BEESCompounds():
 
     # Invalid SMILES
     with pytest.raises(ValidationError):
-        BEESCompounds(
+        Enzyme(
             label="BadSMILES",
             type="substrate",
             concentration=0.1,
@@ -85,7 +109,7 @@ def test_BEESCompounds():
 
     # updtaetInvalid InChI
     with pytest.raises(ValidationError):
-        BEESCompounds(
+        Enzyme(
             label="BadInChI",
             type="substrate",
             concentration=0.1,
@@ -94,9 +118,9 @@ def test_BEESCompounds():
 
 
 
-def test_BEESEnvironment():
-    """Test BEESEnvironment schema"""
-    env = BEESEnvironment(
+def test_Environment():
+    """Test Environment schema"""
+    env = Environment(
         temperature=[25, 37],
         pH=7.0,
         ionic_strength=0.1,
@@ -108,22 +132,22 @@ def test_BEESEnvironment():
 
     with pytest.raises(ValidationError):
         # Invalid pH
-        BEESEnvironment(temperature=37, pH=15, seed_mechanisms=[])
+        Environment(temperature=37, pH=15, seed_mechanisms=[])
 
     with pytest.raises(ValidationError):
         # Invalid oxygen level
-        BEESEnvironment(temperature=37, pH=7, Oxygen_level=1.2, seed_mechanisms=[])
+        Environment(temperature=37, pH=7, Oxygen_level=1.2, seed_mechanisms=[])
 
     with pytest.raises(ValidationError):
         # Invalid temperature list size
-        BEESEnvironment(temperature=[25, 30, 40], pH=7, seed_mechanisms=[])
+        Environment(temperature=[25, 30, 40], pH=7, seed_mechanisms=[])
 
     
 
 
-def test_bees_Modelsettings():
-    """Test BEESModelSettings schema"""
-    model = BEESModelSettings(
+def test_settings():
+    """Test Settings schema"""
+    model = Settings(
         end_time=100.0,
         time_step=1.0,
         solver="CVODE",
@@ -135,11 +159,11 @@ def test_bees_Modelsettings():
 
     # time_step must be < end_time
     with pytest.raises(ValidationError):
-        BEESModelSettings(end_time=10, time_step=10, solver="CVODE")
+        Settings(end_time=10, time_step=10, solver="CVODE")
 
     # termination rate must be < 1
     with pytest.raises(ValidationError):
-        BEESModelSettings(
+        Settings(
             end_time=100,
             time_step=1,
             solver="odeint",
@@ -147,9 +171,9 @@ def test_bees_Modelsettings():
         )
 
 
-def test_BeesReactionRule():
-    """Test BEESReactionRule schema"""
-    rule = BEESReactionRule(
+def test_Database():
+    """Test Database schema"""
+    rule = Database(
         name="enzyme_catalysis",
         rate_law="Michaelis-Menten",
         parameter_estimator="ML",
@@ -161,7 +185,7 @@ def test_BeesReactionRule():
 
     with pytest.raises(ValidationError):
         # Invalid rate law
-        BEESReactionRule(
+        Database(
             name="bad",
             rate_law="UnknownLaw",
             parameter_estimator="ML"
@@ -169,34 +193,34 @@ def test_BeesReactionRule():
 
 
 def test_speciesconstraints():
-    """Test BEESSpeciesConstraints schema"""
-    constraints = BEESSpeciesConstraints(
+    """Test SpeciesConstraints schema"""
+    constraints = SpeciesConstraints(
         allowed=["input species", "reaction libraries"]
     )
     assert "input species" in constraints.allowed
 
     with pytest.raises(ValidationError):
-        BEESSpeciesConstraints(
+        SpeciesConstraints(
             allowed=["invalid entry"]
         )
     # Invalid entry in allowed
     with pytest.raises(ValidationError):
-        BEESSpeciesConstraints(
+        SpeciesConstraints(
             allowed=["input species", "invalid entry"]
         )
     # Empty allowed list
     with pytest.raises(ValidationError):
-        BEESSpeciesConstraints(
+        SpeciesConstraints(
             allowed=[]
         )
     # Invalid entry in allowed              
     with pytest.raises(ValidationError):
-        BEESSpeciesConstraints(
+        SpeciesConstraints(
             allowed=["input species", "invalid entry"]
         )
     # Empty allowed list
     with pytest.raises(ValidationError):
-        BEESSpeciesConstraints(
+        SpeciesConstraints(
             allowed=[]
         )
     # Invalid entry in allowed  
@@ -205,14 +229,14 @@ def test_speciesconstraints():
 
 
 
-def test_BEESInputBase():
-    """Test BEESInputBase with minimal valid input"""
-    env = BEESEnvironment(temperature=37, pH=7, seed_mechanisms=["base"])
-    compound = BEESCompounds(label="H2O", type="solvent", concentration=1.0)
-    rule = BEESReactionRule(name="test", rate_law="MassAction", parameter_estimator="ML")
-    model = BEESModelSettings(end_time=100.0, time_step=1.0, solver="odeint")
+def test_InputBase():
+    """Test InputBase with minimal valid input"""
+    env = Environment(temperature=37, pH=7, seed_mechanisms=["base"])
+    compound = Enzyme(label="H2O", type="solvent", concentration=1.0)
+    rule = Database(name="test", rate_law="MassAction", parameter_estimator="ML")
+    model = Settings(end_time=100.0, time_step=1.0, solver="odeint")
     
-    bees_input = BEESInputBase(
+    input = InputBase(
         project="TestProject",
         compounds=[compound],
         environment=env,
@@ -220,9 +244,9 @@ def test_BEESInputBase():
         model_settings=model,
 
     )
-    assert bees_input.project == "TestProject"
-    assert bees_input.environment.pH == 7
-    assert bees_input.compounds[0].label == "H2O"
-    assert bees_input.rules[0].name == "test"
-    assert bees_input.model_settings.end_time == 100.0
+    assert input.project == "TestProject"
+    assert input.environment.pH == 7
+    assert input.compounds[0].label == "H2O"
+    assert input.rules[0].name == "test"
+    assert input.model_settings.end_time == 100.0
 

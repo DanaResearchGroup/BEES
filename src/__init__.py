@@ -1,22 +1,20 @@
-from schema import (
+from .schema import (
     TerminationTimeEnum,
-    BEESCompounds,
-    BEESSpeciesConstraints,
-    BEESReactionRule,
+    Enzyme,
+    Settings,
+    Database,
     RadicalTypeEnum,
-    BEESEnvironment,
-    BEESModelSettings,
-    BEESInputBase
+    Environment,
+    Settings,
+    InputBase
 )
 
 __all__ = [
     "TerminationTimeEnum",
-    "BEESCompounds",
-    "BEESSpeciesConstraints",
-    "BEESReactionRule",
+    "Enzyme",
+    "Settings",
+    "Database",
     "RadicalTypeEnum",
-    "BEESEnvironment",
-    "BEESModelSettings",
-    "BEESInputBase"
+    "Environment",
+    "InputBase"
 ]
-
