@@ -12,7 +12,7 @@ from rdkit import Chem
 
 class TerminationTimeEnum(str, Enum):
     """
-    The supported termination type units in an BEES "reactor".
+    The supported termination type units in an "reactor".
     """
     micro_s = 'micro-s'
     ms = 'ms'
@@ -25,7 +25,7 @@ class TerminationTimeEnum(str, Enum):
 
 class Species(BaseModel):
     """
-    A class for validating input.BEES.species arguments
+    A class for validating input.species arguments
     """
     label: str
     concentration: Union[confloat(gt=0), Tuple[confloat(gt=0), confloat(gt=0)]] = None # concentration in mol/L
@@ -81,19 +81,19 @@ class Species(BaseModel):
             raise ValueError("Observable species cannot be constant.")
         return value
 
-    @field_validator('structure_smiles')
-    def check_structure_smiles(cls, value):
-        """Check if the structure is valid"""
+    @field_validator('smiles')
+    def check_smiles(cls, value):
+        """Check if the smiles is valid"""
         if value and not isinstance(value, str):
-            raise ValueError("Structure must be a string.")
+            raise ValueError("SMILES must be a string.")
         if Chem.MolFromSmiles(value) is None:
             raise ValueError(f"Invalid SMILES string: {value}")
         return value
 
-    @field_validator('structure_inchi')
+    @field_validator('inchi')
     def validate_inchi(cls, value):
         """Check that InChI string is chemically valid"""
-        if value is None:
+        if value is +None:
             return value
         try:
             from rdkit.Chem import inchi
@@ -107,12 +107,11 @@ class Species(BaseModel):
 
 class Enzyme(BaseModel): # TODO: add enzyme specific fields
     """
-    A class for validating input.BEES.species arguments
+    A class for validating input/species arguments
     """
     label: str
     concentration: Union[confloat(gt=0), Tuple[confloat(gt=0), confloat(gt=0)]] = None # concentration in mol/L
-    smiles: Optional[str] = None
-    inchi: Optional[str] = None
+    ecnumber: Optional[str] = None
     charge: Optional[float] = 0
     constant: bool = False
     reactive: bool = True
@@ -162,34 +161,25 @@ class Enzyme(BaseModel): # TODO: add enzyme specific fields
         if value and values.get('constant'):
             raise ValueError("Observable species cannot be constant.")
         return value
-
-    @field_validator('structure_smiles')
-    def check_structure_smiles(cls, value):
-        """Check if the structure is valid"""
-        if value and not isinstance(value, str):
-            raise ValueError("Structure must be a string.")
-        if Chem.MolFromSmiles(value) is None:
-            raise ValueError(f"Invalid SMILES string: {value}")
-        return value
-
-    @field_validator('structure_inchi')
-    def validate_inchi(cls, value):
-        """Check that InChI string is chemically valid"""
+    
+    @field_validator('ecnumber')
+    def check_ecnumber(cls, value):
+        """Check if the EC number is valid"""
         if value is None:
             return value
-        try:
-            from rdkit.Chem import inchi
-            mol = inchi.MolFromInchi(value)
-            if mol is None:
-                raise ValueError
-        except Exception:
-            raise ValueError(f"Invalid InChI string: {value}")
-        return value
+        if not isinstance(value, str):
+            raise ValueError("EC number must be a string.")
+        if not value.startswith("EC"):
+            raise ValueError(f"Invalid EC number: {value}. Must start with 'EC'.")
+
+    
+
+    
 
 
-class BEESSpeciesConstraints(BaseModel):
+class SpeciesConstraints(BaseModel):
     """
-    A class for validating input.BEES.species_constraints arguments
+    A class for validating input.species_constraints arguments
     """
     allowed: List[str] = ['input species', 'seed mechanisms', 'reaction libraries']
     #max_C_atoms: conint(ge=0)
@@ -208,10 +198,10 @@ class BEESSpeciesConstraints(BaseModel):
 
     @field_validator('allowed')
     def check_allowed(cls, value):
-        """BEESSpeciesConstraints.allowed field_validator"""
+        """SpeciesConstraints.allowed field_validator"""
         for val in value:
             if val not in ['input species', 'seed mechanisms', 'reaction libraries']:
-                raise ValueError(f"The allowed species in the BEES species constraints list must be in\n"
+                raise ValueError(f"The allowed species in the  species constraints list must be in\n"
                                  f"['input species', 'seed mechanisms', 'reaction libraries'].\n"
                                  f"Got: {val} in {value}")
         return value
@@ -227,7 +217,7 @@ class Database(BaseModel):
     parameter_estimator: Literal["ML", "group_contribution", "fixed_defaults"] = "ML" # how to estimate 
     rate_law: Literal["Michaelis-Menten", "Hill", "MassAction"]
     parameters: Optional[Dict[str, float]]  # e.g., {"Km": 0.1, "Vmax": 2.0}
-    species_constraints: Optional[BEESSpeciesConstraints] = None
+    species_constraints: Optional[SpeciesConstraints] = None
     
 
 class RadicalTypeEnum(str, Enum):
@@ -239,9 +229,9 @@ class RadicalTypeEnum(str, Enum):
     peroxyl = 'peroxyl'
 
 
-class BEESEnvironment(BaseModel):
+class Environment(BaseModel):
     """
-    A class for validating input.BEES.Enviornment arguments
+    A class for validating input.Enviornment arguments
     """
     temperature: Union[confloat(gt=0), List[confloat(gt=0)]]  # in Celsius
     pH: Union[confloat(gt=0), List[confloat(gt=0)]]
@@ -251,7 +241,7 @@ class BEESEnvironment(BaseModel):
 
     @field_validator('temperature')
     def check_t(cls, value):
-        """BEESEnvironment.temperature field_validator"""
+        """Environment.temperature field_validator"""
         if isinstance(value, list) and len(value) != 2:
             raise ValueError(f'When specifying the temperature as a list, only two values are allowed (T min, T max),\n'
                              f'got {len(value)} values: {value}.')
@@ -265,20 +255,24 @@ class BEESEnvironment(BaseModel):
 
     @field_validator('ionic_strength')
     def validate_ionic_strength(cls, value):
-        """BEESEnvironment.ionic_strength field_validator"""
+        """Environment.ionic_strength field_validator"""
         if value is not None and value < 0:
             raise ValueError(f'Ionic strength cannot be negative. Got: {value}')
         return value
 
     @field_validator('oxygen_level')
     def validate_oxygen_level(cls, value):
-        """BEESEnvironment.oxgen_level field_validator"""
+        """Environment.oxgen_level field_validator"""
         if value is not None and not (0 <= value <= 1):
             raise ValueError(f'Oxygen level must be between 0 and 1. Got: {value}')
         return value
     
     
 class Settings(BaseModel):
+    """
+    A class for validating input.settings arguments     
+    """
+
     end_time: confloat(gt=0)  
     time_step: confloat(gt=0)
     solver: Literal["odeint", "CVODE", "custom"]
@@ -312,7 +306,7 @@ class Settings(BaseModel):
             raise ValueError("termination_rate_ratio must be between 0 and 1 (exclusive).")
         return value
 
-class BEESInputBase(BaseModel):
+class InputBase(BaseModel):
     """
     An InputBase class for validating input arguments
     """
@@ -320,7 +314,7 @@ class BEESInputBase(BaseModel):
     project_directory: Optional[constr(max_length=255)] = None
     species: List[Species]
     enzymes: List[Enzyme]
-    environment: BEESEnvironment
+    environment: Environment
     database: Database
     settings: Settings
 
