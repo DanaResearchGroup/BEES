@@ -6,7 +6,8 @@ Bees executable module
 """
 
 """"""
-#TODO: 
+#TODO: 1. learn from T3 what they do and what modifications need to be done
+#       2. fill init objects with the correct attributes.
 
 
 import argparse
@@ -19,6 +20,9 @@ from bees.utils.dependencies import check_dependencies
 
 
 
+def load_yaml(input_path: str) -> dict:
+    with open(input_path, 'r') as f:
+        return yaml.safe_load(f)
 
 def parse_command_line_arguments(command_line_args=None):
     """

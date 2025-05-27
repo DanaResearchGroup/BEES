@@ -121,11 +121,5 @@ class bees(object):
         save_yaml_file(path=path, content=self.schema if all_args else self.schema_exclude_unset)
     
 
-    def execute(self):
-        """
-        Execute the bees platform with the provided input object.
-        """
 
-
-
-#This File isT
+#This File is not complete and needs to be filled with the correct methods and attributes.
