@@ -9,25 +9,10 @@ to avoid circular imports.
 VERSION is the full ARC version, using `semantic versioning <https://semver.org/>`_.
 """
 
-import ast
-import datetime
-import logging
-import math
 import os
-import pprint
-import re
-import shutil
 import subprocess
-import sys
-import time
-import warnings
-import yaml
-from collections import deque
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
-import numpy as np
-import pandas as pd
-import qcelemental as qcel
 
 """"
 All of the content below this sentence are part of arc common.
@@ -36,30 +21,68 @@ All of the content below this sentence are part of arc common.
 2. delete/adopt which module that is neccery to BEES
 3. writing test
 
-
-# from arkane.ess import ess_factory, GaussianLog, MolproLog, OrcaLog, QChemLog, TeraChemLog
-# from rmgpy.exceptions import AtomTypeError, ILPSolutionError, ResonanceError
-# from rmgpy.molecule.atomtype import ATOMTYPES
-# from rmgpy.molecule.element import get_element
-# from rmgpy.molecule.molecule import Atom, Bond, Molecule
-# from rmgpy.qm.qmdata import QMData
-# from rmgpy.qm.symmetry import PointGroupCalculator
-
-# from arc.exceptions import InputError, SettingsError
-# from arc.imports import home, settings
-
-
-# if TYPE_CHECKING:
-#     from rmgpy.species import Species
+"""
 
 
 # logger = logging.getLogger('arc')
 # logging.getLogger('matplotlib.font_manager').disabled = True
 
 # # Absolute path to the ARC folder.
-# ARC_PATH = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+BEES_PATH = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
-# VERSION = '1.1.0'
+VERSION = '1.1.0'
+
+
+def get_git_branch(path: Optional[str] = None) -> str:
+    """
+    Get the git branch to be logged.
+
+    Args:
+        path (str, optional): The path to check.
+
+    Returns: str
+        The git branch name.
+    """
+    path = path or BEES_PATH
+    if os.path.exists(os.path.join(path, '.git')):
+        try:
+            branch_list = subprocess.check_output(['git', 'branch'], cwd=path).splitlines()
+        except (subprocess.CalledProcessError, OSError):
+            return ''
+        for branch_name in branch_list:
+            if '*' in branch_name.decode():
+                return branch_name.decode()[2:]
+    else:
+        return ''
+
+
+def get_git_commit(path: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Get the recent git commit to be logged.
+
+    Note:
+        Returns empty strings if hash and date cannot be determined.
+
+    Args:
+        path (str, optional): The path to check.
+
+    Returns: tuple
+        The git HEAD commit hash and the git HEAD commit date, each as a string.
+    """
+    path = path or BEES_PATH
+    head, date = '', ''
+    if os.path.exists(os.path.join(path, '.git')):
+        try:
+            head, date = subprocess.check_output(['git', 'log', '--format=%H%n%cd', '-1'], cwd=path).splitlines()
+            head, date = head.decode(), date.decode()
+        except (subprocess.CalledProcessError, OSError):
+            return head, date
+    return head, date
+
+
+
+
+
 
 # R = 8.31446261815324  # J/(mol*K)
 # EA_UNIT_CONVERSION = {'J/mol': 1, 'kJ/mol': 1e+3, 'cal/mol': 4.184, 'kcal/mol': 4.184e+3}
@@ -70,7 +93,6 @@ All of the content below this sentence are part of arc common.
 # def initialize_job_types(job_types: Optional[dict] = None,
 #                          specific_job_type: str = '',
 #                          ) -> dict:
-#     """
 
 #     A helper function for initializing job_types.
 #     Returns the comprehensive (default values for missing job types) job types for ARC.
@@ -314,53 +336,6 @@ All of the content below this sentence are part of arc common.
 #     logger.log(level, '')
 #     logger.log(level, f'Total execution time: {execution_time}')
 #     logger.log(level, f'ARC execution terminated on {time.asctime()}')
-
-
-# def get_git_commit(path: Optional[str] = None) -> Tuple[str, str]:
-#     """
-#     Get the recent git commit to be logged.
-
-#     Note:
-#         Returns empty strings if hash and date cannot be determined.
-
-#     Args:
-#         path (str, optional): The path to check.
-
-#     Returns: tuple
-#         The git HEAD commit hash and the git HEAD commit date, each as a string.
-#     """
-#     path = path or ARC_PATH
-#     head, date = '', ''
-#     if os.path.exists(os.path.join(path, '.git')):
-#         try:
-#             head, date = subprocess.check_output(['git', 'log', '--format=%H%n%cd', '-1'], cwd=path).splitlines()
-#             head, date = head.decode(), date.decode()
-#         except (subprocess.CalledProcessError, OSError):
-#             return head, date
-#     return head, date
-
-
-# def get_git_branch(path: Optional[str] = None) -> str:
-#     """
-#     Get the git branch to be logged.
-
-#     Args:
-#         path (str, optional): The path to check.
-
-#     Returns: str
-#         The git branch name.
-#     """
-#     path = path or ARC_PATH
-#     if os.path.exists(os.path.join(path, '.git')):
-#         try:
-#             branch_list = subprocess.check_output(['git', 'branch'], cwd=path).splitlines()
-#         except (subprocess.CalledProcessError, OSError):
-#             return ''
-#         for branch_name in branch_list:
-#             if '*' in branch_name.decode():
-#                 return branch_name.decode()[2:]
-#     else:
-#         return ''
 
 
 # def read_yaml_file(path: str,

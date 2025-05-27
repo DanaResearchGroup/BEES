@@ -3,7 +3,6 @@
 
 """
 BEES logger module
-
 """
  
  
@@ -13,7 +12,7 @@ import shutil
 import time
 from typing import Dict, List, Optional, Tuple
 
-# from arc.common import get_git_branch, get_git_commit
+from bees.common import get_git_branch, get_git_commit
 
 # from t3.common import VERSION, dict_to_str, t3_path, time_lapse
 
