@@ -12,6 +12,8 @@ VERSION is the full ARC version, using `semantic versioning <https://semver.org/
 import os
 import subprocess
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
+from bees.logger import logger 
+
 
 
 """"
@@ -23,14 +25,25 @@ All of the content below this sentence are part of arc common.
 
 """
 
-
-# logger = logging.getLogger('arc')
-# logging.getLogger('matplotlib.font_manager').disabled = True
-
-# # Absolute path to the ARC folder.
+# # Absolute path to the BEES folder.
 BEES_PATH = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
 VERSION = '1.1.0'
+
+#crate a logger instance 
+
+logger = logging.getLogger('bees')
+logging.getLogger('matplotlib.font_manager').disabled = True
+
+
+# Constants
+ R = 8.31446261815324  # J/(mol*K)
+ EA_UNIT_CONVERSION = {'J/mol': 1, 'kJ/mol': 1e+3, 'cal/mol': 4.184, 'kcal/mol': 4.184e+3}
+
+
+
+#All the functions in the common module
+
 
 
 def get_git_branch(path: Optional[str] = None) -> str:
@@ -82,200 +95,67 @@ def get_git_commit(path: Optional[str] = None) -> Tuple[str, str]:
 
 
 
+def initialize_log(log_file: str,
+                   project: str,
+                   project_directory: Optional[str] = None,
+                   verbose: int = logging.INFO,
+                   ) -> None:
+    """
+    Set up a logger for BEES.
 
+     Args:
+         log_file (str): The log file name.
+         project (str): A name for the project.
+         project_directory (str, optional): The path to the project directory.
+         verbose (int, optional): Specify the amount of log text seen.
+     """
 
-# R = 8.31446261815324  # J/(mol*K)
-# EA_UNIT_CONVERSION = {'J/mol': 1, 'kJ/mol': 1e+3, 'cal/mol': 4.184, 'kcal/mol': 4.184e+3}
+    # Backup and delete an existing old log file if needed.
+    if project_directory is not None and os.path.isfile(log_file):
+        if not os.path.isdir(os.path.join(project_directory, 'log_and_restart_archive')):
+            os.mkdir(os.path.join(project_directory, 'log_and_restart_archive'))
+        local_time = datetime.datetime.now().strftime("%H%M%S_%b%d_%Y")
+        log_backup_name = 'arc.old.' + local_time + '.log'
+        shutil.copy(log_file, os.path.join(project_directory, 'log_and_restart_archive', log_backup_name))
+        os.remove(log_file)
 
-# default_job_types, servers, supported_ess = settings['default_job_types'], settings['servers'], settings['supported_ess']
+    logger.setLevel(verbose)
+    logger.propagate = False
 
+    # Use custom level names for cleaner log output.
+    logging.addLevelName(logging.CRITICAL, 'Critical: ')
+    logging.addLevelName(logging.ERROR, 'Error: ')
+    logging.addLevelName(logging.WARNING, 'Warning: ')
+    logging.addLevelName(logging.INFO, '')
+    logging.addLevelName(logging.DEBUG, '')
+    logging.addLevelName(0, '')
 
-# def initialize_job_types(job_types: Optional[dict] = None,
-#                          specific_job_type: str = '',
-#                          ) -> dict:
+    # Create formatter and add to handlers.
+    formatter = logging.Formatter('%(levelname)s%(message)s')
 
-#     A helper function for initializing job_types.
-#     Returns the comprehensive (default values for missing job types) job types for ARC.
+    # Remove old handlers before adding ours.
+    while logger.handlers:
+        logger.removeHandler(logger.handlers[0])
 
-#     Args:
-#         job_types (dict, optional): Keys are job types, values are booleans of whether or not to consider this job type.
-#         specific_job_type (str, optional): Specific job type to execute. Legal strings are job types (keys of job_types dict).
+    # Create console handler; send everything to stdout rather than stderr.
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(verbose)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
-#     Returns: dict
-#         An updated (comprehensive) job type dictionary.
-#     """
-#     if specific_job_type:
-#         logger.info(f'Specific_job_type {specific_job_type} was requested by the user.')
-#         if job_types:
-#             logger.warning('Both job_types and specific_job_type were given, use only specific_job_type to '
-#                            'populate the job_types dictionary.')
-#         job_types = {job_type: False for job_type in default_job_types.keys()}
-#         try:
-#             job_types[specific_job_type] = True
-#         except KeyError:
-#             raise InputError(f'Specified job type {specific_job_type} is not supported.')
+    # Create file handler.
+    fh = logging.FileHandler(filename=log_file)
+    fh.setLevel(verbose)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    log_header(project=project)
 
-#     if specific_job_type == 'bde':
-#         bde_default = {'opt': True, 'fine': True, 'freq': True, 'sp': True}
-#         job_types.update(bde_default)
-#         if 'fine_grid' in job_types:
-#             del job_types['fine_grid']
+    # Ignore Paramiko, cclib, and matplotlib warnings:
+    warnings.filterwarnings(action='ignore', module='.*paramiko.*')
+    warnings.filterwarnings(action='ignore', module='.*cclib.*')
+    warnings.filterwarnings(action='ignore', module='.*matplotlib.*')
+    logging.captureWarnings(capture=False)
 
-#     defaults_to_true = ['conf_opt', 'fine', 'freq', 'irc', 'opt', 'rotors', 'sp']
-#     defaults_to_false = ['conf_sp', 'bde', 'onedmin', 'orbitals']
-#     if job_types is None:
-#         job_types = default_job_types
-#         logger.info("Job types were not specified, using ARC's defaults")
-#     else:
-#         logger.debug(f'the following job types were specified: {job_types}.')
-#     if 'lennard_jones' in job_types:
-#         job_types['onedmin'] = job_types['lennard_jones']
-#         del job_types['lennard_jones']
-#     if 'fine_grid' in job_types:
-#         job_types['fine'] = job_types['fine_grid']
-#         del job_types['fine_grid']
-#     for job_type in defaults_to_true:
-#         if job_type not in job_types:
-#             # set default value to True if this job type key is missing
-#             job_types[job_type] = True
-#     for job_type in defaults_to_false:
-#         if job_type not in job_types:
-#             # set default value to False if this job type key is missing
-#             job_types[job_type] = False
-#     for job_type in job_types.keys():
-#         if job_type not in defaults_to_true and job_type not in defaults_to_false:
-#             if job_type == '1d_rotors':
-#                 logging.error("Note: The `1d_rotors` job type was renamed to simply `rotors`. "
-#                               "Please modify your input accordingly (see ARC's documentation for examples).")
-#             raise InputError(f"Job type '{job_type}' is not supported. Check the job types dictionary "
-#                              "(either in ARC's input or in default_job_types under settings).")
-#     job_types_report = [job_type for job_type, val in job_types.items() if val]
-#     logger.info(f'\nConsidering the following job types: {job_types_report}\n')
-#     return job_types
-
-
-# def determine_ess(log_file: str) -> str:
-#     """
-#     Determine the ESS to which the log file belongs.
-
-#     Args:
-#         log_file (str): The ESS log file path.
-
-#     Returns: str
-#         The ESS log class from Arkane.
-#     """
-#     log = ess_factory(log_file, check_for_errors=False)
-#     if isinstance(log, GaussianLog):
-#         return 'gaussian'
-#     if isinstance(log, MolproLog):
-#         return 'molpro'
-#     if isinstance(log, OrcaLog):
-#         return 'orca'
-#     if isinstance(log, QChemLog):
-#         return 'qchem'
-#     if isinstance(log, TeraChemLog):
-#         return 'terachem'
-#     raise InputError(f'Could not identify the log file in {log_file} as belonging to '
-#                      f'Gaussian, Molpro, Orca, QChem, or TeraChem.')
-
-
-# def check_ess_settings(ess_settings: Optional[dict] = None) -> dict:
-#     """
-#     A helper function to convert servers in the ess_settings dict to lists
-#     Assists in troubleshooting job and trying a different server
-#     Also check ESS and servers.
-
-#     Args:
-#         ess_settings (dict, optional): ARC's ESS settings dictionary.
-
-#     Returns: dict
-#         An updated ARC ESS dictionary.
-#     """
-#     if ess_settings is None or not ess_settings:
-#         return dict()
-#     settings_dict = dict()
-#     for software, server_list in ess_settings.items():
-#         if isinstance(server_list, str):
-#             settings_dict[software] = [server_list]
-#         elif isinstance(server_list, list):
-#             for server in server_list:
-#                 if not isinstance(server, str):
-#                     raise SettingsError(f'Server name could only be a string. Got {server} which is {type(server)}')
-#                 settings_dict[software.lower()] = server_list
-#         else:
-#             raise SettingsError(f'Servers in the ess_settings dictionary could either be a string or a list of '
-#                                 f'strings. Got: {server_list} which is a {type(server_list)}')
-#     # run checks:
-#     for ess, server_list in settings_dict.items():
-#         if ess.lower() not in supported_ess + ['gcn', 'heuristics', 'autotst', 'kinbot', 'xtb_gsm']:
-#             raise SettingsError(f'Recognized ESS software are {supported_ess}. Got: {ess}')
-#         for server in server_list:
-#             if not isinstance(server, bool) and server.lower() not in [s.lower() for s in servers.keys()]:
-#                 server_names = [name for name in servers.keys()]
-#                 raise SettingsError(f'Recognized servers are {server_names}. Got: {server}')
-#     logger.info(f'\nUsing the following ESS settings:\n{pprint.pformat(settings_dict)}\n')
-#     return settings_dict
-
-
-# def initialize_log(log_file: str,
-#                    project: str,
-#                    project_directory: Optional[str] = None,
-#                    verbose: int = logging.INFO,
-#                    ) -> None:
-#     """
-#     Set up a logger for ARC.
-
-#     Args:
-#         log_file (str): The log file name.
-#         project (str): A name for the project.
-#         project_directory (str, optional): The path to the project directory.
-#         verbose (int, optional): Specify the amount of log text seen.
-#     """
-#     # Backup and delete an existing log file if needed.
-#     if project_directory is not None and os.path.isfile(log_file):
-#         if not os.path.isdir(os.path.join(project_directory, 'log_and_restart_archive')):
-#             os.mkdir(os.path.join(project_directory, 'log_and_restart_archive'))
-#         local_time = datetime.datetime.now().strftime("%H%M%S_%b%d_%Y")
-#         log_backup_name = 'arc.old.' + local_time + '.log'
-#         shutil.copy(log_file, os.path.join(project_directory, 'log_and_restart_archive', log_backup_name))
-#         os.remove(log_file)
-
-#     logger.setLevel(verbose)
-#     logger.propagate = False
-
-#     # Use custom level names for cleaner log output.
-#     logging.addLevelName(logging.CRITICAL, 'Critical: ')
-#     logging.addLevelName(logging.ERROR, 'Error: ')
-#     logging.addLevelName(logging.WARNING, 'Warning: ')
-#     logging.addLevelName(logging.INFO, '')
-#     logging.addLevelName(logging.DEBUG, '')
-#     logging.addLevelName(0, '')
-
-#     # Create formatter and add to handlers.
-#     formatter = logging.Formatter('%(levelname)s%(message)s')
-
-#     # Remove old handlers before adding ours.
-#     while logger.handlers:
-#         logger.removeHandler(logger.handlers[0])
-
-#     # Create console handler; send everything to stdout rather than stderr.
-#     ch = logging.StreamHandler(sys.stdout)
-#     ch.setLevel(verbose)
-#     ch.setFormatter(formatter)
-#     logger.addHandler(ch)
-
-#     # Create file handler.
-#     fh = logging.FileHandler(filename=log_file)
-#     fh.setLevel(verbose)
-#     fh.setFormatter(formatter)
-#     logger.addHandler(fh)
-#     log_header(project=project)
-
-#     # Ignore Paramiko, cclib, and matplotlib warnings:
-#     warnings.filterwarnings(action='ignore', module='.*paramiko.*')
-#     warnings.filterwarnings(action='ignore', module='.*cclib.*')
-#     warnings.filterwarnings(action='ignore', module='.*matplotlib.*')
-#     logging.captureWarnings(capture=False)
 
 
 # def get_logger():
