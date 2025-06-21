@@ -21,7 +21,7 @@ All of the content below this sentence are part of arc common.
 #TODO:
 1. learn each part of the code how its work and if its neccery in our code
 2. delete/adopt which module that is neccery to BEES
-3. writing test
+3. writing test.
 
 """
 

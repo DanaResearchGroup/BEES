@@ -7,7 +7,7 @@ Bees executable module
 
 """"""
 #TODO: 1. learn from T3 what they do and what modifications need to be done
-#       2. fill init objects with the correct attributes.
+#       2. fill init objects with the correct attributes...
 
 
 import argparse
