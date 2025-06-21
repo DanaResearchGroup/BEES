@@ -1,21 +1,33 @@
 ##TODO: learn this module and refine it to BEES 
+# Please make sure that you dint missed any importent function becuse you delate them in common.py
+
 
 
 """
 BEES logger module
+
+what is the changes compared to the original T3 logger module:
+- Removed unused imports and comments from the original T3 logger module.
+- change the dependenies from T3 , for example t3_path
+
 """
  
+ 
+
  
 import datetime
 import os
 import shutil
 import time
 from typing import Dict, List, Optional, Tuple
+import logging
+import bees.common as common
 
-from bees.common import get_git_branch, get_git_commit
+# from bees.common  import VERSION, dict_to_str, bees_path, time_lapseת get_git_commit, get_git_branc
 
-# from t3.common import VERSION, dict_to_str, t3_path, time_lapse
-
+# Initialize a global logger for BEES module.
+# This logger can be used directly throughout BEES code once configured.
+logger = logging.getLogger('BEES')
 
 class Logger(object):
     """
@@ -48,13 +60,13 @@ class Logger(object):
         self.project_directory = project_directory
         self.verbose = verbose
         self.t0 = t0
-        self.log_file = os.path.join(self.project_directory, 't3.log')
+        self.log_file = os.path.join(self.project_directory, 'bees.log')
 
         if os.path.isfile(self.log_file):
             if not os.path.isdir(os.path.join(os.path.dirname(self.log_file), 'log_archive')):
                 os.mkdir(os.path.join(os.path.dirname(self.log_file), 'log_archive'))
             local_time = datetime.datetime.now().strftime("%b%d_%Y_%H:%M:%S")
-            log_backup_name = f't3.{local_time}.log'
+            log_backup_name = f'bees.{local_time}.log'
             shutil.copy(self.log_file, os.path.join(os.path.dirname(self.log_file), 'log_archive', log_backup_name))
             os.remove(self.log_file)
 
@@ -121,22 +133,22 @@ class Logger(object):
         """
         Output a header to the log.
         """
-        self.log(f'T3 execution initiated on {time.asctime()}\n\n'
+        self.log(f'bees execution initiated on {time.asctime()}\n\n'
                  f'################################################################\n'
                  f'#                                                              #\n'
-                 f'#                  The   Tandem   Tool   (T3)                  #\n'
-                 f'#       for automated chemical kinetic model development       #\n'
+                 f'#          Biochemical Engine for Enzymatic modelS(bees)]       #\n'
                  f'#                                                              #\n'
-                 f'#                        Version: {VERSION}{" " * (10 - len(VERSION))}                   #\n'
+                 f'#                                                              #\n'
+                 f'# Version:  {VERSION}{" " * (10 - len(VERSION))}                #\n'
                  f'#                                                              #\n'
                  f'################################################################\n\n',
                  level='always')
 
-        # Extract HEAD git commit from T3
-        head, date = get_git_commit(path=t3_path)
-        branch_name = get_git_branch(path=t3_path)
+        # Extract HEAD git commit from bees
+        head, date = get_git_commit(path=bees_path)
+        branch_name = get_git_branch(path=bees_path)
         if head != '' and date != '':
-            self.log(f'The current git HEAD for T3 is:\n'
+            self.log(f'The current git HEAD for bees is:\n'
                      f'    {head}\n    {date}',
                      level='always')
         if branch_name and branch_name != 'main':
@@ -151,10 +163,10 @@ class Logger(object):
         Log that the maximum run time was reached.
 
         Args:
-            max_time (str): The maximum T3 walltime.
+            max_time (str): The maximum bees walltime.
         """
-        execution_time = time_lapse(self.t0)
-        self.log(f'Terminating T3 due to time limit.\n'
+        execution_time = common.time_lapse(self.t0)
+        self.log(f'Terminating bees due to time limit.\n'
                  f'Max time set: {max_time}\n'
                  f'Current run time: {execution_time}\n', level='always')
 
@@ -162,9 +174,9 @@ class Logger(object):
         """
         Output a footer to the log.
         """
-        execution_time = time_lapse(self.t0)
-        self.log(f'\n\n\nTotal T3 execution time: {execution_time}', level='always')
-        self.log(f'T3 execution terminated on {time.asctime()}\n', level='always')
+        execution_time = common.time_lapse(self.t0)
+        self.log(f'\n\n\nTotal bees execution time: {execution_time}', level='always')
+        self.log(f'bees execution terminated on {time.asctime()}\n', level='always')
 
     def log_species_to_calculate(self,
                                  species_keys: List[int],
@@ -177,8 +189,8 @@ class Logger(object):
         descriptive (i.e., NOT "S(1056)").
     
         Args:
-            species_keys (List[int]): Entries are T3 species indices.
-            species_dict (dict): The T3 species dictionary.
+            species_keys (List[int]): Entries are bees species indices.
+            species_dict (dict): The bees species dictionary.
 
         Todo:
             Log the reasons one by one with line breaks and enumerate
@@ -212,8 +224,8 @@ class Logger(object):
         The reaction 'QM label' is used for reporting.
 
         Args:
-            reaction_keys (List[int]): Entries are T3 reaction indices.
-            reaction_dict (dict): The T3 reaction dictionary.
+            reaction_keys (List[int]): Entries are bees reaction indices.
+            reaction_dict (dict): The bees reaction dictionary.
         """
         if len(reaction_keys):
             self.info('\n\nReactions to calculate high-pressure limit rate coefficients for:')
@@ -240,7 +252,7 @@ class Logger(object):
         Report species summary.
     
         Args:
-            species_dict (dict): The T3 species dictionary.
+            species_dict (dict): The bees species dictionary.
         """
         if species_dict:
             self.info('\n\n\nSPECIES SUMMARY')
@@ -284,7 +296,7 @@ class Logger(object):
         Report rate coefficient summary.
 
         Args:
-            reactions_dict (dict): The T3 reactions dictionary.
+            reactions_dict (dict): The bees reactions dictionary.
         """
         if reactions_dict:
             self.info('\n\n\nRATE COEFFICIENTS SUMMARY')
@@ -324,10 +336,10 @@ class Logger(object):
         Report unconverged species and reactions.
     
         Args:
-            species_keys (List[int]): Entries are T3 species indices.
-            species_dict (dict): The T3 species dictionary.
-            reaction_keys (List[int]): Entries are T3 reaction indices.
-            reaction_dict (dict): The T3 reaction dictionary.
+            species_keys (List[int]): Entries are bees species indices.
+            species_dict (dict): The bees species dictionary.
+            reaction_keys (List[int]): Entries are bees reaction indices.
+            reaction_dict (dict): The bees reaction dictionary.
         """
         if len(species_keys):
             self.info('\nThermodynamic calculations for the following species did NOT converge:')
@@ -353,7 +365,7 @@ class Logger(object):
 
     def log_args(self, schema: dict):
         """
-        Log the arguments used in T3.
+        Log the arguments used in bees.
 
         Args:
             schema (dict): All non-default arguments.
