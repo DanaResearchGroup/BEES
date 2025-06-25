@@ -15,4 +15,6 @@ dependencies:
   - scipy
   - anaconda::ipython
   - pydantic
+  - pytest
+  
 
