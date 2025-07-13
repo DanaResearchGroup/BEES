@@ -1,6 +1,6 @@
 import bees.common
-import bees.utils
-from bees.main import Bees
+
+import main
 from .schema import (
     TerminationTimeEnum,
     Enzyme,
@@ -8,6 +8,5 @@ from .schema import (
     Database,
     RadicalTypeEnum,
     Environment,
-    Settings,
     InputBase
 )

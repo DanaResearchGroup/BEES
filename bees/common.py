@@ -2,38 +2,27 @@
 BEES common module
 """
 """
-This module contains functions which are shared across multiple ARC modules.
-As such, it should not import any other ARC module (specifically ones that use the logger defined here)
+This module contains functions which are shared across multiple  modules.
+As such, it should not import any other BEES module (specifically ones that use the logger defined here)
 to avoid circular imports.
 
-VERSION is the full ARC version, using `semantic versioning <https://semver.org/>`_.
+This VERSION based on is the full ARC version, using `semantic versioning <https://semver.org/>`_.
 """
 
 import os
 import subprocess
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
-import logging
 import datetime
 import shutil
-import sys
+
 import time
-import warnings  
+
 import yaml
 import numpy as np
-
-#TODO: add the next neccery imports ( Or consider delete them)
-"""""
-from bees.exceptions import InputError  (this is inspire from arc.exceptions)
-from arc.path import ARC_PATH
-from rmgpy.molecule.element import get_element
-import determine_symmetry
-
-"""
+import math # Added this import for math.exp
+import re
 
 
-
-
-#All of the content below this sentence are part of arc common.
 
 """
 #TODO:
@@ -42,10 +31,16 @@ import determine_symmetry
 3. writing test.
 
 """
-
-# # Absolute path to the BEES folder.
+ 
+# Absolute path to the BEES folder.
 
 BEES_PATH = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+
+# Define base paths for projects and data relative to BEES_PATH
+# These paths are used to store project files and data files.
+
+PROJECTS_BASE_PATH = os.path.join(BEES_PATH, 'projects')
+DATA_BASE_PATH = os.path.join(BEES_PATH, 'data')
 
 VERSION = '1.1.0'
 
@@ -106,6 +101,11 @@ def get_git_commit(path: Optional[str] = None) -> Tuple[str, str]:
         except (subprocess.CalledProcessError, OSError):
             return head, date
     return head, date
+
+class InputError(Exception):
+    """An exception class for reporting errors in BEES input files or parameters. 
+    TODO : we might move this one out of the common module to a separate file in the bees module."""
+    pass
 
 
 
@@ -184,7 +184,7 @@ def globalize_paths(file_path: str,
                     ) -> str:
     """
     Rebase all file paths in the contents of the given file on the current project path.
-    Useful when restarting an ARC project in a different folder or on a different machine.
+    Useful when restarting an BEES project in a different folder or on a different machine.
 
     Args:
         file_path (str): A path to the file to check.
@@ -221,7 +221,7 @@ def globalize_path(string: str,
                    ) -> str:
     """
     Rebase an absolute file path on the current project path.
-    Useful when restarting an ARC project in a different folder or on a different machine.
+    Useful when restarting an BEES project in a different folder or on a different machine.
 
     Args:
         string (str): A string containing a path to rebase.
@@ -242,25 +242,6 @@ def globalize_path(string: str,
         old_dir = splits[-1]
         string = string.replace(old_dir, project_directory)
     return string
-
-
-def delete_check_files(project_directory: str):
-    """
-    Delete ESS checkfiles. They usually take up lots of space and are not needed after ARC terminates.
-    Pass ``True`` to the ``keep_checks`` flag in ARC to avoid deleting check files.
-
-    Args:
-        project_directory (str): The path to the ARC project folder.
-    """
-    logged = False
-    calcs_path = os.path.join(project_directory, 'calcs')
-    for (root, _, files) in os.walk(calcs_path):
-        for file_ in files:
-            if os.path.splitext(file_)[1] == '.chk' and os.path.isfile(os.path.join(root, file_)):
-                if not logged:
-                    logger.info('\ndeleting all check files...\n')
-                    logged = True
-                os.remove(os.path.join(root, file_))
 
 
 def string_representer(dumper, data):
@@ -405,39 +386,6 @@ def get_bonds_from_dmat(dmat: np.ndarray,
     return bonds
 
 
-
-
-def determine_top_group_indices(mol, atom1, atom2, index=1) -> Tuple[list, bool]:
-    """
-    Determine the indices of a "top group" in a molecule.
-    The top is defined as all atoms connected to atom2, including atom2, excluding the direction of atom1.
-    Two ``atom_list_to_explore`` are used so the list the loop iterates through isn't changed within the loop.
-
-    Args:
-        mol (Molecule): The Molecule object to explore.
-        atom1 (Atom): The pivotal atom in mol.
-        atom2 (Atom): The beginning of the top relative to atom1 in mol.
-        index (bool, optional): Whether to return 1-index or 0-index conventions. 1 for 1-index.
-
-    Returns: Tuple[list, bool]
-        - The indices of the atoms in the top (either 0-index or 1-index, as requested).
-        - Whether the top has heavy atoms (is not just a hydrogen atom). ``True`` if it has heavy atoms.
-    """
-    top = list()
-    explored_atom_list, atom_list_to_explore1, atom_list_to_explore2 = [atom1], [atom2], []
-    while len(atom_list_to_explore1 + atom_list_to_explore2):
-        for atom3 in atom_list_to_explore1:
-            top.append(mol.vertices.index(atom3) + index)
-            for atom4 in atom3.edges.keys():
-                if atom4 not in explored_atom_list and atom4 not in atom_list_to_explore2:
-                    if atom4.is_hydrogen():
-                        # append H w/o further exploring
-                        top.append(mol.vertices.index(atom4) + index)
-                    else:
-                        atom_list_to_explore2.append(atom4)  # explore it further
-            explored_atom_list.append(atom3)  # mark as explored
-        atom_list_to_explore1, atom_list_to_explore2 = atom_list_to_explore2, []
-    return top, not atom2.is_hydrogen()
 
 
 def extremum_list(lst: list,
@@ -613,100 +561,6 @@ def key_by_val(dictionary: dict,
     raise ValueError(f'Could not find value {value} in the dictionary\n{dictionary}')
 
 
-def almost_equal_lists(iter1: Union[list, tuple, np.ndarray],
-                       iter2: Union[list, tuple, np.ndarray],
-                       rtol: float = 1e-05,
-                       atol: float = 1e-08,
-                       ) -> bool:
-    """
-    A helper function for checking whether two iterables are almost equal.
-
-    Args:
-        iter1 (list, tuple, np.array): An iterable.
-        iter2 (list, tuple, np.array): An iterable.
-        rtol (float, optional): The relative tolerance parameter.
-        atol (float, optional): The absolute tolerance parameter.
-
-    Returns: bool
-        ``True`` if they are almost equal, ``False`` otherwise.
-    """
-    if len(iter1) != len(iter2):
-        return False
-    for entry1, entry2 in zip(iter1, iter2):
-        if isinstance(entry1, (list, tuple, np.ndarray)) and isinstance(entry2, (list, tuple, np.ndarray)):
-            if not almost_equal_lists(iter1=entry1, iter2=entry2, rtol=rtol, atol=atol):
-                return False
-        else:
-            if isinstance(entry1, (int, float, np.float32, np.float64)) \
-                    and isinstance(entry2, (int, float, np.float32, np.float64)):
-                if not np.isclose([entry1], [entry2], rtol=rtol, atol=atol):
-                    return False
-            else:
-                if entry1 != entry2:
-                    return False
-    return True
-
-
-def almost_equal_coords(xyz1: dict,
-                        xyz2: dict,
-                        rtol: float = 1e-05,
-                        atol: float = 1e-08,
-                        ) -> bool:
-    """
-    A helper function for checking whether two xyz's are almost equal. Also checks equal symbols.
-
-    Args:
-        xyz1 (dict): Cartesian coordinates.
-        xyz2 (dict): Cartesian coordinates.
-        rtol (float, optional): The relative tolerance parameter.
-        atol (float, optional): The absolute tolerance parameter.
-
-    Returns: bool
-        ``True`` if they are almost equal, ``False`` otherwise.
-    """
-    if not isinstance(xyz1, dict) or not isinstance(xyz2, dict):
-        raise TypeError(f'xyz1 and xyz2 must be dictionaries, got {type(xyz1)} and {type(xyz2)}:\n{xyz1}\n{xyz2}')
-    for symbol_1, symbol_2 in zip(xyz1['symbols'], xyz2['symbols']):
-        if symbol_1 != symbol_2:
-            logger.warning(f"Cannot compare coords, xyz1 and xyz2 have different symbols:"
-                           f"\n{xyz1['symbols']}\nand:\n{xyz2['symbols']}")
-    for xyz_coord1, xyz_coord2 in zip(xyz1['coords'], xyz2['coords']):
-        for xyz1_c, xyz2_c in zip(xyz_coord1, xyz_coord2):
-            if not np.isclose([xyz1_c], [xyz2_c], rtol=rtol, atol=atol):
-                return False
-    return True
-
-
-def almost_equal_coords_lists(xyz1: Union[List[dict], dict],
-                              xyz2: Union[List[dict], dict],
-                              rtol: float = 1e-05,
-                              atol: float = 1e-08,
-                              ) -> bool:
-    """
-    A helper function for checking two lists of xyzs has at least one entry in each that is almost equal.
-    Useful for comparing xyzs in unit tests.
-
-    Args:
-        xyz1 (Union[List[dict], dict]): Either a dict-format xyz, or a list of them.
-        xyz2 (Union[List[dict], dict]): Either a dict-format xyz, or a list of them.
-        rtol (float, optional): The relative tolerance parameter.
-        atol (float, optional): The absolute tolerance parameter.
-
-    Returns: bool
-        Whether at least one entry in each input xyzs is almost equal to an entry in the other xyz.
-    """
-    if not isinstance(xyz1, list):
-        xyz1 = [xyz1]
-    if not isinstance(xyz2, list):
-        xyz2 = [xyz2]
-    for xyz1_entry in xyz1:
-        for xyz2_entry in xyz2:
-            if xyz1_entry['symbols'] != xyz2_entry['symbols']:
-                continue
-            if almost_equal_coords(xyz1_entry, xyz2_entry, rtol=rtol, atol=atol):
-                return True
-    return False
-
 
 
 
@@ -807,135 +661,60 @@ def dict_to_str(dictionary: dict,
 
 
 
+def timedelta_from_str(time_str: str):
+    """
+    Get a datetime.timedelta object from its str() representation
+
+    Args:
+        time_str (str): The string representation of a datetime.timedelta object.
+
+    Returns:
+        datetime.timedelta: The corresponding timedelta object.
+    """
+    regex = re.compile(r'((?P<hours>\d+?)hr)?((?P<minutes>\d+?)m)?((?P<seconds>\d+?)s)?')
+
+    parts = regex.match(time_str)
+    if not parts:
+        return
+    parts = parts.groupdict()
+    time_params = {}
+    for (name, param) in parts.items():
+        if param:
+            time_params[name] = int(param)
+    return datetime.timedelta(**time_params)
 
 
-# def get_close_tuple(key_1: Tuple[Union[float, str], ...],
-#                     keys: List[Tuple[Union[float, str], ...]],
-#                     tolerance: float = 0.05,
-#                     raise_error: bool = False,
-#                     ) -> Optional[Tuple[Union[float, str], ...]]:
-#     """
-#     Get a key from a list of keys close in value to the given key.
-#     Even if just one of the items in the key has a close match, use the close value.
-
-#     Args:
-#         key_1 (Tuple[Union[float, str], Union[float, str]]): The key used for the search.
-#         keys (List[Tuple[Union[float, str], Union[float, str]]]): The list of keys to search within.
-#         tolerance (float, optional): The tolerance within which keys are determined to be close.
-#         raise_error (bool, optional): Whether to raise a ValueError if a close key wasn't found.
-
-#     Raises:
-#         ValueError: If a key in ``keys`` has a different length than ``key_1``.
-#         ValueError: If a close key was not found and ``raise_error`` is ``True``.
-
-#     Returns:
-#         Optional[Tuple[Union[float, str], ...]]: A key from the keys list close in value to the given key.
-#     """
-#     key_1_floats = tuple(float(item) for item in key_1)
-#     for key_2 in keys:
-#         if len(key_1) != len(key_2):
-#             raise ValueError(f'Length of key_1, {key_1}, ({len(key_1)}) must be equal to the lengths of all keys '
-#                              f'(got a second key, {key_2}, with length {len(key_2)}).')
-#         key_2_floats = tuple(float(item) for item in key_2)
-#         if all(abs(item_1 - item_2) <= tolerance for item_1, item_2 in zip(key_1_floats, key_2_floats)):
-#             return key_2
-
-#     updated_key_1 = [None] * len(key_1)
-#     for key_2 in keys:
-#         key_2_floats = tuple(float(item) for item in key_2)
-#         for i, item in enumerate(key_2_floats):
-#             if abs(item - key_1_floats[i]) <= tolerance:
-#                 updated_key_1[i] = key_2[i]
-
-#     if any(key is not None for key in updated_key_1):
-#         return tuple(updated_key_1[i] or key_1[i] for i in range(len(key_1)))
-#     elif not raise_error:
-#         # couldn't find a close key
-#         return None
-#     raise ValueError(f'Could not locate a key close to {key_1} within the tolerance {tolerance} in the given keys list.')
 
 
-# def timedelta_from_str(time_str: str):
-#     """
-#     Get a datetime.timedelta object from its str() representation
+def convert_list_index_0_to_1(_list: Union[list, tuple], direction: int = 1) -> Union[list, tuple]:
+    """
+    Convert a list from 0-indexed to 1-indexed, or vice versa.
+    Ensures positive values in the resulting list.
 
-#     Args:
-#         time_str (str): The string representation of a datetime.timedelta object.
+    Args:
+        _list (list): The list to be converted.
+        direction (int, optional): Either 1 or -1 to convert 0-indexed to 1-indexed or vice versa, respectively.
 
-#     Returns:
-#         datetime.timedelta: The corresponding timedelta object.
-#     """
-#     regex = re.compile(r'((?P<hours>\d+?)hr)?((?P<minutes>\d+?)m)?((?P<seconds>\d+?)s)?')
+    Raises:
+        ValueError: If the new list contains negative values.
 
-#     parts = regex.match(time_str)
-#     if not parts:
-#         return
-#     parts = parts.groupdict()
-#     time_params = {}
-#     for (name, param) in parts.items():
-#         if param:
-#             time_params[name] = int(param)
-#     return datetime.timedelta(**time_params)
-
-
-# def torsions_to_scans(descriptor: Optional[List[List[int]]],
-#                       direction: int = 1,
-#                       ) -> Optional[List[List[int]]]:
-#     """
-#     Convert torsions to scans or vice versa.
-#     In ARC we define a torsion as a list of four atoms with 0-indices.
-#     We define a scan  as a list of four atoms with 1-indices.
-#     This function converts one format to the other.
-
-#     Args:
-#         descriptor (list): The torsions or scans list.
-#         direction (int, optional): 1: Convert torsions to scans; -1: Convert scans to torsions.
-
-#     Returns:
-#         Optional[List[List[int]]]: The converted indices.
-#     """
-#     if descriptor is None:
-#         return None
-#     if not isinstance(descriptor, (list, tuple)):
-#         raise TypeError(f'Expected a list, got {descriptor} which is a {type(descriptor)}')
-#     if not isinstance(descriptor[0], (list, tuple)):
-#         descriptor = [descriptor]
-#     direction = direction if direction == 1 else -1  # Anything other than 1 is translated to -1.
-#     new_descriptor = [convert_list_index_0_to_1(entry, direction) for entry in descriptor]
-#     if any(any(item < 0 for item in entry) for entry in new_descriptor):
-#         raise ValueError(f'Got an illegal value when converting:\n{descriptor}\ninto:\n{new_descriptor}')
-#     return new_descriptor
+    Returns:
+        Union[list, tuple]: The converted indices.
+    """
+    new_list = [item + direction for item in _list]
+    if any(val < 0 for val in new_list):
+        raise ValueError(f'The resulting list from converting {_list} has negative values:\n{new_list}')
+    if isinstance(_list, tuple):
+        new_list = tuple(new_list)
+    return new_list
 
 
-# def convert_list_index_0_to_1(_list: Union[list, tuple], direction: int = 1) -> Union[list, tuple]:
-#     """
-#     Convert a list from 0-indexed to 1-indexed, or vice versa.
-#     Ensures positive values in the resulting list.
-
-#     Args:
-#         _list (list): The list to be converted.
-#         direction (int, optional): Either 1 or -1 to convert 0-indexed to 1-indexed or vice versa, respectively.
-
-#     Raises:
-#         ValueError: If the new list contains negative values.
-
-#     Returns:
-#         Union[list, tuple]: The converted indices.
-#     """
-#     new_list = [item + direction for item in _list]
-#     if any(val < 0 for val in new_list):
-#         raise ValueError(f'The resulting list from converting {_list} has negative values:\n{new_list}')
-#     if isinstance(_list, tuple):
-#         new_list = tuple(new_list)
-#     return new_list
-
-
-# def rmg_mol_to_dict_repr(mol: Molecule,
+# def bees_mol_to_dict_repr(mol: Molecule,
 #                          reset_atom_ids: bool = False,
 #                          testing: bool = False,
 #                          ) -> dict:
 #     """
-#     Generate a dict representation of an RMG ``Molecule`` object instance.
+#     based on the Generate a dict representation of an RMG ``Molecule`` object instance.
 
 #     Args:
 #         mol (Molecule): The RMG ``Molecule`` object instance.
@@ -1013,90 +792,90 @@ def dict_to_str(dictionary: dict,
 #     return mol
 
 
-# def generate_resonance_structures(object_: Union['Species', Molecule],
-#                                   keep_isomorphic: bool = False,
-#                                   filter_structures: bool = True,
-#                                   save_order: bool = True,
-#                                   ) -> Optional[List[Molecule]]:
-#     """
-#     Safely generate resonance structures for either an RMG Molecule or an RMG Species object instances.
+def generate_resonance_structures(object_: Union['Species', Any],
+                                  keep_isomorphic: bool = False,
+                                  filter_structures: bool = True,
+                                  save_order: bool = True,
+                                  ) -> Optional[List[Any]]:
+    """
+    Safely generate resonance structures for either an  BEES speicies (based on RMG Molecule or an RMG Species object instances).
 
-#     Args:
-#         object_ (Species, Molecule): The object to generate resonance structures for.
-#         keep_isomorphic (bool, optional): Whether to keep isomorphic isomers.
-#         filter_structures (bool, optional): Whether to filter resonance structures.
-#         save_order (bool, optional): Whether to make sure atom order is preserved.
+    Args:
+        object_ (Species, Molecule): The object to generate resonance structures for.
+        keep_isomorphic (bool, optional): Whether to keep isomorphic isomers.
+        filter_structures (bool, optional): Whether to filter resonance structures.
+        save_order (bool, optional): Whether to make sure atom order is preserved.
 
-#     Returns:
-#         Optional[List[Molecule]]: If a ``Molecule`` object instance was given, the function returns a list of resonance
-#                                   structures (each is a ``Molecule`` object instance). If a ``Species`` object instance
-#                                   is given, the resonance structures are stored within the given object
-#                                   (in a .molecule attribute), and the function returns ``None``.
-#     """
-#     result = None
-#     try:
-#         result = object_.generate_resonance_structures(keep_isomorphic=keep_isomorphic,
-#                                                        filter_structures=filter_structures,
-#                                                        save_order=save_order,
-#                                                        )
-#     except (AtomTypeError, ILPSolutionError, ResonanceError, TypeError, ValueError):
-#         pass
-#     return result
-
-
-# def calc_rmsd(x: Union[list, np.array],
-#               y: Union[list, np.array],
-#               ) -> float:
-#     """
-#     Compute the root-mean-square deviation between two matrices.
-
-#     Args:
-#         x (np.array): Matrix 1.
-#         y (np.array): Matrix 2.
-
-#     Returns:
-#         float: The RMSD score of two matrices.
-#     """
-#     x = np.array(x) if isinstance(x, list) else x
-#     y = np.array(y) if isinstance(y, list) else y
-#     d = x - y
-#     n = x.shape[0]
-#     sqr_sum = (d ** 2).sum()
-#     rmsd = np.sqrt(sqr_sum / n)
-#     return float(rmsd)
+    Returns:
+        Optional[List[Molecule]]: If a ``Molecule`` object instance was given, the function returns a list of resonance
+                                  structures (each is a ``Molecule`` object instance). If a ``Species`` object instance
+                                  is given, the resonance structures are stored within the given object
+                                  (in a .molecule attribute), and the function returns ``None``.
+    """
+    result = None
+    try:
+        result = object_.generate_resonance_structures(keep_isomorphic=keep_isomorphic,
+                                                       filter_structures=filter_structures,
+                                                       save_order=save_order,
+                                                       )
+    except (TypeError, ValueError):
+        pass
+    return result
 
 
-# def safe_copy_file(source: str,
-#                    destination: str,
-#                    wait: int = 10,
-#                    max_cycles: int = 15,
-#                    ):
-#     """
-#     Copy a file safely.
+def calc_rmsd(x: Union[list, np.array],
+              y: Union[list, np.array],
+              ) -> float:
+    """
+    Compute the root-mean-square deviation between two matrices.
 
-#     Args:
-#         source (str): The full path to the file to be copied.
-#         destination (str): The full path to the file destination.
-#         wait (int, optional): The number of seconds to wait between cycles.
-#         max_cycles (int, optional): The maximum number of cycles to try.
-#     """
-#     for i in range(max_cycles):
-#         try:
-#             shutil.copyfile(src=source, dst=destination)
-#         except shutil.SameFileError:
-#             break
-#         except NotADirectoryError:
-#             print(f'Expected "source" and "destination" to be directories. Trying to extract base paths.')
-#             if os.path.isfile(source):
-#                 source = os.path.dirname(source)
-#             if os.path.isfile(destination):
-#                 destination = os.path.dirname(destination)
-#         except OSError:
-#             time.sleep(wait)
-#         else:
-#             break
-#         if i >= max_cycles:
-#             break
+    Args:
+        x (np.array): Matrix 1.
+        y (np.array): Matrix 2.
+
+    Returns:
+        float: The RMSD score of two matrices.
+    """
+    x = np.array(x) if isinstance(x, list) else x
+    y = np.array(y) if isinstance(y, list) else y
+    d = x - y
+    n = x.shape[0]
+    sqr_sum = (d ** 2).sum()
+    rmsd = np.sqrt(sqr_sum / n)
+    return float(rmsd)
+
+
+def safe_copy_file(source: str,
+                   destination: str,
+                   wait: int = 10,
+                   max_cycles: int = 15,
+                   ):
+    """
+    Copy a file safely.
+
+    Args:
+        source (str): The full path to the file to be copied.
+        destination (str): The full path to the file destination.
+        wait (int, optional): The number of seconds to wait between cycles.
+        max_cycles (int, optional): The maximum number of cycles to try.
+    """
+    for i in range(max_cycles):
+        try:
+            shutil.copyfile(src=source, dst=destination)
+        except shutil.SameFileError:
+            break
+        except NotADirectoryError:
+            print(f'Expected "source" and "destination" to be directories. Trying to extract base paths.')
+            if os.path.isfile(source):
+                source = os.path.dirname(source)
+            if os.path.isfile(destination):
+                destination = os.path.dirname(destination)
+        except OSError:
+            time.sleep(wait)
+        else:
+            break
+        if i >= max_cycles:
+            break
 
 
 # def dfs(mol: Molecule,
@@ -1130,81 +909,34 @@ def dict_to_str(dictionary: dict,
 #     return visited
 
 
-# def sort_atoms_in_descending_label_order(mol: 'Molecule') -> None:
-#     """
-#     If all atoms in the molecule object have a label, this function reassign the
-#     .atoms in Molecule with a list of atoms with the orders based on the labels of the atoms.
-#     for example, [int(atom.label) for atom in mol.atoms] is [1, 4, 32, 7],
-#     then the function will return the new atom with the order [1, 4, 7, 32]
 
-#     Args:
-#         mol (Molecule): An RMG Molecule object, with labeled atoms
-#     """
-#     if any(atom.label is None for atom in mol.atoms):
-#         return None
-#     try:
-#         mol.atoms = sorted(mol.atoms, key=lambda x: int(x.label))
-#     except ValueError:
-#         logger.warning(f"Some atom(s) in molecule.atoms are not integers.\nGot {[atom.label for atom in mol.atoms]}")
-#         return None
+def convert_to_hours(time_str:str) -> float:
+    """Convert walltime string in format HH:MM:SS to hours.
 
-
-# def is_xyz_mol_match(mol: 'Molecule',
-#                      xyz: dict) -> bool:
-#     """
-#     A helper function that matches rmgpy.molecule.molecule.Molecule object to an xyz,
-#     used in _scissors to match xyz and the cut products.
-#     This function only checks the molecular formula.
-
-#     Args:
-#         mol: rmg Molecule object
-#         xyz: coordinates of the cut product
+    Args:
+        time_str (str): A time string in format HH:MM:SS
     
-#     Returns:
-#         bool: ``True`` if the xyz and molecule match, ``False`` otherwise
-#     """
-#     element_dict_mol = mol.get_element_count()
-
-#     element_dict_xyz = dict()
-#     for atom in xyz['symbols']:
-#         if atom in element_dict_xyz:
-#             element_dict_xyz[atom] += 1
-#         else:
-#             element_dict_xyz[atom] = 1
-
-#     for element, count in element_dict_mol.items():
-#         if element not in element_dict_xyz or element_dict_xyz[element] != count:
-#             return False
-#     return True
+    Returns:
+        float: The time in hours
+    """
+    h, m, s = map(int, time_str.split(':'))
+    return h + m / 60 + s / 3600
 
 
-# def convert_to_hours(time_str:str) -> float:
-#     """Convert walltime string in format HH:MM:SS to hours.
+def calculate_arrhenius_rate_coefficient(A: float, n: float, Ea: float, T: float, Ea_units: str = 'kJ/mol') -> float:
+    """
+    Calculate the Arrhenius rate coefficient.
 
-#     Args:
-#         time_str (str): A time string in format HH:MM:SS
-    
-#     Returns:
-#         float: The time in hours
-#     """
-#     h, m, s = map(int, time_str.split(':'))
-#     return h + m / 60 + s / 3600
+    Args:
+        A (float): Pre-exponential factor in cm^3, mol, s units.
+        n (float): Temperature exponent.
+        Ea (float): Activation energy in J/mol.
+        T (float): Temperature in Kelvin.
+        Ea_units (str): Units of the rate coefficient.
 
-
-# def calculate_arrhenius_rate_coefficient(A: float, n: float, Ea: float, T: float, Ea_units: str = 'kJ/mol') -> float:
-#     """
-#     Calculate the Arrhenius rate coefficient.
-
-#     Args:
-#         A (float): Pre-exponential factor in cm^3, mol, s units.
-#         n (float): Temperature exponent.
-#         Ea (float): Activation energy in J/mol.
-#         T (float): Temperature in Kelvin.
-#         Ea_units (str): Units of the rate coefficient.
-
-#     Returns:
-#         float: The rate coefficient at the specified temperature.
-#     """
-#     if Ea_units not in EA_UNIT_CONVERSION:
-#         raise ValueError(f"Unsupported Ea units: {Ea_units}")
-#     return A * (T ** n) * math.exp(-1 * (Ea * EA_UNIT_CONVERSION[Ea_units]) / (R * T))
+    Returns:
+        float: The rate coefficient at the specified temperature.
+    """
+    if Ea_units not in EA_UNIT_CONVERSION:
+        raise ValueError(f"Unsupported Ea units: {Ea_units}")
+    return A * (T ** n) * math.exp(-1 * (Ea * EA_UNIT_CONVERSION[Ea_units]) / (R * T))
