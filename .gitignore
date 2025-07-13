@@ -175,3 +175,7 @@ cython_debug/
 
 # PyCharm
 .idea
+
+# BEES Project Specific Outputs
+projects/             # Exclude the entire 'projects' directory where BEES stores runs
+!examples/*/input.yml # DO NOT ignore input.yml files inside the examples directory (re-include them)

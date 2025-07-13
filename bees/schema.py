@@ -4,8 +4,8 @@ used for input validation
 """
 
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Union, Literal
-from pydantic import BaseModel, conint, confloat, constr, field_validator, ValidationInfo
+from typing import Dict, List, Optional, Tuple, Union, Literal, Annotated
+from pydantic import BaseModel, conint, confloat, constr, field_validator, ValidationInfo, Field
 from rdkit import Chem
 
 
@@ -24,7 +24,7 @@ class Species(BaseModel):
     A class for validate input.BEES.Species arguments.
     """
     label: str
-    concentration: Union[confloat, Tuple[confloat, confloat]] = None
+    concentration: Union[Annotated[float, Field(gt=0)], Tuple[Annotated[float, Field(gt=0)], Annotated[float, Field(gt=0)]]] = None
     smiles: Optional[str] = None
     inchi: Optional[str] = None
     adjlist: Optional[str] = None
