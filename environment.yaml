@@ -16,5 +16,6 @@ dependencies:
   - anaconda::ipython
   - pydantic
   - pytest
+  - rdkit
   
 
