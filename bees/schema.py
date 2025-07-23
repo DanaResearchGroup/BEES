@@ -293,6 +293,7 @@ class Database(BaseModel):
 class InputBase(BaseModel):
     project: constr(max_length=255)
     project_directory: Optional[constr(max_length=255)] = None
+    verbose: Optional[conint(ge=10, le=50)] = 20 # Moved to Settings
     species: List[Species]
     enzymes: List[Enzyme]
     environment: Environment
