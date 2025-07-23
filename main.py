@@ -1,5 +1,5 @@
 """
-The Biochemical Engine for Enzymatic kinetic modelS (bees) for iterative kinetic model generation and refinement
+The Biochemical Engine for Enzymatic kinetic modelS (BEES) for iterative kinetic model generation and refinement
 # This is probably the most important module in the code.
 
 # TODO:
@@ -16,10 +16,10 @@ import os  # Essential for path manipulations.
 import yaml
 import argparse 
 from typing import Optional, Union, List, Any, Dict  # For type hinting, improving code clarity and maintainability.
-import argparse
-import datetime
+
+
 import logging
-import shutil
+
 import sys
 import time
 
@@ -40,30 +40,22 @@ from bees.common import (
 )
 
 
-# Commented out imports - keep them commented for now, if their functionality is not yet implemented.
-# from bees.runners.rmg_runner import rmg_runner
-# from bees.simulate.factory import simulate_factory
-# from bees.utils.libraries import add_to_rmg_libraries
-# from bees.utils.writer import write_pdep_network_file, write_rmg_input_file
-
-
-# RMG_THERMO_LIB_BASE_PATH and RMG_KINETICS_LIB_BASE_PATH:
-# These depend on 'rmg_settings'. If you plan to integrate RMG,
-# you'll need to define how 'rmg_settings' are loaded/accessed.
-# RMG_THERMO_LIB_BASE_PATH = os.path.join(rmg_settings['database.directory'], 'thermo', 'libraries')
-# RMG_KINETICS_LIB_BASE_PATH = os.path.join(rmg_settings['database.directory'], 'kinetics', 'libraries')
 
 
 # The load_yaml function is fine as is.
 def load_yaml(file_path):
+    """
+    Loads content from a YAML file.
+    Note: This function is redundant if read_yaml_file from common is used consistently.
+    Kept for now as it was in the original code, but consider removing if not explicitly needed.
+    """
     with open(file_path, 'r') as stream:
         return yaml.safe_load(stream)
 
 class BEES(object):
     """
     The main class for the BEES platform.
-    This class orchestrates the entire workflow from input parsing to execution
-    of kinetic model generation and refinement.
+    This class orchestrates the entire workflow: from input parsing and schema to execution.
 
     Attributes:
         t0 (float): The timestamp when the BEES instance was initialized (for timing).
@@ -107,38 +99,24 @@ class BEES(object):
                                 if hasattr(self.input_schema.settings, 'output_directory') and self.input_schema.settings.output_directory \
                                 else self.project_directory
 
-
-
-        # 2. Set up project directory (and output directory if different)
-        # Create project directory if it doesn't exist after validating input
+        # Ensure project directory exists *before* initializing the logger
         if not os.path.exists(self.project_directory):
             os.makedirs(self.project_directory)
-            # Use print here as the logger might not be fully initialized yet
-            print(f"INFO: Created project directory: {self.project_directory}")
-        else:
-            print(f"INFO: Project directory already exists: {self.project_directory}")
-
-        # Create output directory if it's different from project directory
-        if self.output_directory != self.project_directory and not os.path.exists(self.output_directory):
-            os.makedirs(self.output_directory)
-            print(f"INFO: Created output directory: {self.output_directory}")
-
         
-        # 3. Initialize the Logger
+        # 2. Initialize the Logger
         # Get verbose level from schema.settings.verbose (default to INFO if not specified)
         verbose_level = self.input_schema.settings.verbose \
                         if hasattr(self.input_schema.settings, 'verbose') and self.input_schema.settings.verbose is not None \
                         else logging.INFO
         
+        # Initialize the Logger instance. The Logger's __init__ will handle log_header()
         self.logger = Logger(
-            project=self.project,
-            project_directory=self.project_directory,
+            project_directory=self.project_directory, # Removed 'project' argument
             verbose=verbose_level,
             t0=self.t0 # Pass the initial timestamp for logging header/footer
         )
 
-        # Log header and system information using the initialized logger
-        self.logger.log_header()
+        # Log system information using the initialized logger
         self.logger.info(f'BEES version: {VERSION}')
         git_branch = get_git_branch()
         git_commit, git_date = get_git_commit()
@@ -152,18 +130,35 @@ class BEES(object):
         self.logger.log_args(self.input_schema.model_dump(exclude_defaults=True))
 
 
-        # 4. Save the validated input to the project directory for reproducibility
+        # 3. Save the validated input to the project directory for reproducibility
         # This creates a canonical input.yml in the project folder
         self.logger.info(f"Saving validated input to {os.path.join(self.project_directory, 'input.yml')}")
         save_yaml_file(os.path.join(self.project_directory, 'input.yml'), self.input_schema.model_dump())
 
         
         
-        # TODO: Initialize other core components/attributes based on self.input_schema that we might need later
-        # For example, if you have modules for generating reaction networks, simulations, etc., initialize
-        # self.species_objects = self._create_species_objects()
-        # self.reaction_network = None
+        # Initialize other core components/attributes based on self.input_schema that we might need later
+        # These are placeholders and can be expanded later
+        self.species_objects = self._create_species_objects(self.input_schema.species)
+        self.enzyme_objects = self._create_enzyme_objects(self.input_schema.enzymes)
+        
+    def _create_species_objects(self, species_data: List[Any]) -> List[Any]:
+        """
+        Placeholder method to create species objects from input data.
+        In a real scenario, this would parse species definitions (e.g., SMILES, InChI)
+        and create internal Species objects.
+        """
+        self.logger.debug(f"Creating {len(species_data)} species objects...")
+        # Example: return a list of dictionaries for now
+        return [{"label": spc.label, "smiles": spc.smiles} for spc in species_data]
 
+    def _create_enzyme_objects(self, enzyme_data: List[Any]) -> List[Any]:
+        """
+        Placeholder method to create enzyme objects from input data.
+        """
+        self.logger.debug(f"Creating {len(enzyme_data)} enzyme objects...")
+        # Example: return a list of dictionaries for now
+        return [{"label": enz.label, "kcat": enz.kcat} for enz in enzyme_data]
     
     #Temporary placeholder for the execute method
     # This method will be expanded in the next steps
@@ -204,7 +199,7 @@ class BEES(object):
         # self.logger.info("Model refinement completed.")
 
         self.logger.info(f"BEES execution for project '{self.project}' completed in {time_lapse(self.t0)}.")
-        self.logger.log_footer() # Log footer at the end of successful execution
+        self.logger.log_footer(success=True) # Log footer at the end of successful execution
 
 
 def parse_and_load_input() -> Dict[str, Any]:
@@ -290,4 +285,3 @@ if __name__ == '__main__':
             # Fallback to basic logging if BEES logger failed to initialize
             logging.critical(f"An unhandled error occurred before BEES logger could be fully initialized: {e}", exc_info=True)
         sys.exit(1) # Exit with a non-zero status code to indicate an error
-

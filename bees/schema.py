@@ -20,14 +20,18 @@ class TerminationTimeEnum(str, Enum):
 
 
 class Species(BaseModel):
+    """
+    A class for validate input.BEES.Species arguments.
+    """
     label: str
     concentration: Union[confloat(gt=0), Tuple[confloat(gt=0), confloat(gt=0)]] = None
     smiles: Optional[str] = None
     inchi: Optional[str] = None
+    adjlist: Optional[str] = None
     charge: Optional[float] = 0
     constant: bool = False
     reactive: bool = True
-    observable: bool = False
+    observable: bool = True
     solvent: bool = False
     xyz: Optional[Union[dict, str]] = None
 
@@ -86,8 +90,24 @@ class Species(BaseModel):
                 raise ValueError("Invalid InChI string")
         return value
 
+    @field_validator('adjlist')
+    def validate_adjlist(cls, value):
+        if value:
+            try:
+                # Assuming adjlist is in a format parsable by MolFromMolBlock (e.g., MDL Molfile)
+                mol = Chem.MolFromMolBlock(value)
+                if not mol:
+                    raise ValueError("Invalid adjacency list (MolBlock format expected)")
+            except Exception:
+                raise ValueError("Invalid adjacency list (MolBlock format expected)")
+        return value
+
 
 class Enzyme(Species):
+    """
+    A class for validate input.BEES.Enzyme arguments if there are any.
+    Inherits from Species, adding specific fields for enzymes.
+    """
     ecnumber: Optional[constr(pattern=r"^EC \d+\.\d+\.\d+\.\d+$")] = None
 
     @field_validator('label')
@@ -108,7 +128,7 @@ class Environment(BaseModel):
     pH: Union[confloat(ge=0, le=14), Tuple[confloat(ge=0, le=14), confloat(ge=0, le=14)]]
     ionic_strength: Optional[confloat(ge=0)] = None
     oxygen_level: Optional[confloat(ge=0, le=1)] = None
-    seed_mechanisms: Optional[List[str]] = None
+    seed_mechanisms: Optional[List[str]] = None # pre-defined known or hypothesized reaction that we want to include from the beginning.
 
     class Config:
         extra = "forbid"
@@ -131,22 +151,29 @@ class Environment(BaseModel):
 
 
 class Settings(BaseModel):
+    """
+    A class for validate input.BEES.Settings arguments.
+    """
+
     end_time: confloat(gt=0)
     time_step: confloat(gt=0)
-    solver: Literal['odeint', 'CVODE', 'BDF'] = 'odeint'
-    use_core_edge: bool = True
-    threshold: confloat(gt=0) = 1e-3
+    time_units : TerminationTimeEnum = TerminationTimeEnum.s # time units for the simulation, default is seconds
+
+    #rate_law: Literal['Michaelis-Menten', 'Hill', 'MassAction'] # This line is commented out, so it's not part of the schema
+    toleranceKeepInEdge: confloat(gt=0) = 0 #threshold for
+    toleranceMoveToCore: confloat(gt=0) = 1e-5 # threshold for moving species from edge to core
+    termination_conversion: Optional[Dict[str, confloat(gt=0, lt=1)]] = None # species: fraction of species that should be converted to termination species
+    termination_rate_ratio: Optional[confloat(gt=0, lt=1)] = None # ADDED THIS LINE: termination_rate_ratio field
+    max_edge_species: Optional[conint(gt=0)] = None # maximum number of species in the edge
+    filter_reactions: bool = True # whether to filter reactions based on species constraints
+    modify_concentration_ranges_together: bool = True
+
     max_iterations: conint(gt=0) = 50
-    ml_models_enabled: bool = True
-    stop_at_steady_state: bool = True
-    termination_conversion: Optional[Dict[str, confloat(gt=0, lt=1)]] = None
-    termination_rate_ratio: Optional[confloat(gt=0, lt=1)] = None
-    verbose: Optional[conint(ge=10, le=50)] = 20 # Added this field
-    output_directory: Optional[str] = None # Added this field
-    flux_adapter: Literal['RMG', 'Cantera', 'Custom'] = 'RMG' # Added this field
-    profiles_adapter: Literal['RMG', 'Cantera', 'Custom'] = 'RMG' # Added this field
-    generate_plots: bool = False # Added this field
-    save_simulation_profiles: bool = False # Added this field
+    verbose: Optional[conint(ge=10, le=50)] = 20
+    saveEdgeSpecies: bool = True # Corrected syntax: removed '=' before bool and trailing comma
+    output_directory: Optional[str] = None
+    generate_plots: bool = False
+    save_simulation_profiles: bool = False
 
     class Config:
         extra = "forbid"
@@ -172,7 +199,7 @@ class Settings(BaseModel):
             raise ValueError("termination_rate_ratio must be between 0 and 1 (exclusive).")
         return value
 
-    @field_validator('verbose') # Re-added this custom validator
+    @field_validator('verbose')
     def validate_verbose_level(cls, value):
         if value is not None and value not in [10, 20, 30, 40, 50]:
             raise ValueError("Verbose level must be 10, 20, 30, 40, or 50")
@@ -181,16 +208,18 @@ class Settings(BaseModel):
 
 class SpeciesConstraints(BaseModel):
     allowed: List[Literal['input species', 'seed mechanisms', 'reaction libraries']] = ['input species', 'seed mechanisms', 'reaction libraries']
-    max_C_atoms: Optional[conint(gt=0)] = None
-    max_O_atoms: Optional[conint(gt=0)] = None
-    max_N_atoms: Optional[conint(gt=0)] = None
-    max_Si_atoms: Optional[conint(gt=0)] = None
-    max_S_atoms: Optional[conint(gt=0)] = None
-    max_heavy_atoms: Optional[conint(gt=0)] = None
-    max_radical_electrons: Optional[conint(ge=0)] = None
-    max_singlet_carbenes: Optional[conint(ge=0)] = 1
-    max_carbene_radicals: Optional[conint(ge=0)] = 0
-    allow_singlet_O2: bool = True
+    # Removed 'termination_conversion' from here to avoid duplication, it's in Settings now.
+    tolerance_thermo_keep_species_in_edge: Optional[confloat(gt=0)] = None # Tolerance for thermodynamic properties to keep species in the edge (e.g., max deviation from a threshold)
+    max_C_atoms: Optional[conint(gt=0)] = None # Maximum number of Carbon atoms allowed in generated species
+    max_O_atoms: Optional[conint(gt=0)] = None # Maximum number of Oxygen atoms allowed in generated species
+    max_N_atoms: Optional[conint(gt=0)] = None # Maximum number of Nitrogen atoms allowed in generated species
+    max_Si_atoms: Optional[conint(gt=0)] = None # Maximum number of Silicon atoms allowed in generated species
+    max_S_atoms: Optional[conint(gt=0)] = None # Maximum number of Sulfur atoms allowed in generated species
+    max_heavy_atoms: Optional[conint(gt=0)] = None # Maximum number of heavy (non-hydrogen) atoms allowed in generated species
+    max_radical_electrons: Optional[conint(ge=0)] = None # Maximum number of unpaired electrons (radicals) allowed in generated species
+    max_singlet_carbenes: Optional[conint(ge=0)] = 1 # Maximum number of singlet carbenes allowed in generated species
+    max_carbene_radicals: Optional[conint(ge=0)] = 0 # Maximum number of carbene radicals allowed in generated species
+    allow_singlet_O2: bool = True # Whether to allow singlet oxygen (O2(a1Δg)) as an input species
 
     class Config:
         extra = "forbid"
@@ -204,15 +233,16 @@ class SpeciesConstraints(BaseModel):
 
 class Database(BaseModel):
     name: constr(min_length=1)
-    rate_law: Literal['Michaelis-Menten', 'Hill', 'MassAction']
-    parameter_estimator: Literal['ML', 'group_contribution', 'fixed_defaults'] = 'ML'
     parameters: Optional[Dict[str, float]] = None
     thermo_libraries: Optional[List[str]] = None
     kinetics_libraries: Optional[List[str]] = None
+    chemistry_sets: Optional[List[str]] = None # Pre-defined collections of species and reactions to include
     use_low_credence_libraries: bool = False
-    kinetics_depositories: Union[List[str], Literal['default']] = 'default'
-    kinetics_families: Union[List[str], Literal['default']] = 'default'
-    species_constraints: Optional[SpeciesConstraints] = None
+    seed_mechanism: Optional[List[str]] = None # Corrected syntax: removed '=' before Optional
+    kinetics_depositories: Union[List[str], Literal['default']] = 'default' # Pre-defined kinetics depositories to use. 'default' will be a list of common depositories.
+    kinetics_families: Union[List[str], Literal['default']] = 'default' # Pre-defined kinetics families to use. 'default' will be a list of common families.
+    solver: Literal['odeint', 'CVODE', 'BDF'] = 'odeint' # Name of the ODE solver to use for kinetic simulations.
+    kinetics_estimator: str = 'rate rules' # Name of the kinetics estimator to use, default is 'rate rules', but more might be added in the future.
 
     class Config:
         extra = "forbid"
@@ -259,17 +289,10 @@ class Database(BaseModel):
                     raise ValueError("Each kinetics family must be a string")
         return value
 
-    @field_validator('species_constraints')
-    def validate_species_constraints_type(cls, value):
-        if value is not None and not isinstance(value, SpeciesConstraints):
-            raise ValueError("species_constraints must be an instance of SpeciesConstraints")
-        return value
-
 
 class InputBase(BaseModel):
     project: constr(max_length=255)
     project_directory: Optional[constr(max_length=255)] = None
-    verbose: Optional[conint(ge=10, le=50)] = 20 # Moved to Settings
     species: List[Species]
     enzymes: List[Enzyme]
     environment: Environment

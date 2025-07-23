@@ -41,25 +41,22 @@ class Logger(object):
     The Bees Logger class.
 
     This class is responsible for setting up and configuring the global 'bees' logger.
-    It should be instantiated once at the very beginning of the BEES application's
-    execution (typically in main.py) to configure the logging system.
+    It should be instantiated once at the very beginning of the BEES application's execution (in main.py) to configure the logging system.
 
-    It manages console output, a comprehensive main log file, and a dedicated error log file.
+    It manages console output, a log file and an error log file.
   
-
     Args:
-        project (str): The project name.
         project_directory (str): The project directory path.
         verbose (Optional[int]): The logging level, optional. 10 - debug, 20 - info, 30 - warning.
                                  ``None`` to avoid logging to file.
-        t0 (datetime.datetime): Initial time when the project was spawned, stored as a datetime object.
+        t0 (float): Initial time when the project was spawned, stored as a float (from time.time()).
 
     Attributes:
-        project (str): The project name.
+        project (str): The project name (derived from project_directory).
         project_directory (str): The project directory path.
         verbose (Optional[int]): The logging level, optional. 10 - debug, 20 - info, 30 - warning.
                                  ``None`` to avoid logging to file.
-        t0 (datetime.datetime): Initial time when the project was spawned, stored as a datetime object.
+        t0 (float): Initial time when the project was spawned, stored as a float.
         log_file (str): The path to the log file.
     """
 
@@ -67,21 +64,20 @@ class Logger(object):
     _initialized = False
 
     def __init__(self,
-                 project: str,
                  project_directory: str,
                  verbose: Optional[int],
-                 t0: datetime.datetime,
+                 t0: float, # Changed type hint to float
                  ):
         
         if Logger._initialized:
             # If the logger has already been initialized, skip reconfiguration to prevent duplicates.
             return
         
-
-        self.project = project
+        # Derive project name from project_directory for logging purposes
+        self.project = os.path.basename(project_directory) 
         self.project_directory = project_directory
         self.t0 = t0
-        self.log_file = os.path.join(self.project_directory, 'bees.log')
+        self.log_file = os.path.join(self.project_directory, 'bees.log') # This seems redundant with main_log_file_path
 
         # Map the custom verbose level to Python's standard logging levels.
         # If verbose is None, default to INFO for console output.
@@ -96,7 +92,7 @@ class Logger(object):
         self.main_file_level = logging.DEBUG  # Main log file logs everything from DEBUG up
         self.error_file_level = logging.ERROR # Error log file logs only ERROR and CRITICAL
 
-        self._setup_handlers()
+        self.setup_handlers()
 
         # Mark the logger as initialized to prevent future re-configurations.
         Logger._initialized = True
@@ -107,10 +103,10 @@ class Logger(object):
         self.info(f"Console output level: {logging.getLevelName(self.console_level)}")
         self.info(f"Main log file: {self.main_log_file_path} (level: {logging.getLevelName(self.main_file_level)})")
         self.info(f"Error log file: {self.error_log_file_path} (level: {logging.getLevelName(self.error_file_level)})")
-        self.info(f"Project '{self.project}' started at: {self.t0.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.info(f"Project '{self.project}' started at: {datetime.datetime.fromtimestamp(self.t0).strftime('%Y-%m-%d %H:%M:%S')}") # Convert timestamp to datetime object for logging
 
 
-    def _setup_handlers(self):
+    def setup_handlers(self):
         """
         Configures and attaches handlers (console, main file, error file) to the global 'BEES' logger.
         Also handles backing up existing log files before creating new ones.
@@ -257,14 +253,21 @@ class Logger(object):
         execution_time = common.time_lapse(self.t0)
         self.always(f'Terminating BEES due to time limit.\n'
                  f'Max time set: {max_time}\n'
-                 f'Current run time: {execution_time}\n', level='always')
+                 f'Current run time: {execution_time}\n')
 
-    def log_footer(self):
+    def log_footer(self, success: bool = True): # Added success parameter
         """
         Output a footer to the log.
+
+        Args:
+            success (bool): True if the execution was successful, False otherwise.
         """
         execution_time = time_lapse(self.t0)
         self.always(f'\n\n\nTotal BEES execution time: {execution_time}')
+        if success:
+            self.always('BEES execution completed successfully.')
+        else:
+            self.always('BEES execution terminated with errors.')
         self.always(f'BEES execution terminated on {time.asctime()}\n')
 
     def log_species_to_calculate(self,
@@ -272,7 +275,7 @@ class Logger(object):
                                  species_dict: Dict[int, dict]):
         """
         Report the species to be calculated in the next iteration.
-        The 'QM label' is used for reporting, it is principally the
+        The 'label' is used for reporting, it is principally the
         BEES species label as entered by the user, or the label determined
         by BEES if it does not contain forbidden characters and is
         descriptive (i.e., NOT "S(1056)").
@@ -287,8 +290,12 @@ class Logger(object):
             self.info('\n\nSpecies to calculate thermodynamic data for:')
             # Handle cases where species_dict might be empty or missing 'object'
             try:
-                max_label_length = max([len(spc_dict['QM label']) for key, spc_dict in species_dict.items() if key in species_keys] + [6])
-                max_smiles_length = max([len(spc_dict['object'].molecule[0].to_smiles()) for key, spc_dict in species_dict.items() if key in species_keys] + [6])
+                max_label_length = max([len(spc_dict['label']) for key, spc_dict in species_dict.items() if key in species_keys] + [6])
+                # Ensure 'object' and 'molecule' exist before trying to call to_smiles()
+                max_smiles_length = max([len(spc_dict['object'].molecule[0].to_smiles()) 
+                                        for key, spc_dict in species_dict.items() 
+                                        if key in species_keys and 'object' in spc_dict and spc_dict['object'] and hasattr(spc_dict['object'], 'molecule') and spc_dict['object'].molecule
+                                        ] + [6])
             except (KeyError, AttributeError):
                 self.warning("Could not determine max label/SMILES length for species logging. Missing keys or attributes in species_dict.")
                 max_label_length = 20 # Default
@@ -301,14 +308,18 @@ class Logger(object):
             for key in species_keys:
                 spc_dict = species_dict[key]
                 try:
-                    smiles = spc_dict['object'].molecule[0].to_smiles()
+                    # Check if 'object' and 'molecule' exist before accessing
+                    if 'object' in spc_dict and spc_dict['object'] and hasattr(spc_dict['object'], 'molecule') and spc_dict['object'].molecule:
+                        smiles = spc_dict['object'].molecule[0].to_smiles()
+                    else:
+                        smiles = "N/A" # Fallback if SMILES object is not available
                 except (KeyError, AttributeError):
                     smiles = "N/A" # Fallback if SMILES object is not available
-                space1 = ' ' * (max_label_length - len(spc_dict.get('QM label', 'N/A')) + 1)
+                space1 = ' ' * (max_label_length - len(spc_dict.get('label', 'N/A')) + 1)
                 space2 = ' ' * (max_smiles_length - len(smiles) + 1)
                 reasons = spc_dict.get('reasons', ['No reason provided'])
                 one = '1. ' if len(reasons) > 1 else '   '
-                self.info(f"{spc_dict.get('QM label', 'N/A')}{space1} {smiles}{space2} {one}{reasons[0]}")
+                self.info(f"{spc_dict.get('label', 'N/A')}{space1} {smiles}{space2} {one}{reasons[0]}")
                 for j, reason in enumerate(reasons):
                     if j > 0:
                         self.info(f"{' ' * (max_label_length + max_smiles_length + 4)}{j + 1}. {reasons[j]}")
@@ -320,7 +331,7 @@ class Logger(object):
                                    reaction_dict: Dict[int, dict]):
         """
         Report reaction rate coefficients to be calculated in the next iteration.
-        The reaction 'QM label' is used for reporting.
+        The reaction 'label' is used for reporting.
 
         Args:
             reaction_keys (List[int]): Entries are bees reaction indices.
@@ -330,7 +341,7 @@ class Logger(object):
             if len(reaction_keys):
              self.info('\n\nReactions to calculate high-pressure limit rate coefficients for:')
             try:
-                max_label_length = max([len(rxn_dict['QM label']) for key, rxn_dict in reaction_dict.items() if key in reaction_keys] + [6])
+                max_label_length = max([len(rxn_dict['label']) for key, rxn_dict in reaction_dict.items() if key in reaction_keys] + [6])
                 max_smiles_length = max([len(rxn_dict['SMILES label']) for key, rxn_dict in reaction_dict.items() if key in reaction_keys] + [6])
             except (KeyError, AttributeError):
                 self.warning("Could not determine max label/SMILES length for reactions logging. Missing keys or attributes in reaction_dict.")
@@ -342,8 +353,8 @@ class Logger(object):
             self.info(f'-----{space1} ---------------------------------------')
             for key in reaction_keys:
                 rxn_dict = reaction_dict[key]
-                space1 = ' ' * (max_label_length - len(rxn_dict.get('QM label', 'N/A')) + 1)
-                self.info(f"\n{rxn_dict.get('QM label', 'N/A')}{space1} {rxn_dict.get('reasons', 'No reason provided')}")
+                space1 = ' ' * (max_label_length - len(rxn_dict.get('label', 'N/A')) + 1)
+                self.info(f"\n{rxn_dict.get('label', 'N/A')}{space1} {rxn_dict.get('reasons', 'No reason provided')}")
                 self.info(f"{rxn_dict.get('SMILES label', 'N/A')}\n")
                 if hasattr(rxn_dict.get('object'), 'family') and rxn_dict['object'].family is not None:
                     label = rxn_dict['object'].family if isinstance(rxn_dict['object'].family, str) \
@@ -354,7 +365,7 @@ class Logger(object):
     def log_species_summary(self, species_dict: Dict[int, dict]):
         """
         Report species summary.
-        Assumes species_dict contains 'QM label', 'object' (with molecule attribute) and 'reasons' and 'converged'.
+        Assumes species_dict contains 'label', 'object' (with molecule attribute) and 'reasons' and 'converged'.
     
         Args:
             species_dict (dict): The bees species dictionary.
@@ -364,8 +375,11 @@ class Logger(object):
             converged_keys, unconverged_keys = _get_converged_and_unconverged_keys(species_dict)
 
             try:
-                max_label_length = max([len(spc_dict['QM label']) for spc_dict in species_dict.values()] + [6])
-                max_smiles_length = max([len(spc_dict['object'].molecule[0].to_smiles()) for spc_dict in species_dict.values()] + [6])
+                max_label_length = max([len(spc_dict['label']) for spc_dict in species_dict.values()] + [6])
+                max_smiles_length = max([len(spc_dict['object'].molecule[0].to_smiles()) 
+                                        for spc_dict in species_dict.values() 
+                                        if 'object' in spc_dict and spc_dict['object'] and hasattr(spc_dict['object'], 'molecule') and spc_dict['object'].molecule
+                                        ] + [6])
             except (KeyError, AttributeError):
                 self.warning("Could not determine max label/SMILES length for species summary. Missing keys or attributes in species_dict.")
                 max_label_length = 20
@@ -380,12 +394,15 @@ class Logger(object):
                 for key in converged_keys:
                     spc_dict = species_dict[key]
                     try:
-                        smiles = spc_dict['object'].molecule[0].to_smiles()
+                        if 'object' in spc_dict and spc_dict['object'] and hasattr(spc_dict['object'], 'molecule') and spc_dict['object'].molecule:
+                            smiles = spc_dict['object'].molecule[0].to_smiles()
+                        else:
+                            smiles = "N/A"
                     except (KeyError, AttributeError):
                         smiles = "N/A"
-                    space1 = ' ' * (max_label_length - len(spc_dict.get('QM label', 'N/A')) + 1)
+                    space1 = ' ' * (max_label_length - len(spc_dict.get('label', 'N/A')) + 1)
                     space2 = ' ' * (max_smiles_length - len(smiles) + 1)
-                    self.info(f"{spc_dict.get('QM label', 'N/A')}{space1} {smiles}{space2} {spc_dict.get('reasons', 'No reason provided')}")
+                    self.info(f"{spc_dict.get('label', 'N/A')}{space1} {smiles}{space2} {spc_dict.get('reasons', 'No reason provided')}")
             else:
                 self.info('\nNo species thermodynamic calculation converged!')
 
@@ -398,12 +415,15 @@ class Logger(object):
                 for key in unconverged_keys:
                     spc_dict = species_dict[key]
                     try:
-                        smiles = spc_dict['object'].molecule[0].to_smiles()
+                        if 'object' in spc_dict and spc_dict['object'] and hasattr(spc_dict['object'], 'molecule') and spc_dict['object'].molecule:
+                            smiles = spc_dict['object'].molecule[0].to_smiles()
+                        else:
+                            smiles = "N/A"
                     except (KeyError, AttributeError):
                         smiles = "N/A"
-                    space1 = ' ' * (max_label_length - len(spc_dict.get('QM label', 'N/A')) + 1)
+                    space1 = ' ' * (max_label_length - len(spc_dict.get('label', 'N/A')) + 1)
                     space2 = ' ' * (max_smiles_length - len(smiles) + 1)
-                    self.info(f"(FAILED) {spc_dict.get('QM label', 'N/A')}{space1} "
+                    self.info(f"(FAILED) {spc_dict.get('label', 'N/A')}{space1} "
                               f"{smiles}{space2} {spc_dict.get('reasons', 'No reason provided')}")
             else:
                 self.info('\nAll species calculated by BEES successfully converged')
@@ -422,9 +442,9 @@ class Logger(object):
             converged_keys, unconverged_keys = _get_converged_and_unconverged_keys(reactions_dict)
 
             try:
-                max_label_length = max([len(rxn_dict['QM label']) for rxn_dict in reactions_dict.values()] + [6])
+                max_label_length = max([len(rxn_dict['label']) for rxn_dict in reactions_dict.values()] + [6])
             except KeyError:
-                self.warning("Could not determine max label length for reactions summary. Missing 'QM label' in reaction_dict.")
+                self.warning("Could not determine max label length for reactions summary. Missing 'label' in reaction_dict.")
                 max_label_length = 20
 
             if len(converged_keys):
@@ -434,8 +454,8 @@ class Logger(object):
                 self.info(f'-----{space1} ---------------------------------------------------------')
                 for key in converged_keys:
                     rxn_dict = reactions_dict[key]
-                    space1 = ' ' * (max_label_length - len(rxn_dict.get('QM label', 'N/A')) + 1)
-                    self.info(f"{rxn_dict.get('QM label', 'N/A')}{space1} {rxn_dict.get('reasons', 'No reason provided')}")
+                    space1 = ' ' * (max_label_length - len(rxn_dict.get('label', 'N/A')) + 1)
+                    self.info(f"{rxn_dict.get('label', 'N/A')}{space1} {rxn_dict.get('reasons', 'No reason provided')}")
             else:
                 self.info('\nNo reaction rate coefficient calculation converged!')
 
@@ -446,8 +466,8 @@ class Logger(object):
                 self.info(f'        -----{space1} ---------------------------------------------------------')
                 for key in unconverged_keys:
                     rxn_dict = reactions_dict[key]
-                    space1 = ' ' * (max_label_length - len(rxn_dict.get('QM label', 'N/A')) + 1)
-                    self.info(f"(FAILED) {rxn_dict.get('QM label', 'N/A')}{space1} {rxn_dict.get('reasons', 'No reason provided')}")
+                    space1 = ' ' * (max_label_length - len(rxn_dict.get('label', 'N/A')) + 1)
+                    self.info(f"(FAILED) {rxn_dict.get('label', 'N/A')}{space1} {rxn_dict.get('reasons', 'No reason provided')}")
             else:
                 self.info('\nAll reaction rate coefficients calculations in this iteration successfully converged.')
 
@@ -470,32 +490,33 @@ class Logger(object):
         if len(species_keys):
             self.info('\nThermodynamic calculations for the following species did NOT converge:')
             try:
-                max_label_length = max([len(spc_dict['QM label'])
+                max_label_length = max([len(spc_dict['label'])
                                     for key, spc_dict in species_dict.items() if key in species_keys] + [6])
             except KeyError:
-                self.warning("Could not determine max label length for species logging. Missing 'QM label' in species_dict.")
+                self.warning("Could not determine max label length for species logging. Missing 'label' in species_dict.")
                 max_label_length = 20
             space1 = ' ' * (max_label_length - len('label') + 1)
             self.info(f'Label{space1} SMILES')
             self.info(f'-----{space1} ------')
             for key in species_keys:
                 spc_dict = species_dict[key]
-                label = spc_dict.get('QM label', 'N/A')
+                label = spc_dict.get('label', 'N/A')
                 space1 = ' ' * (max_label_length - len(label))
-                try:
-                    smiles = spc_dict['object'].molecule[0].to_smiles()
+                try:# Check if 'object' and 'molecule' exist before accessing
+                    if 'object' in spc_dict and spc_dict['object'] and hasattr(spc_dict['object'], 'molecule') and spc_dict['object'].molecule:
+                        smiles = spc_dict['object'].molecule[0].to_smiles()
+                    else:
+                        smiles = "N/A"
                 except (KeyError, AttributeError):
                     smiles = "N/A"
                 self.info(f"{label}{space1} {smiles}")
-            self.info('\n')
         elif len(species_dict.keys()):
             self.info('\nAll species thermodynamic calculations in this iteration successfully converged.\n')
 
         if len(reaction_keys):
             self.info('\nRate coefficient calculations for the following reactions did NOT converge:')
             for key in reaction_keys:
-                self.info(reaction_dict[key].get('QM label', 'N/A'))
-            self.info('\n')
+                self.info(reaction_dict[key].get('label', 'N/A'))
         elif len(reaction_dict.keys()):
             self.info('\nAll reaction rate coefficients calculations in this iteration successfully converged.\n')
 
