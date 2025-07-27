@@ -24,7 +24,7 @@ class Species(BaseModel):
     A class for validate input.BEES.Species arguments.
     """
     label: str
-    concentration: Union[confloat(gt=0), Tuple[confloat(gt=0), confloat(gt=0)]] = None
+    concentration: Union[confloat, Tuple[confloat, confloat]] = None
     smiles: Optional[str] = None
     inchi: Optional[str] = None
     adjlist: Optional[str] = None
@@ -129,6 +129,7 @@ class Environment(BaseModel):
     ionic_strength: Optional[confloat(ge=0)] = None
     oxygen_level: Optional[confloat(ge=0, le=1)] = None
     seed_mechanisms: Optional[List[str]] = None # pre-defined known or hypothesized reaction that we want to include from the beginning.
+#Todo: see if there is more things to add here 
 
     class Config:
         extra = "forbid"

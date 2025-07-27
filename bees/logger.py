@@ -41,10 +41,12 @@ class Logger(object):
     The Bees Logger class.
 
     This class is responsible for setting up and configuring the global 'bees' logger.
-    It should be instantiated once at the very beginning of the BEES application's execution (in main.py) to configure the logging system.
+    It should be instantiated once at the very beginning of the BEES application's
+    execution (typically in main.py) to configure the logging system.
 
-    It manages console output, a log file and an error log file.
+    It manages console output, a comprehensive main log file, and a dedicated error log file.
   
+
     Args:
         project_directory (str): The project directory path.
         verbose (Optional[int]): The logging level, optional. 10 - debug, 20 - info, 30 - warning.
@@ -92,7 +94,7 @@ class Logger(object):
         self.main_file_level = logging.DEBUG  # Main log file logs everything from DEBUG up
         self.error_file_level = logging.ERROR # Error log file logs only ERROR and CRITICAL
 
-        self.setup_handlers()
+        self._setup_handlers()
 
         # Mark the logger as initialized to prevent future re-configurations.
         Logger._initialized = True
@@ -106,7 +108,7 @@ class Logger(object):
         self.info(f"Project '{self.project}' started at: {datetime.datetime.fromtimestamp(self.t0).strftime('%Y-%m-%d %H:%M:%S')}") # Convert timestamp to datetime object for logging
 
 
-    def setup_handlers(self):
+    def _setup_handlers(self):
         """
         Configures and attaches handlers (console, main file, error file) to the global 'BEES' logger.
         Also handles backing up existing log files before creating new ones.
@@ -471,7 +473,6 @@ class Logger(object):
             else:
                 self.info('\nAll reaction rate coefficients calculations in this iteration successfully converged.')
 
-  
     def log_unconverged_species_and_reactions(self,
                                               species_keys: List[int],
                                               species_dict: Dict[int, dict],
@@ -491,7 +492,7 @@ class Logger(object):
             self.info('\nThermodynamic calculations for the following species did NOT converge:')
             try:
                 max_label_length = max([len(spc_dict['label'])
-                                    for key, spc_dict in species_dict.items() if key in species_keys] + [6])
+                                        for key, spc_dict in species_dict.items() if key in species_keys] + [6])
             except KeyError:
                 self.warning("Could not determine max label length for species logging. Missing 'label' in species_dict.")
                 max_label_length = 20
@@ -502,7 +503,7 @@ class Logger(object):
                 spc_dict = species_dict[key]
                 label = spc_dict.get('label', 'N/A')
                 space1 = ' ' * (max_label_length - len(label))
-                try:# Check if 'object' and 'molecule' exist before accessing
+                try:
                     if 'object' in spc_dict and spc_dict['object'] and hasattr(spc_dict['object'], 'molecule') and spc_dict['object'].molecule:
                         smiles = spc_dict['object'].molecule[0].to_smiles()
                     else:
@@ -510,6 +511,7 @@ class Logger(object):
                 except (KeyError, AttributeError):
                     smiles = "N/A"
                 self.info(f"{label}{space1} {smiles}")
+            self.info('\n')
         elif len(species_dict.keys()):
             self.info('\nAll species thermodynamic calculations in this iteration successfully converged.\n')
 
@@ -517,6 +519,7 @@ class Logger(object):
             self.info('\nRate coefficient calculations for the following reactions did NOT converge:')
             for key in reaction_keys:
                 self.info(reaction_dict[key].get('label', 'N/A'))
+            self.info('\n')
         elif len(reaction_dict.keys()):
             self.info('\nAll reaction rate coefficients calculations in this iteration successfully converged.\n')
 

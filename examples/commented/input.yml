@@ -1,119 +1,127 @@
 # A commented version of BEES input file
-# BEES Input Configuration File
 
-
-
-# This file defines the parameters for a BEES project, including species, enzymes,
-# environment conditions, database settings, and general application settings.
-
-
-
+"""
+BEES Input Configuration File
+This file defines the parameters for a BEES project, including species, enzymes, environment conditions, database and settings according to the schema.
+"""
 
 # --- Project Information ---
-# 'project': Required. The name of your BEES project. This will also be used
-#            to create the project directory.
+# 'project': Required. The name of your BEES project. This will also be used to create the project directory. Max length is 255 characters.
 project: MyFirstBEESProject
+project dirctory: /home/omerkfir/BEES/examples/commented
 
-# 'project_directory': Optional. The base directory where project files will be stored.
-#                      If not specified, it defaults to 'projects/<project_name>'
-#                      relative to the BEES installation path.
+# 'project_directory': Optional. The base directory where project files will be stored. If not specified, it defaults to 'projects/<project_name>'. relative to the BEES installation path. Max length is 255 characters.
 # project_directory: /path/to/your/custom/project_root
 
 # --- Species Definition ---
 # 'species': Required. A list of chemical species involved in your biochemical system.
-#            Each species must have a 'label' and 'concentration'.
-#            'smiles' or 'inchi' are recommended for structural definition.
+#            Must contain at least one species.
 species:
   - label: Glucose
-    concentration: 0.01  # Initial concentration in appropriate units (e.g., Molar)
-    smiles: C(C1C(C(C(C(O1)CO)O)O)O)O # D-Glucose
-    reactive: true # Optional, default: true. Whether this species participates in reactions.
-    observable: true # Optional, default: false. Whether to track this species' concentration profiles.
+    concentration: 0.01  # Required. Initial concentration. Must be greater than 0.
+                         # Can be a single float or a tuple (min, max) for a range.
+    smiles: C(C1C(C(C(C(O1)CO)O)O)O)O # Optional. SMILES string for structural definition.
+    # inchi: InChI=1S/C6H12O6/c7-1-2-3(8)4(9)5(10)6(11)12-3/h2-6,8-11H,1H2/t2-,3-,4+,5-,6?/m1/s1 # Optional. InChI string.
+    # adjlist: Optional. Adjacency list representation.
+    charge: 0 #  The charge of the species. Optional, default: 0.
+    constant: false #  Whether this species' concentration remains constant. Optional, default: false.
+    reactive: true #  Whether this species participates in reactions. Optional, default: true.
+    observable: true #  Whether to track this species' concentration profiles. Optional, default: true.
+    solvent: false #  Indicates if this is the solvent. Optional, default: false.
+    
+    #Todo: right now, I don't know how to handle these fields in the schema but I still write it down here 
+    # xyz: Optional. XYZ coordinates for the species (dict or string). 
 
   - label: ATP
     concentration: 0.005
-    # For complex molecules like ATP, we might use InChI or a placeholder if SMILES is too long
-    # For this example, a simplified representation or placeholder is used.
-    # InChI: InChI=1S/C10H16N5O13P3/c11-8-5-9(13-2-12-8)15(3-14-5)10-7(17)6(16)4(26-10)1-25-30(21,22)28-31(23,24)27-29(18,19)20/h2-4,6-7,10,16-17H,1H2,(H,11,12)(H,18,19,20)(H,21,22)(H,23,24)/t4-,6-,7-,10-/m1/s1
     smiles: N1C=NC2=C1N=CN=C2C3C(C(C(O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O # ATP (simplified)
     reactive: true
+    observable: true # Added to match default if not explicitly set
 
   - label: Water
     concentration: 55.5 # Molar concentration of water
     smiles: O
-    solvent: true # Optional, default: false. Indicates if this is the solvent.
+    solvent: true #  Indicates if this is the solvent. Optional, default: false.
+    reactive: true # Added to match default if not explicitly set
+    observable: true # Added to match default if not explicitly set
+
 
 # --- Enzyme Definition ---
 # 'enzymes': Required. A list of enzymes involved in your biochemical system.
-#            Each enzyme must have a 'label' and 'concentration'.
-#            'ecnumber' is optional but recommended for identification.
+#            Must contain at least one enzyme.
+#            Enzymes inherit properties from Species.
+
 enzymes:
   - label: Hexokinase
-    concentration: 1e-6 # Enzyme concentration (e.g., Molar)
-    ecnumber: EC 2.7.1.1 # Example EC number for Hexokinase
-    reactive: true
+    concentration: 1e-6 # Enzyme concentration (e.g., Molar). Required. 
+    ecnumber: EC 2.7.1.1 # EC number (e.g., 'EC 2.7.1.1'). Must match pattern '^EC \d+\.\d+\.\d+\.\d+$'. Optional becuse if there is SMILES or InChI, it can also be used to find the EC number.
+    reactive: true #  Whether this enzyme participates in reactions. Optional, default: true.
+    
+    # Add other inherited Species attributes if needed, e.g., smiles, observable,
+    # smiles: Optional. SMILES string for the enzyme.
+  
 
   - label: Phosphofructokinase
     concentration: 5e-7
     ecnumber: EC 2.7.1.11
     reactive: true
+    observable: true # Added to match default if not explicitly set
 
 
 # --- Environment Settings ---
 # 'environment': Required. Defines the physical and chemical conditions of the system.
 environment:
-  temperature: 310.15 # Temperature in Kelvin (e.g., 37 C)
-  pH: 7.4 # pH level of the solution, must be between 0 and 14
-  ionic_strength: 0.15 # Optional. Ionic strength in Molar (e.g., for buffer)
-  oxygen_level: 0.21 # Optional. Oxygen level (e.g., mole fraction or saturation, 0-1)
-  seed_mechanisms: [] # Optional. List of paths to seed mechanisms (e.g., pre-defined reaction networks)
+  temperature: 310.15 # Required. Temperature in Kelvin. Must be greater than 0.
+                       # Can be a single float or a tuple (min, max) for a range.
+  pH: 7.4 # Required. pH level of the solution. Must be between 0 and 14.
+          # Can be a single float or a tuple (min, max) for a range.
+  ionic_strength: 0.15 # Ionic strength (measure of the concentration of ions in that solution) in Molar (must be >= 0). Optional, default: None. 
+  oxygen_level: 0.21 # Oxygen level (e.g., mole fraction or saturation, 0-1). Optional, default: None. 
+  seed_mechanisms: [] # List of paths to seed mechanisms (e.g., pre-defined reaction networks). Optional, default: None. 
 
 
 # --- Database Settings ---
 # 'database': Required. Configures how BEES accesses kinetic and thermodynamic data.
 database:
-  name: BEES_KineticDB # A name for your database instance
-  thermo_libraries: [] # Optional. List of thermodynamic libraries to use (e.g., ['MyCustomThermoLib'])
-  kinetics_libraries: [] # Optional. List of kinetics libraries to use
-  use_low_credence_libraries: false # Optional, default: false. Whether to use less reliable libraries.
-  kinetics_depositories: default # Optional, default: 'default'. Kinetics data sources.
-  kinetics_families: default # Optional, default: 'default'. Reaction families to consider.
-  parameter_estimator: ML # Required. Method for estimating kinetic parameters.
-                          # Options: "ML", "group_contribution", "fixed_defaults"
-  rate_law: Michaelis-Menten # Required. The kinetic rate law to apply.
-                             # Options: "Michaelis-Menten", "Hill", "MassAction"
-  parameters: # Optional. Specific parameters to override or provide (e.g., for custom rate laws)
+  name: BEES_KineticDB # Required. A name for your database instance. Must not be empty.
+  parameters: # Specific parameters to override or provide (e.g., for custom rate laws). Optional, default: None. 
+              # This is a dictionary of string keys to float values.
     kcat_Hexokinase: 100
     Km_Glucose_Hexokinase: 0.001
-  # species_constraints: # Optional. Constraints for species generation (if applicable)
-  #   allowed: ['input species'] # Example: only allow species from input
-  #   max_C_atoms: 6
-  #   max_heavy_atoms: 12
+  thermo_libraries: [] #  List of thermodynamic libraries to use (e.g., ['MyCustomThermoLib']). Optional, default: None.
+  kinetics_libraries: [] # List of kinetics libraries to use.
+  use_low_credence_libraries: false # Whether to use less reliable libraries.
+  kinetics_depositories: default # Kinetics data sources. Can be 'default' or a list of strings. Optional, default: 'default'
+  kinetics_families: default # Reaction families to consider. Can be 'default' or a list of strings. Optional, default: None.
+  # The following fields were missing in your input.yml but are REQUIRED by your schema.py
+  # I've added them here with example values.
+  solver: odeint # Required. Numerical solver for ODEs. Options: "odeint", "CVODE", "BDF".
+  kinetics_estimator: rate rules # Required. Method for estimating kinetic parameters.
+                                 # This is a string field in schema, not an enum.
+                                 # Example: "rate rules", "ML", "group_contribution", "fixed_defaults"
+
 
 # --- Application Settings ---
 # 'settings': Required. General operational settings for the BEES application.
 settings:
-  end_time: 3600.0 # Required. Simulation end time in seconds.
-  time_step: 1.0 # Required. Simulation time step in seconds. Must be < end_time.
-  solver: odeint # Required. Numerical solver for ODEs. Options: "odeint", "CVODE", "custom"
-  use_core_edge: true # Optional, default: true. Whether to use core/edge model reduction.
-  threshold: 1.0e-3 # Optional, default: 1e-3. Threshold for model reduction/pruning.
-  max_iterations: 50 # Optional, default: 50. Maximum iterations for iterative refinement.
-  ml_models_enabled: true # Optional, default: true. Whether to use machine learning models.
-  stop_at_steady_state: true # Optional, default: true. Stop simulation if steady state is reached.
-  termination_conversion: # Optional. Terminate simulation when species conversion reaches a fraction.
+  end_time: 3600.0 # Required. Simulation end time. Must be greater than 0.
+  time_step: 1.0 # Required. Simulation time step. Must be greater than 0.
+  time_units: s # . Units for end_time and time_step. Optional, default: 's'
+                # Options: 'micro-s', 'ms', 's', 'hrs', 'minutes', 'hours', 'days'.
+  toleranceKeepInEdge: 0.0 #  Tolerance for keeping species in edge. Must be >= 0. Optional, default: 0.0.
+  toleranceMoveToCore: 1e-5 # . Tolerance for moving species to core. Must be >= 0. Optional, default: 1e-5
+  termination_conversion: #  Terminate simulation when species conversion reaches a fraction. Optional, default: None.
+                          # Dictionary mapping species label to conversion fraction (0 < value < 1).
     Glucose: 0.9 # Terminate when Glucose conversion reaches 90%
-  termination_rate_ratio: 0.01 # Optional. Terminate when a rate ratio falls below this value.
-  verbose: 20 # Optional. Logging verbosity level (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR, 50=CRITICAL).
-              # Default: 20 (INFO).
+  termination_rate_ratio: 0.01 #  Terminate when a rate ratio falls below this value (0 < value < 1). Optional, default: None.
+  max_edge_species: # Maximum number of species allowed in the edge. Must be > 0. Optional, default: None. 
+  filter_reactions: true #  Whether to filter reactions. Optional, default: true.
+  modify_concentration_ranges_together: true #  Whether to modify concentration ranges together. Optional, default: true.
+  max_iterations: 50 #  Maximum iterations for iterative refinement. Must be > 0. Optional, default: 50.
+  verbose: 20 # Logging verbosity level (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR, 50=CRITICAL).  Optional, default: 20 (INFO).
+  saveEdgeSpecies: true #  Whether to save edge species. Optional, default: true.
   output_directory: # Optional. Custom path for output files. If not set, defaults to project_directory.
   # output_directory: /path/to/custom/output/folder
-
-  flux_adapter: RMG # Optional, default: "RMG" but we probably going to change this one. The simulation engine to use for flux calculations.
-                    # Options: "RMG", "Cantera", "Custom"
-  profiles_adapter: RMG # Optional, default: "RMG". The simulation engine to use for concentration profiles.
-                        # Options: "RMG", "Cantera", "Custom"
-  generate_plots: false # Optional, default: false. Whether to generate plots of results.
-  save_simulation_profiles: false # Optional, default: false. Whether to save raw simulation data profiles.
-
+  generate_plots: false # Whether to generate plots of results. Optional, default: false. 
+  save_simulation_profiles: false # Whether to save raw simulation data profiles. Optional, default: false. 
 

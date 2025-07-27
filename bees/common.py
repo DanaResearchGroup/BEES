@@ -21,7 +21,9 @@ import yaml
 import numpy as np
 import math # Added this import for math.exp
 import re
-from collections import deque # Keep deque for potential future use or if other commented functions use it
+from collections import deque
+
+from bees.schema import Species # Keep deque for potential future use or if other commented functions use it
 
 
 """
@@ -53,7 +55,6 @@ EA_UNIT_CONVERSION = {'J/mol': 1, 'kJ/mol': 1e+3, 'cal/mol': 4.184, 'kcal/mol': 
 
 
 #All the functions in the common module
-
 
 
 def get_git_branch(path: Optional[str] = None) -> str:
@@ -777,8 +778,7 @@ def timedelta_from_str(time_str: str):
     
     return datetime.timedelta(**time_params)
 
-    Args:
-        time_str (str): The string representation of a datetime.timedelta object.
+
 
 def convert_list_index_0_to_1(_list: Union[list, tuple], direction: int = 1) -> Union[list, tuple]:
     """

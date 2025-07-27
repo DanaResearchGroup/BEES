@@ -11,277 +11,273 @@ The Biochemical Engine for Enzymatic kinetic modelS (BEES) for iterative kinetic
 # 4. Write comprehensive tests for the main module.
 """
 
-
-import os  # Essential for path manipulations.
-import yaml
-import argparse 
-from typing import Optional, Union, List, Any, Dict  # For type hinting, improving code clarity and maintainability.
-
-
+import sys
+import os
+import time
+from typing import Any, Dict, List, Optional
+import yaml # Direct import for YAML file handling
 import logging
 
-import sys
-import time
+# Import internal modules
+import bees.common as common
+from bees.logger import Logger # Direct import of Logger class
+from bees.schema import InputBase # Direct import of InputBase class
 
-
-from bees.logger import Logger 
-from bees.schema import InputBase 
-from bees.common import (
-    PROJECTS_BASE_PATH,
-    DATA_BASE_PATH, # Included for completeness if used later
-    save_yaml_file,
-    dict_to_str,
-    time_lapse,
-    get_git_branch,
-    get_git_commit,
-    VERSION, # Assuming VERSION is defined in common.py
-    read_yaml_file, # For loading input YAML
-    InputError # For custom exceptions
-)
+# Define global paths from common
+BEES_PATH = common.BEES_PATH
+PROJECTS_BASE_PATH = common.PROJECTS_BASE_PATH
 
 
 
+# Load YAML utility function
+# 
 
-# The load_yaml function is fine as is.
-def load_yaml(file_path):
+def load_yaml(file_path: str) -> Dict[str, Any]:
     """
     Loads content from a YAML file.
-    Note: This function is redundant if read_yaml_file from common is used consistently.
-    Kept for now as it was in the original code, but consider removing if not explicitly needed.
+    Raises FileNotFoundError or yaml.YAMLError on failure.
     """
-    with open(file_path, 'r') as stream:
-        return yaml.safe_load(stream)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    with open(file_path, 'r') as f:
+        try:
+            return yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise yaml.YAMLError(f"YAML parsing error in file {file_path}: {e}")
 
+def load_input_from_fixed_path() -> Dict[str, Any]:
+    """
+    Loads input data from a fixed. We will proably after it will be a command line argument with parsing.
+   
+    """
+    fixed_input_path = os.path.join(BEES_PATH, 'examples', 'minimal', 'input.yml')
+    
+    if not os.path.exists(fixed_input_path):
+        raise FileNotFoundError(f"Fixed input file not found at: {fixed_input_path}")
+    try:
+        input_data = load_yaml(fixed_input_path)
+        return input_data
+    except yaml.YAMLError as e:
+        raise ValueError(f"Error parsing fixed YAML input file at {fixed_input_path}: {e}")
+    
+
+# Main BEES class
+# This class will handle the initialization and execution of the BEES workflow.
 class BEES(object):
     """
-    The main class for the BEES platform.
-    This class orchestrates the entire workflow: from input parsing and schema to execution.
-
-    Attributes:
-        t0 (float): The timestamp when the BEES instance was initialized (for timing).
-        project (str): The name of the current BEES project.
-        project_directory (str): The full path to the project's working directory.
-        output_directory (str): The designated output directory for results.
-        input_schema (InputBase): An instance of the InputBase schema, holding all validated input parameters.
-        logger (Logger): The BEES logger instance for logging messages.
+    The main BEES application class.
+    Handles initialization, input validation and execution of the workflow.
     """
 
     def __init__(self, input_data: Dict[str, Any]):
         """
-        Initialize the BEES class with the given input data.
-
-        This constructor validates the input against the schema, sets up the project
-        directory, and initializes the logging system.
+        Initializes the BEES application.
 
         Args:
-            input_data (Dict[str, Any]): A dictionary containing all BEES input parameters.
-                                         This dictionary is expected to conform to the
-                                         `InputBase` schema.
+            input_data (Dict[str, Any]): The raw input data dictionary loaded from the input file.
+        
         Raises:
-            ValueError: If the input data is invalid according to the `InputBase` schema.
+            ValueError: If input parameters are invalid according to the schema.
+            FileNotFoundError: If project directory cannot be created.
         """
-        self.t0 = time.time() # Record start time for overall execution timing
+        self.t0 = time.time() # Start time
+        self.input_data = input_data
+        self.project: str = input_data.get("project", "default_project") # Default if missing
+        
+        # Determine project directory and output directory
+        if "project_directory" in input_data:
+            self.project_directory = input_data["project_directory"]
+            if not os.path.isabs(self.project_directory):
+                self.project_directory = os.path.join(PROJECTS_BASE_PATH, self.project_directory)
+            elif not self.project_directory.startswith(PROJECTS_BASE_PATH):
+                self.project_directory = os.path.join(PROJECTS_BASE_PATH, self.project) 
+        else:
+            self.project_directory = os.path.join(PROJECTS_BASE_PATH, self.project)
+        
+        if "output_directory" in input_data.get("settings", {}):
+            specified_output_dir = input_data["settings"]["output_directory"]
+            if os.path.isabs(specified_output_dir):
+                if not specified_output_dir.startswith(self.project_directory):
+                    raise ValueError(f"Absolute output path '{specified_output_dir}' is not within the project directory '{self.project_directory}'.")
+                self.output_directory = specified_output_dir
+            else:
+                self.output_directory = os.path.join(self.project_directory, specified_output_dir)
+        else:
+            self.output_directory = self.project_directory
 
-        # 1. Validate input data against the schema using Pydantic
+        # Create project directory if it does not exist
+        try:
+            os.makedirs(self.project_directory, exist_ok=True)
+            if self.output_directory != self.project_directory:
+                os.makedirs(self.output_directory, exist_ok=True)
+        except OSError as e:
+            raise FileNotFoundError(f"Failed to create project/output directory: {e}")
+
+        # Initialize the logger - only after determining project_directory
+        self.logger = Logger(
+            project_directory=self.project_directory,
+            verbose=input_data.get("settings", {}).get("verbose"),
+            t0=self.t0
+        )
+        self.logger.log_header()
+        self.logger.info(f'BEES version: {common.VERSION}')
+        git_branch = common.get_git_branch()
+        commit_hash, commit_date = common.get_git_commit()
+        self.logger.info(f'Git branch: {git_branch}')
+        self.logger.info(f'Git commit: {commit_hash} ({commit_date})')
+        self.logger.log_args(input_data)
+
+        # Validate input using Pydantic schema
         try:
             self.input_schema = InputBase(**input_data)
+            self.logger.info("Input validated successfully against the schema.")
+            verified_input_path = os.path.join(self.project_directory, 'input.yml')
+            common.save_yaml_file(verified_input_path, self.input_schema.model_dump(exclude_unset=True))
+            self.logger.info(f"Saving validated input to {verified_input_path}")
+
         except Exception as e:
-            # Catch Pydantic validation errors and re-raise as a more general ValueError
+            self.logger.error(f"Input validation error: {e}")
+            self.logger.log_footer(success=False)
             raise ValueError(f"Invalid input parameters provided: {e}")
 
-        self.project = self.input_schema.project
-        
-        # Determine project directory based on common.PROJECTS_BASE_PATH
-        self.project_directory = os.path.join(PROJECTS_BASE_PATH, self.project)
+        self.species_objects = self.create_species_objects(self.input_schema.species)
+        self.enzyme_objects = self.create_enzyme_objects(self.input_schema.enzymes)
 
-        # Determine output directory: user-specified or default to project directory
-        self.output_directory = self.input_schema.settings.output_directory \
-                                if hasattr(self.input_schema.settings, 'output_directory') and self.input_schema.settings.output_directory \
-                                else self.project_directory
+        self.logger.info(f"BEES project {self.project} initialized successfully in {common.time_lapse(self.t0)}.")
 
-        # Ensure project directory exists *before* initializing the logger
-        if not os.path.exists(self.project_directory):
-            os.makedirs(self.project_directory)
-        
-        # 2. Initialize the Logger
-        # Get verbose level from schema.settings.verbose (default to INFO if not specified)
-        verbose_level = self.input_schema.settings.verbose \
-                        if hasattr(self.input_schema.settings, 'verbose') and self.input_schema.settings.verbose is not None \
-                        else logging.INFO
-        
-        # Initialize the Logger instance. The Logger's __init__ will handle log_header()
-        self.logger = Logger(
-            project_directory=self.project_directory, # Removed 'project' argument
-            verbose=verbose_level,
-            t0=self.t0 # Pass the initial timestamp for logging header/footer
-        )
-
-        # Log system information using the initialized logger
-        self.logger.info(f'BEES version: {VERSION}')
-        git_branch = get_git_branch()
-        git_commit, git_date = get_git_commit()
-        if git_branch:
-            self.logger.info(f'Git branch: {git_branch}')
-        if git_commit:
-            self.logger.info(f'Git commit: {git_commit} ({git_date})')
-
-        self.logger.info(f'BEES project {self.project} initialized successfully in {time_lapse(self.t0)}.')
-        # Log the validated input parameters, excluding default values for conciseness
-        self.logger.log_args(self.input_schema.model_dump(exclude_defaults=True))
-
-
-        # 3. Save the validated input to the project directory for reproducibility
-        # This creates a canonical input.yml in the project folder
-        self.logger.info(f"Saving validated input to {os.path.join(self.project_directory, 'input.yml')}")
-        save_yaml_file(os.path.join(self.project_directory, 'input.yml'), self.input_schema.model_dump())
-
-        
-        
-        # Initialize other core components/attributes based on self.input_schema that we might need later
-        # These are placeholders and can be expanded later
-        self.species_objects = self._create_species_objects(self.input_schema.species)
-        self.enzyme_objects = self._create_enzyme_objects(self.input_schema.enzymes)
-        
-    def _create_species_objects(self, species_data: List[Any]) -> List[Any]:
+    def create_species_objects(self, species_data: List[Any]) -> List[Any]:
         """
         Placeholder method to create species objects from input data.
-        In a real scenario, this would parse species definitions (e.g., SMILES, InChI)
-        and create internal Species objects.
         """
         self.logger.debug(f"Creating {len(species_data)} species objects...")
-        # Example: return a list of dictionaries for now
-        return [{"label": spc.label, "smiles": spc.smiles} for spc in species_data]
+        return species_data
 
-    def _create_enzyme_objects(self, enzyme_data: List[Any]) -> List[Any]:
+    def create_enzyme_objects(self, enzyme_data: List[Any]) -> List[Any]:
         """
         Placeholder method to create enzyme objects from input data.
         """
         self.logger.debug(f"Creating {len(enzyme_data)} enzyme objects...")
-        # Example: return a list of dictionaries for now
-        return [{"label": enz.label, "kcat": enz.kcat} for enz in enzyme_data]
+        return enzyme_data
     
-    #Temporary placeholder for the execute method
-    # This method will be expanded in the next steps
-
     def execute(self):
         """
-        The main execution method for the BEES project.
-        This method orchestrates the various steps of kinetic model generation and refinement.
-        
-        #TODO: Implement the other functios and the necssary logic for the BEES workflow. 
-        
-        For now there no much to execute, but this will be the entry point for the core logic of BEES.
-        
+        Executes the BEES simulation based on the loaded input schema.
         """
         self.logger.info(f"Starting BEES execution for project '{self.project}'...")
 
-        # --- Placeholder for future core logic ---
-        # This is where you would call the main computational modules of BEES.
-        # Example of accessing validated input parameters:
         self.logger.info(f"Input has {len(self.input_schema.species)} species and {len(self.input_schema.enzymes)} enzymes.")
         self.logger.info(f"Environment Temperature: {self.input_schema.environment.temperature} K")
-        self.logger.info(f"Using '{self.input_schema.database.rate_law}' rate law from database '{self.input_schema.database.name}'.")
-        self.logger.info(f"Simulation will run until {self.input_schema.settings.end_time} time units.")
 
-        # Example: Call a hypothetical generator module
-        # self.logger.info("Generating initial reaction network...")
-        # self.reaction_network = self.generator.generate_network(self.input_schema)
-        # self.logger.info(f"Generated network with {len(self.reaction_network.reactions)} reactions.")
+        if hasattr(self.input_schema.database, 'rate_law'):
+            self.logger.info(f"Using '{self.input_schema.database.rate_law}' rate law from database '{self.input_schema.database.name}'.")
+        else:
+            self.logger.info(f"Database name: '{self.input_schema.database.name}'. No specific rate law defined.")
 
-        # Example: Call a hypothetical simulation module
-        # self.logger.info("Running kinetic simulation...")
-        # simulation_results = self.simulator.run_simulation(self.reaction_network, self.input_schema)
-        # self.logger.info("Simulation completed.")
+        if hasattr(self.input_schema.database, 'parameter_estimator'):
+            self.logger.info(f"Using parameter estimator: '{self.input_schema.database.parameter_estimator}'.")
+        else:
+            self.logger.info(f"No specific parameter estimator defined for database '{self.input_schema.database.name}'.")
+            
+        self.logger.info(f"The simulation will run until {self.input_schema.settings.end_time} time units.")
+        self.logger.info(f"Using solver: {self.input_schema.database.solver}") 
+        self.logger.debug("Simulating main BEES process (this will be replaced by actual logic)...")
+        time.sleep(1) # Simulate some work
 
-        # Example: Call a hypothetical refinement module
-        # self.logger.info("Refining model based on simulation results...")
-        # self.refiner.refine_model(self.reaction_network, simulation_results, self.input_schema)
-        # self.logger.info("Model refinement completed.")
+        self.logger.info(f"BEES execution for project '{self.project}' completed in {common.time_lapse(self.t0)}.")
+        self.logger.log_footer(success=True)
 
-        self.logger.info(f"BEES execution for project '{self.project}' completed in {time_lapse(self.t0)}.")
-        self.logger.log_footer(success=True) # Log footer at the end of successful execution
-
-
-def parse_and_load_input() -> Dict[str, Any]:
+def main():
     """
-    Parses command-line (CLI) arguments and loads/merges input data from a YAML file.
-    CLI arguments will override values from the YAML file.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing the merged input parameters.
-    Raises:
-        FileNotFoundError: If the specified input file does not exist.
-        ValueError: If there's an error parsing the YAML file.
+    Main entry point for the BEES application.
+    Handles input loading, BEES initialization, and execution.
     """
-    
-    parser = argparse.ArgumentParser(description='BEES: Biochemical Engine for Enzymatic modelS')
-    parser.add_argument('--project', type=str,
-                        help='Name of the BEES project. If provided, overrides project name in input_file.')
-    parser.add_argument('--input_file', type=str,
-                        help='Path to a BEES input YAML file. If not provided, project and verbose must be CLI arguments.')
-    parser.add_argument('--verbose', type=int,
-                        choices=[logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL],
-                        help='Verbosity level (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR, 50=CRITICAL). If provided, overrides verbose in input_file.')
-    parser.add_argument('--output_directory', type=str,
-                        help='Path to the output directory. If provided, overrides output_directory in input_file.')
-
-    args = parser.parse_args()
-
-    input_data = {}
-    if args.input_file:
-        try:
-            input_data = read_yaml_file(args.input_file)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Input file not found: {args.input_file}")
-        except yaml.YAMLError as e:
-            raise ValueError(f"Error parsing YAML input file {args.input_file}: {e}")
-
-    # Override file-loaded parameters with any direct CLI arguments
-    # Special handling for 'project', 'verbose' (nested under settings), and 'output_directory' (nested under settings)
-    if args.project:
-        input_data['project'] = args.project
-
-    if args.verbose is not None:
-        if 'settings' not in input_data:
-            input_data['settings'] = {}
-        input_data['settings']['verbose'] = args.verbose
-
-    if args.output_directory:
-        if 'settings' not in input_data:
-            input_data['settings'] = {}
-        input_data['settings']['output_directory'] = args.output_directory
-    
-    # Basic check if no input file and no project name provided via CLI
-    if not args.input_file and not args.project:
-        parser.error("Either '--input_file' must be provided, or '--project' must be provided via command line.")
-
-    return input_data
-
-
-if __name__ == '__main__':
-
-    # Initialize a basic logger for early errors that occur before BEES logger is fully set up.
-    # This ensures some logging even if the main BEES initialization fails.
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-
-    bees_instance: Optional[BEES] = None # Initialize to None for error handling in case of early failure
+    bees_instance = None # Initialize to None for error handling in finally block
     try:
-        # Parse arguments and load/merge input data
-        input_data_for_bees = parse_and_load_input()
-
-        # Create an instance of the BEES application
+        # Load input from a fixed path (temporarily bypassing command-line argument parsing)
+        input_data_for_bees = load_input_from_fixed_path()
+        
+        # Initialize BEES with the loaded input data
         bees_instance = BEES(input_data=input_data_for_bees)
-
-        # Execute the main BEES workflow
+        
+        # Execute the BEES workflow
         bees_instance.execute()
 
-    except Exception as e:
-        # Centralized error handling for the main execution block
-        if bees_instance and hasattr(bees_instance, 'logger'):
-            # If the BEES logger was successfully initialized, use it for critical errors
-            bees_instance.logger.critical(f"An unhandled error occurred during BEES execution: {e}", exc_info=True)
-            bees_instance.logger.log_footer(success=False) # Log footer indicating failure
+    except FileNotFoundError as e:
+        if bees_instance is None or not Logger._initialized: 
+            print(f"CRITICAL: An unhandled error occurred before BEES logger could be fully initialized: {e}", file=sys.stderr)
         else:
-            # Fallback to basic logging if BEES logger failed to initialize
-            logging.critical(f"An unhandled error occurred before BEES logger could be fully initialized: {e}", exc_info=True)
-        sys.exit(1) # Exit with a non-zero status code to indicate an error
+            bees_instance.logger.critical(f"An unhandled error occurred: {e}")
+            bees_instance.logger.log_footer(success=False)
+        sys.exit(1)
+    except Exception as e:
+        if bees_instance is None or not Logger._initialized:
+             print(f"CRITICAL: An unhandled error occurred before BEES logger could be fully initialized: {e}", file=sys.stderr)
+        else:
+            bees_instance.logger.critical(f"An unhandled error occurred during BEES execution: {e}")
+            bees_instance.logger.log_footer(success=False)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+
+# You can run the code by executing this script directly or with /opt/miniforge/envs/bees_env/bin/python /home/omerkfir/BEES/main.py
+
+
+
+#TODO: work on Parsing function 
+
+# def parse_and_load_input() -> Dict[str, Any]:
+#     """
+#     Parses arguments and loads/merges input data from a YAML file.
+#     Arguments will override values from the YAML file.
+
+#     Returns:
+#         Dict[str, Any]: A dictionary containing the merged input parameters.
+#     Raises:
+#         FileNotFoundError: If the specified input file does not exist.
+#         ValueError: If there's an error parsing the YAML file.
+#     """
+    
+#     parser = argparse.ArgumentParser(description='BEES: Biochemical Engine for Enzymatic modelS')
+#     parser.add_argument('--project', type=str,
+#                         help='Name of the BEES project. If provided, overrides project name in input_file.')
+#     parser.add_argument('--input_file', type=str,
+#                         help='Path to a BEES input YAML file. If not provided, project and verbose must be CLI arguments.')
+#     parser.add_argument('--verbose', type=int,
+#                         choices=[logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL],
+#                         help='Verbosity level (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR, 50=CRITICAL). If provided, overrides verbose in input_file.')
+#     parser.add_argument('--output_directory', type=str,
+#                         help='Path to the output directory. If provided, overrides output_directory in input_file.')
+
+#     args = parser.parse_args()
+
+#     input_data = {}
+#     if args.input_file:
+#         try:
+#             input_data = read_yaml_file(args.input_file)
+#         except FileNotFoundError:
+#             raise FileNotFoundError(f"Input file not found: {args.input_file}")
+#         except yaml.YAMLError as e:
+#             raise ValueError(f"Error parsing YAML input file {args.input_file}: {e}")
+
+#     # Override file-loaded parameters with any direct CLI arguments
+#     # Special handling for 'project', 'verbose' (nested under settings), and 'output_directory' (nested under settings)
+#     if args.project:
+#         input_data['project'] = args.project
+
+#     if args.verbose is not None:
+#         if 'settings' not in input_data:
+#             input_data['settings'] = {}
+#         input_data['settings']['verbose'] = args.verbose
+
+#     if args.output_directory:
+#         if 'settings' not in input_data:
+#             input_data['settings'] = {}
+#         input_data['settings']['output_directory'] = args.output_directory
+    
+#     # Basic check if no input file and no project name provided via CLI
+#     if not args.input_file and not args.project:
+#         parser.error("Either '--input_file' must be provided, or '--project' must be provided")
+
+#     return input_data
+
