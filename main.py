@@ -1,6 +1,8 @@
 """
 The Biochemical Engine for Enzymatic kinetic modelS (BEES) for iterative kinetic model generation and refinement
-# This is probably the most important module in the code.
+
+This is probably the most important module in the code.
+ run the code by executing this script directly or with /opt/miniforge/envs/bees_env/bin/python /home/omerkfir/BEES/main.py
 
 # TODO:
 # 1. Learn from T3 and other papers: Continue researching T3 or similar projects for architectural patterns
@@ -15,8 +17,7 @@ import sys
 import os
 import time
 from typing import Any, Dict, List, Optional
-import yaml # Direct import for YAML file handling
-import logging
+import yaml 
 
 # Import internal modules
 import bees.common as common
@@ -26,11 +27,6 @@ from bees.schema import InputBase # Direct import of InputBase class
 # Define global paths from common
 BEES_PATH = common.BEES_PATH
 PROJECTS_BASE_PATH = common.PROJECTS_BASE_PATH
-
-
-
-# Load YAML utility function
-# 
 
 def load_yaml(file_path: str) -> Dict[str, Any]:
     """
@@ -45,28 +41,13 @@ def load_yaml(file_path: str) -> Dict[str, Any]:
         except yaml.YAMLError as e:
             raise yaml.YAMLError(f"YAML parsing error in file {file_path}: {e}")
 
-def load_input_from_fixed_path() -> Dict[str, Any]:
-    """
-    Loads input data from a fixed. We will proably after it will be a command line argument with parsing.
-   
-    """
-    fixed_input_path = os.path.join(BEES_PATH, 'examples', 'minimal', 'input.yml')
-    
-    if not os.path.exists(fixed_input_path):
-        raise FileNotFoundError(f"Fixed input file not found at: {fixed_input_path}")
-    try:
-        input_data = load_yaml(fixed_input_path)
-        return input_data
-    except yaml.YAMLError as e:
-        raise ValueError(f"Error parsing fixed YAML input file at {fixed_input_path}: {e}")
-    
+# The load_input_from_fixed_path function has been removed as its logic
+# is now integrated directly into the main() function.
 
-# Main BEES class
-# This class will handle the initialization and execution of the BEES workflow.
 class BEES(object):
     """
     The main BEES application class.
-    Handles initialization, input validation and execution of the workflow.
+    Handles initialization, input validation, and execution of the BEES workflow.
     """
 
     def __init__(self, input_data: Dict[str, Any]):
@@ -140,19 +121,19 @@ class BEES(object):
             self.logger.log_footer(success=False)
             raise ValueError(f"Invalid input parameters provided: {e}")
 
-        self.species_objects = self.create_species_objects(self.input_schema.species)
-        self.enzyme_objects = self.create_enzyme_objects(self.input_schema.enzymes)
+        self.species_objects = self._create_species_objects(self.input_schema.species)
+        self.enzyme_objects = self._create_enzyme_objects(self.input_schema.enzymes)
 
         self.logger.info(f"BEES project {self.project} initialized successfully in {common.time_lapse(self.t0)}.")
 
-    def create_species_objects(self, species_data: List[Any]) -> List[Any]:
+    def _create_species_objects(self, species_data: List[Any]) -> List[Any]:
         """
         Placeholder method to create species objects from input data.
         """
         self.logger.debug(f"Creating {len(species_data)} species objects...")
         return species_data
 
-    def create_enzyme_objects(self, enzyme_data: List[Any]) -> List[Any]:
+    def _create_enzyme_objects(self, enzyme_data: List[Any]) -> List[Any]:
         """
         Placeholder method to create enzyme objects from input data.
         """
@@ -193,8 +174,16 @@ def main():
     """
     bees_instance = None # Initialize to None for error handling in finally block
     try:
-        # Load input from a fixed path (temporarily bypassing command-line argument parsing)
-        input_data_for_bees = load_input_from_fixed_path()
+        # Construct the fixed input file path directly
+        fixed_input_path = os.path.join(BEES_PATH, 'examples', 'minimal', 'input.yml') # this line means that the program will look for the dirctory :home/omerkfir/BEES/examples/minimal/input.yml . till we will have prasing, for change the input dirctory we need to change this manualy. 
+        
+        # Load input data from the fixed path
+        if not os.path.exists(fixed_input_path):
+            raise FileNotFoundError(f"Fixed input file not found at: {fixed_input_path}")
+        try:
+            input_data_for_bees = load_yaml(fixed_input_path)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Error parsing fixed YAML input file at {fixed_input_path}: {e}")
         
         # Initialize BEES with the loaded input data
         bees_instance = BEES(input_data=input_data_for_bees)
@@ -220,7 +209,7 @@ def main():
 if __name__ == '__main__':
     main()
 
-# You can run the code by executing this script directly or with /opt/miniforge/envs/bees_env/bin/python /home/omerkfir/BEES/main.py
+
 
 
 

@@ -1,3 +1,14 @@
+""""
+Test BEES logger module
+
+
+This module Test the logger module .
+To run the tests, use pytest and the command line: pytest -v tests/test_logger.py
+
+This VERSION based on is the full ARC version, using `semantic versioning <https://semver.org/>`_.
+"""
+
+
 import os
 from pathlib import Path
 import time

@@ -1,14 +1,14 @@
 # A commented version of BEES input file
 
 """
-BEES Input Configuration File
-This file defines the parameters for a BEES project, including species, enzymes, environment conditions, database and settings according to the schema.
+BEES Input File
+This file is an example file of the minimal parameters to run a program in BEES.
 """
 
 # --- Project Information ---
 # 'project': Required. The name of your BEES project. This will also be used to create the project directory. Max length is 255 characters.
 project: MyFirstBEESProject
-project dirctory: /home/omerkfir/BEES/examples/commented
+project directory: /home/omerkfir/BEES/examples/commented
 
 # 'project_directory': Optional. The base directory where project files will be stored. If not specified, it defaults to 'projects/<project_name>'. relative to the BEES installation path. Max length is 255 characters.
 # project_directory: /path/to/your/custom/project_root

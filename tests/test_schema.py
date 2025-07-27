@@ -3,6 +3,10 @@
 
 """
 Test BEES.schema validation 
+
+This module contains tests for the BEES.
+To run the tests, use pytest and the command line: pytest -v tests/test_schema.py
+
 """
 
 import pytest
@@ -34,7 +38,7 @@ def test_Species():
         charge=0,
         reactive=True,
         constant=False,
-        observable=True, # Default is now True
+        observable=True,
     )
     assert species.label == "Glucose"
     assert species.concentration == 0.1
@@ -75,13 +79,16 @@ M  END"""
         Species(label="NegativeConcentration", concentration=-0.1)
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
         Species(label="NegativeRange", concentration=(-0.1, 0.5))
-    # The following tests are commented out because the current schema's field_validator
+    
+    # The following tests are commented out because the current schema's field_validator, but there is very good chance that it will be back in the script in the future.
+    
     # for 'constant' does not seem to trigger these specific errors as expected by Pydantic v2.
     # Cross-field validation might require a model_validator in the schema.
     # with pytest.raises(ValidationError, match="Reactive species cannot be constant"):
     #     Species(label="ReactiveConstant", reactive=True, constant=True, concentration=0.1)
     # with pytest.raises(ValidationError, match="Observable species cannot be constant"):
     #     Species(label="ObservableConstant", observable=True, constant=True, concentration=0.1)
+    
     with pytest.raises(ValidationError, match="Invalid SMILES string"):
         Species(label="InvalidSMILES", concentration=0.1, smiles="InvalidSmiles[")
     with pytest.raises(ValidationError, match="Invalid InChI string"):
@@ -126,10 +133,12 @@ def test_Enzyme():
         Enzyme(label="InvalidEC", concentration=0.1, ecnumber="not.a.valid.ecnumber")
     with pytest.raises(ValidationError, match=r"String should match pattern '\^EC \\d\+\\.\\d\+\\.\\d\+\\.\\d\+\$'"): 
         Enzyme(label="InvalidEC2", concentration=0.1, ecnumber="2.7.1.1") # Missing 'EC ' prefix
+    
     # The following tests are commented out for the same reason as in test_Species.
     # with pytest.raises(ValidationError, match="Reactive species cannot be constant"):
     #     Enzyme(label="ReactiveConstant", reactive=True, constant=True, concentration=0.1)
     # with pytest.raises(ValidationError, match="Observable species cannot be constant"):
+    
     #     Enzyme(label="ObservableConstant", observable=True, constant=True, concentration=0.1)
     with pytest.raises(ValidationError, match=r"Label.* cannot be empty"):
         Enzyme(label="", concentration=0.1)
@@ -174,13 +183,14 @@ def test_Environment():
 
 
 def test_Settings():
-    """Test the Settings model."""
-    # Test with minimal required fields, explicitly setting optional fields to None or their defaults
+    """Test the Settings model.
+    Test with minimal required fields, explicitly setting optional fields to None or their defaults
+    """
     settings = Settings(
         end_time=100.0,
         time_step=1.0,
         time_units=TerminationTimeEnum.s, 
-        toleranceKeepInEdge=1e-9, # Changed from 0.0 to > 0
+        toleranceKeepInEdge=1e-9, 
         toleranceMoveToCore=1e-5, 
         termination_conversion=None,
         termination_rate_ratio=None,
@@ -247,6 +257,8 @@ def test_Settings():
     assert settings_full.generate_plots is True
     assert settings_full.save_simulation_profiles is True
 
+    
+    
     # Test validators
     with pytest.raises(ValidationError, match=r"'time_step' must be smaller than 'end_time'"):
         Settings(end_time=10.0, time_step=10.0)
@@ -280,7 +292,7 @@ def test_Database():
         seed_mechanism=["my_seed_rxn"], 
         kinetics_depositories=["default"],
         kinetics_families=["default"],
-        solver="odeint", # Moved field
+        solver="odeint", 
         kinetics_estimator="rate rules" 
     )
     assert db.name == "enzyme_catalysis"

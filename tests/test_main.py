@@ -1,8 +1,20 @@
+"""
+Test BEES main module
+
+
+This module Test the main module which contains functions which are shared across multiple  modules.
+To run the tests, use pytest and the command line: pytest -v tests/test_main.py
+
+This VERSION based on is the full ARC version, using `semantic versioning <https://semver.org/>`_.
+"""
+
+
 import os
 import yaml
 import pytest
-import main
 from unittest import mock
+
+import main
 
 # Autouse fixture to patch paths and dependencies
 @pytest.fixture(autouse=True)
@@ -26,9 +38,9 @@ def patch_paths_and_deps(tmp_path, monkeypatch):
 
     yield
 
-# -------- Tests for load_input_from_fixed_path() -------- #
+# -------- Tests for load_input__() -------- #
 
-def test_load_input_from_fixed_path_success():
+def test_load_input():
     """Returns dict when input.yml is valid YAML"""
     fixed_dir = os.path.join(main.BEES_PATH, 'examples', 'minimal')
     input_file = os.path.join(fixed_dir, 'input.yml')
@@ -43,33 +55,34 @@ def test_load_input_from_fixed_path_success():
     with open(input_file, 'w') as f:
         yaml.dump(valid_data, f)
 
-    result = main.load_input_from_fixed_path()
+    
+    result = main.load_yaml(input_file)
     assert isinstance(result, dict)
     assert result['project'] == 'p'
 
 
-def test_load_input_from_fixed_path_missing():
+def test_load_yaml_missing():
     """Raises FileNotFoundError when input.yml does not exist"""
     fixed_dir = os.path.join(main.BEES_PATH, 'examples', 'minimal')
     input_file = os.path.join(fixed_dir, 'input.yml')
     if os.path.exists(input_file):
         os.remove(input_file)
     with pytest.raises(FileNotFoundError):
-        main.load_input_from_fixed_path()
+        main.load_yaml(input_file) 
 
-
-def test_load_input_from_fixed_path_invalid_yaml():
+def test_load_yaml_invalid_yaml():
     """Raises ValueError when input.yml is invalid YAML"""
     fixed_dir = os.path.join(main.BEES_PATH, 'examples', 'minimal')
     input_file = os.path.join(fixed_dir, 'input.yml')
     with open(input_file, 'w') as f:
         f.write("invalid: [unclosed list")
-    with pytest.raises(ValueError):
-        main.load_input_from_fixed_path()
+    with pytest.raises(yaml.YAMLError):
+       
+        main.load_yaml(input_file) 
 
 # -------- Tests for BEES.__init__() -------- #
 
-# Dummy schema to bypass real validation
+# We will make a dummy schema to bypass real validation
 class DummySchema:
     def __init__(self, **kwargs):
         self.project = kwargs.get('project')
@@ -99,7 +112,7 @@ class DummySchema:
 @mock.patch('main.Logger')
 @mock.patch('main.InputBase', new=DummySchema)
 def test_BEES_init_success(MockLogger):
-    """Initialization succeeds: directories, logger, schema are set up"""
+    """Initialization succeeds: directories, logger and schema are set up"""
     input_data = {
         'project': 'testproj',
         'species': [{'label':'A'}],
@@ -138,5 +151,6 @@ def test_BEES_init_schema_fail(MockInputBase, MockLogger):
         'database': {'name':'db', 'solver':'odeint'},
         'settings': {'end_time':5, 'verbose':20, 'time_step':1.0}
     }
+    
     with pytest.raises(ValueError):
         main.BEES(data)
