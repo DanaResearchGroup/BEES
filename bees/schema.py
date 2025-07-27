@@ -1,6 +1,9 @@
 """
 BEES schema module
 used for input validation
+
+This module defines the schema for BEES input validation using Pydantic.
+
 """
 
 from enum import Enum
@@ -33,7 +36,7 @@ class Species(BaseModel):
     reactive: bool = True
     observable: bool = True
     solvent: bool = False
-    xyz: Optional[Union[dict, str]] = None
+    xyz: Optional[Union[dict, str]] = None #inherit from RMG, not sure if will be needed, but it is here for now
 
     class Config:
         extra = "forbid"
@@ -209,7 +212,6 @@ class Settings(BaseModel):
 
 class SpeciesConstraints(BaseModel):
     allowed: List[Literal['input species', 'seed mechanisms', 'reaction libraries']] = ['input species', 'seed mechanisms', 'reaction libraries']
-    # Removed 'termination_conversion' from here to avoid duplication, it's in Settings now.
     tolerance_thermo_keep_species_in_edge: Optional[confloat(gt=0)] = None # Tolerance for thermodynamic properties to keep species in the edge (e.g., max deviation from a threshold)
     max_C_atoms: Optional[conint(gt=0)] = None # Maximum number of Carbon atoms allowed in generated species
     max_O_atoms: Optional[conint(gt=0)] = None # Maximum number of Oxygen atoms allowed in generated species

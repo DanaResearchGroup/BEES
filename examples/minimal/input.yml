@@ -22,7 +22,7 @@ species:
 enzymes:
   - label: GenericEnzyme
     concentration: 1e-6 
-    ecnumber: EC
+    ecnumber: EC 2.7.1.1 
     reactive: true 
     
 # --- Environment Settings ---
@@ -37,12 +37,13 @@ environment:
 # 'database': Required parameters 
 database:
   name: MinimalDB 
-  parameter_estimator: ML 
-  rate_law: Michaelis-Menten 
+  kinetics_estimator: rate rules 
+  solver: odeint 
+
 
 # --- Application Settings ---
 # 'settings': Required parameters
 settings:
   end_time: 100.0 
   time_step: 0.1 
-  solver: odeint 
+  

@@ -1,4 +1,5 @@
 database:
+  kinetics_estimator: rate rules
   name: MinimalDB
   solver: odeint
 environment:
@@ -6,7 +7,7 @@ environment:
   temperature: 298.15
 enzymes:
 - concentration: 1.0e-06
-  ecnumber: EC 1.1.1.1
+  ecnumber: EC 2.7.1.1
   label: GenericEnzyme
   reactive: true
 project: MinimalBEESProject

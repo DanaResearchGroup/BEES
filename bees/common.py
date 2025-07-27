@@ -778,8 +778,7 @@ def timedelta_from_str(time_str: str):
     
     return datetime.timedelta(**time_params)
 
-    Args:
-        time_str (str): The string representation of a datetime.timedelta object.
+
 
 
 def convert_list_index_0_to_1(_list: Union[list, tuple], direction: int = 1) -> Union[list, tuple]:
