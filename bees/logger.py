@@ -1,7 +1,3 @@
-##TODO: learn this module and refine it to BEES 
-# Please make sure that you dint missed any importent function becuse you delate them in common.py
-
-
 
 """
 BEES logger module
@@ -10,7 +6,6 @@ inspired by T3 logger module, but with modifications to fit BEES needs. some of 
 - Removed unused imports and comments from the original T3 logger module.
 - Sets up a global logger instance that can output to the console. Remove all file logging that not from input.
 - change the dependenies from T3 , for example t3_path
-
 
 """
  

@@ -47,7 +47,15 @@ def load_yaml(file_path: str) -> Dict[str, Any]:
 class BEES(object):
     """
     The main BEES application class.
-    Handles initialization, input validation, and execution of the BEES workflow.
+
+    This class serves as the central orchestrator (manger) for a BEES project to run.
+    It is responsible for:
+
+    1.  Initializing the project environment (directories, logger).
+    2.  Validating the raw user input against the defined schema
+    3.  Converting validated input data into internal BEES objects (species, enzymes and more).
+    4.  Executing the core kinetic modeling workflow.
+
     """
 
     def __init__(self, input_data: Dict[str, Any]):
@@ -169,9 +177,17 @@ class BEES(object):
 
 def main():
     """
-    Main entry point for the BEES application.
-    Handles input loading, BEES initialization, and execution.
+       Main entry point for the BEES application.
+
+    This function is the first to be executed when the BEES script is run.
+    
+    It handles the higher -level orchestration of the application, including:
+    1.  Loading the user's input configuration.
+    2.  Instantiating the core BEES application class.
+    3.  Executing the main BEES workflow.
+    4.  Providing error handling and logging for critical failures.
     """
+    
     bees_instance = None # Initialize to None for error handling in finally block
     try:
         # Construct the fixed input file path directly
