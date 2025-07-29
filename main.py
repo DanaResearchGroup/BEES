@@ -19,10 +19,10 @@ import time
 from typing import Any, Dict, List, Optional
 import yaml 
 
-# Import internal modules
+
 import bees.common as common
-from bees.logger import Logger # Direct import of Logger class
-from bees.schema import InputBase # Direct import of InputBase class
+from bees.logger import Logger 
+from bees.schema import InputBase 
 
 # Define global paths from common
 BEES_PATH = common.BEES_PATH
@@ -41,8 +41,7 @@ def load_yaml(file_path: str) -> Dict[str, Any]:
         except yaml.YAMLError as e:
             raise yaml.YAMLError(f"YAML parsing error in file {file_path}: {e}")
 
-# The load_input_from_fixed_path function has been removed as its logic
-# is now integrated directly into the main() function.
+
 
 class BEES(object):
     """
