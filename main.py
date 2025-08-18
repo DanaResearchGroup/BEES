@@ -2,7 +2,7 @@
 The Biochemical Engine for Enzymatic kinetic modelS (BEES) for iterative kinetic model generation and refinement
 
 This is probably the most important module in the code.
- run the code by executing this script directly or with /opt/miniforge/envs/bees_env/bin/python /home/omerkfir/BEES/main.py
+ run the code by executing this script directly python main.py --input_file + directory
 
 # TODO:
 # 1. Learn from T3 and other papers: Continue researching T3 or similar projects for architectural patterns
@@ -13,13 +13,14 @@ This is probably the most important module in the code.
 # 4. Write comprehensive tests for the main module.
 """
 
+
 import sys
 import os
 import time
 from typing import Any, Dict, List, Optional
-import yaml 
+import argparse
 
-
+# Import necessary modules from BEES
 import bees.common as common
 from bees.logger import Logger 
 from bees.schema import InputBase 
@@ -28,19 +29,33 @@ from bees.schema import InputBase
 BEES_PATH = common.BEES_PATH
 PROJECTS_BASE_PATH = common.PROJECTS_BASE_PATH
 
-def load_yaml(file_path: str) -> Dict[str, Any]:
-    """
-    Loads content from a YAML file.
-    Raises FileNotFoundError or yaml.YAMLError on failure.
-    """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-    with open(file_path, 'r') as f:
-        try:
-            return yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            raise yaml.YAMLError(f"YAML parsing error in file {file_path}: {e}")
 
+#TODO: work on Parsing function 
+
+def parse_and_load_input() -> dict:
+    parser = argparse.ArgumentParser(description='BEES')
+    parser.add_argument('-i','--input_file', type=str)
+    parser.add_argument('-p','--project', type=str)
+    parser.add_argument('-v','--verbose', type=int, choices=[10,20,30,40,50])
+    parser.add_argument('-o','--output_directory', type=str)
+    args = parser.parse_args()
+
+    default_input_path = os.path.join(BEES_PATH, 'examples', 'minimal', 'input.yml')
+    input_path = args.input_file or default_input_path
+
+    # Single source of truth for YAML loading:
+    input_data = common.read_yaml_file(input_path) 
+
+    # Ensure nested dict exists before overrides
+    input_data.setdefault('settings', {})
+
+    if args.project: input_data['project'] = args.project
+    if args.verbose is not None: input_data['settings']['verbose'] = args.verbose
+    if args.output_directory: input_data['settings']['output_directory'] = args.output_directory
+
+    if not input_data.get('project'):
+        raise ValueError("Project name is required (YAML or --project).")
+    return input_data
 
 
 class BEES(object):
@@ -107,7 +122,6 @@ class BEES(object):
             verbose=input_data.get("settings", {}).get("verbose"),
             t0=self.t0
         )
-        self.logger.log_header()
         self.logger.info(f'BEES version: {common.VERSION}')
         git_branch = common.get_git_branch()
         commit_hash, commit_date = common.get_git_commit()
@@ -189,25 +203,17 @@ def main():
     
     bees_instance = None # Initialize to None for error handling in finally block
     try:
-        # Construct the fixed input file path directly
-        fixed_input_path = os.path.join(BEES_PATH, 'examples', 'minimal', 'input.yml') # this line means that the program will look for the dirctory :home/omerkfir/BEES/examples/minimal/input.yml . till we will have prasing, for change the input dirctory we need to change this manualy. 
-        
-        # Load input data from the fixed path
-        if not os.path.exists(fixed_input_path):
-            raise FileNotFoundError(f"Fixed input file not found at: {fixed_input_path}")
-        try:
-            input_data_for_bees = load_yaml(fixed_input_path)
-        except yaml.YAMLError as e:
-            raise ValueError(f"Error parsing fixed YAML input file at {fixed_input_path}: {e}")
-        
-        # Initialize BEES with the loaded input data
+         # NEW: parse CLI + load/merge YAML
+        input_data_for_bees = parse_and_load_input()
+
+        # Initialize BEES with the loaded+merged input
         bees_instance = BEES(input_data=input_data_for_bees)
-        
-        # Execute the BEES workflow
+
+        # Execute workflow
         bees_instance.execute()
 
     except FileNotFoundError as e:
-        if bees_instance is None or not Logger._initialized: 
+        if bees_instance is None or not Logger._initialized:
             print(f"CRITICAL: An unhandled error occurred before BEES logger could be fully initialized: {e}", file=sys.stderr)
         else:
             bees_instance.logger.critical(f"An unhandled error occurred: {e}")
@@ -215,73 +221,16 @@ def main():
         sys.exit(1)
     except Exception as e:
         if bees_instance is None or not Logger._initialized:
-             print(f"CRITICAL: An unhandled error occurred before BEES logger could be fully initialized: {e}", file=sys.stderr)
+            print(f"CRITICAL: An unhandled error occurred before BEES logger could be fully initialized: {e}", file=sys.stderr)
         else:
             bees_instance.logger.critical(f"An unhandled error occurred during BEES execution: {e}")
             bees_instance.logger.log_footer(success=False)
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()
 
 
 
-
-
-#TODO: work on Parsing function 
-
-# def parse_and_load_input() -> Dict[str, Any]:
-#     """
-#     Parses arguments and loads/merges input data from a YAML file.
-#     Arguments will override values from the YAML file.
-
-#     Returns:
-#         Dict[str, Any]: A dictionary containing the merged input parameters.
-#     Raises:
-#         FileNotFoundError: If the specified input file does not exist.
-#         ValueError: If there's an error parsing the YAML file.
-#     """
-    
-#     parser = argparse.ArgumentParser(description='BEES: Biochemical Engine for Enzymatic modelS')
-#     parser.add_argument('--project', type=str,
-#                         help='Name of the BEES project. If provided, overrides project name in input_file.')
-#     parser.add_argument('--input_file', type=str,
-#                         help='Path to a BEES input YAML file. If not provided, project and verbose must be CLI arguments.')
-#     parser.add_argument('--verbose', type=int,
-#                         choices=[logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL],
-#                         help='Verbosity level (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR, 50=CRITICAL). If provided, overrides verbose in input_file.')
-#     parser.add_argument('--output_directory', type=str,
-#                         help='Path to the output directory. If provided, overrides output_directory in input_file.')
-
-#     args = parser.parse_args()
-
-#     input_data = {}
-#     if args.input_file:
-#         try:
-#             input_data = read_yaml_file(args.input_file)
-#         except FileNotFoundError:
-#             raise FileNotFoundError(f"Input file not found: {args.input_file}")
-#         except yaml.YAMLError as e:
-#             raise ValueError(f"Error parsing YAML input file {args.input_file}: {e}")
-
-#     # Override file-loaded parameters with any direct CLI arguments
-#     # Special handling for 'project', 'verbose' (nested under settings), and 'output_directory' (nested under settings)
-#     if args.project:
-#         input_data['project'] = args.project
-
-#     if args.verbose is not None:
-#         if 'settings' not in input_data:
-#             input_data['settings'] = {}
-#         input_data['settings']['verbose'] = args.verbose
-
-#     if args.output_directory:
-#         if 'settings' not in input_data:
-#             input_data['settings'] = {}
-#         input_data['settings']['output_directory'] = args.output_directory
-    
-#     # Basic check if no input file and no project name provided via CLI
-#     if not args.input_file and not args.project:
-#         parser.error("Either '--input_file' must be provided, or '--project' must be provided")
-
-#     return input_data
 
