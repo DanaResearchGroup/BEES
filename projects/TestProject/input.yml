@@ -1,0 +1,22 @@
+database:
+  kinetics_estimator: rate rules
+  name: MinimalDB
+  solver: odeint
+environment:
+  pH: 7.0
+  temperature: 298.15
+enzymes:
+- concentration: 1.0e-06
+  ecnumber: EC 2.7.1.1
+  label: GenericEnzyme
+  reactive: true
+project: TestProject
+settings:
+  end_time: 100.0
+  time_step: 0.1
+species:
+- concentration: 1.0
+  label: GenericSubstrate
+  observable: true
+  reactive: true
+  smiles: C1=CC=CC=C1

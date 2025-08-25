@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""
+Executable wrapper for BEES (Biochemical Engine for Enzymatic kinetic modelS)
+
+Usage:
+    ./bees --input_file examples/minimal/input.yml --project MyProject
+
+This simply delegates to main.py so users don’t need to call `python main.py`. 
+
+Make sure this file is executable: chmod +x bees
+
+To run BEES from anywhere, add the BEES directory to your PATH:
+    export PATH=$PATH:/path/to/BEES
+
+Then you can run BEES like this:
+./BEES -i /dirctory/dirctory/... --project MyProject
+"""
+
+from main import main
+
+if __name__ == "__main__":
+    main()
