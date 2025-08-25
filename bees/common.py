@@ -21,10 +21,8 @@ import yaml
 import numpy as np
 import math # Added this import for math.exp
 import re
-from collections import deque
 
-from bees.schema import Species # Keep deque for potential future use or if other commented functions use it
-
+from bees.schema import Species
 
 """
 #TODO:
@@ -55,6 +53,7 @@ EA_UNIT_CONVERSION = {'J/mol': 1, 'kJ/mol': 1e+3, 'cal/mol': 4.184, 'kcal/mol': 
 
 
 #All the functions in the common module
+
 
 
 def get_git_branch(path: Optional[str] = None) -> str:
@@ -274,7 +273,7 @@ def read_yaml_file(path: str,
     # No integrated globalization logic here.
     # Globalization of content should be handled by calling globalize_paths separately if needed.
 
-    return content # <--- FIXED: Ensure content is returned
+    return content 
 
 
 def save_yaml_file(path: str,
@@ -777,8 +776,6 @@ def timedelta_from_str(time_str: str):
             time_params[name] = int(param)
     
     return datetime.timedelta(**time_params)
-
-
 
 
 def convert_list_index_0_to_1(_list: Union[list, tuple], direction: int = 1) -> Union[list, tuple]:

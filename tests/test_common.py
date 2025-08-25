@@ -11,7 +11,7 @@ This VERSION based on is the full ARC version, using `semantic versioning <https
 
 import pytest
 import os
-import shutil
+
 import time
 import datetime
 import yaml
@@ -19,7 +19,7 @@ import numpy as np
 from unittest.mock import patch, mock_open
 import re
 import math
-from pathlib import Path # Import Path for robust path handling in tests
+
 
 # Import functions and constants from the common module
 from bees.common import (
@@ -77,7 +77,7 @@ def mock_bees_paths(tmp_path):
     with patch('bees.common.BEES_PATH', str(mock_bees_root)), \
          patch('bees.common.PROJECTS_BASE_PATH', str(mock_projects_path)):
         yield
-    # No need to restore, as patch handles it.
+        # Cleanup after tests
 
 def test_get_git_branch():
     """Test get_git_branch function."""
