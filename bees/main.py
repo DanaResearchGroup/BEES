@@ -1,125 +1,155 @@
 """
-The Biochemical Engine for Enzymatic kinetic modelS (bees) for iterative kinetic model generation and refinement
-# this probably the most important module in the code
+The Biochemical Engine for Enzymatic kinetic modelS (BEES) for iterative kinetic model generation and refinement
 
-#TODO: 1. learn from T3 what they do and what modifications need to be done
-        2. check from other pappers what they do and what modifications need to be done
-   
-"""
-
-""""
-spesific tasks for importing:
-
-#TODO: 1. check if this import is needed or not 
-#      2. see which import is needed to be add 
-#      3. writing the main tests
+This is probably the most important module in the code.
+ run the code by executing this script directly python bees.py --input_file + directory
+(decribed in BEES.py as well)
 """
 
 
-import datetime
-import inspect
 import os
-import re
-import shutil
-import yaml
-import argparse
-from typing import List, Optional, Tuple, Union
+import time
+from typing import Any, Dict, List
 
-
-
-from bees.common import (DATA_BASE_PATH,
-                       PROJECTS_BASE_PATH,
-                       VALID_CHARS,
-                       delete_root_rmg_log,
-                       get_species_by_label,
-                       time_lapse)
+import bees.common as common
 from bees.logger import Logger
 from bees.schema import InputBase
 
+# Base paths
+BEES_PATH = common.BEES_PATH
+PROJECTS_BASE_PATH = common.PROJECTS_BASE_PATH
 
 
-
-# from bees.runners.rmg_runner import rmg_runner
-# from bees.simulate.factory import simulate_factory
-# from bees.utils.libraries import add_to_rmg_libraries
-# from bees.utils.writer import write_pdep_network_file, write_rmg_input_file
-
-"""""
-#TODO: 1. check if OS is needed or not
-#      2. if so, learn how to use it 
-"""
-
-
-#RMG_THERMO_LIB_BASE_PATH = os.path.join(rmg_settings['database.directory'], 'thermo', 'libraries')
-#RMG_KINETICS_LIB_BASE_PATH = os.path.join(rmg_settings['database.directory'], 'kinetics', 'libraries')
-
-
-def load_yaml(file_path):
-    with open(file_path, 'r') as stream:
-        return yaml.safe_load(stream)
-
-
-class bees(object):
+class BEES():
     """
-    The main class for the bees platform""
-    
-    #TODO:  1.learn fron T3 what they do and what modifications need to be done
-            2. fill init objects with the correct attributes.
+    The main BEES application class.
+    Orchestrates: setup, schema validation, logging, execution.
+    Also, here is where the model generation will be started. right now it is just a placeholder.
     """
 
+    def __init__(self, input_data: Dict[str, Any]):
+        self.t0 = time.time()
+        self.input_data = input_data
+        self.project: str = input_data.get("project", "default_project")
 
-    def __init__(self, 
-                 project: str,
-                 #TODO: fill this with the correct type):
-        ):
-        
-        self.schema = InputBase.schema()
-        self.logger = Logger()
-        
-        
-        
-        """
-        Initialize the bees class with the given input.
-        
-        Args:
-            input (InputBase): The input object containing the necessary parameters.
-        """
+        # Determine project/output directories
+        if "project_directory" in input_data:
+            self.project_directory = input_data["project_directory"]
+            if not os.path.isabs(self.project_directory):
+                self.project_directory = os.path.join(PROJECTS_BASE_PATH, self.project_directory)
+            elif not self.project_directory.startswith(PROJECTS_BASE_PATH):
+                self.project_directory = os.path.join(PROJECTS_BASE_PATH, self.project)
+        else:
+            self.project_directory = os.path.join(PROJECTS_BASE_PATH, self.project)
 
+        if "output_directory" in input_data.get("settings", {}):
+            specified_output_dir = input_data["settings"]["output_directory"]
+            if os.path.isabs(specified_output_dir):
+                if not specified_output_dir.startswith(self.project_directory):
+                    raise ValueError(
+                        f"Absolute output path '{specified_output_dir}' is not within "
+                        f"the project directory '{self.project_directory}'."
+                    )
+                self.output_directory = specified_output_dir
+            else:
+                self.output_directory = os.path.join(self.project_directory, specified_output_dir)
+        else:
+            self.output_directory = self.project_directory
 
-    def as_dict(self) -> dict:
+        # Create directories
+        try:
+            os.makedirs(self.project_directory, exist_ok=True)
+            if self.output_directory != self.project_directory:
+                os.makedirs(self.output_directory, exist_ok=True)
+        except OSError as e:
+            raise FileNotFoundError(f"Failed to create project/output directory: {e}")
+
+        # Initialize logger
+        self.logger = Logger(
+            project_directory=self.project_directory,
+            verbose=input_data.get("settings", {}).get("verbose"),
+            t0=self.t0,
+        )
+        self.logger.info(f"BEES version: {common.VERSION}")
+        git_branch = common.get_git_branch()
+        commit_hash, commit_date = common.get_git_commit()
+        self.logger.info(f"Git branch: {git_branch}")
+        self.logger.info(f"Git commit: {commit_hash} ({commit_date})")
+        self.logger.log_args(input_data)
+
+        # Validate schema
+        try:
+            self.bees_object = InputBase(**input_data)
+            self.logger.info("Input validated successfully against the schema.")
+            verified_input_path = os.path.join(self.project_directory, "input.yml")
+            common.save_yaml_file(
+                verified_input_path, self.bees_object.model_dump(exclude_unset=True)
+            )
+            self.logger.info(f"Saving validated input to {verified_input_path}")
+        except Exception as e:
+            self.logger.error(f"Input validation error: {e}")
+            self.logger.log_footer(success=False)
+            raise ValueError(f"Invalid input parameters provided: {e}")
+
+        self.logger.info(
+            f"BEES project {self.project} initialized successfully in {common.time_lapse(self.t0)}."
+        )
+
+    def execute(self):
         """
-        Convert the bees object to a dictionary representation.
+        Execute the BEES kinetic model generation pipeline.
+        
+        Current functionality:
+        - Logs project initialization and input summary (species count, enzymes count, temperature, database info)
+        - Validates solver configuration and simulation end time settings
+        - Placeholder for future model generation (currently just sleeps for 1 second)
+        
+        Future planned functionality:
+        - Generate reaction networks from input species and enzymes
+        - Apply kinetic models and rate laws from database
+        - Perform parameter estimation for unknown kinetic parameters
+        - Run kinetic simulations using specified solver
+        - Generate output files and plots
         
         Returns:
-            dict: The dictionary representation of the bees object.
+            dict: Execution results (currently empty, will contain model data in future)
         """
-        return {
-            'project': self.project,
-          #TODO: fill this with the correct type
-        }
-    
 
+        self.logger.info(f"Starting BEES execution for project '{self.project}'...")
 
-    def write_bees_input_file(self, input: InputBase, path: Optional[str] = None, all_args: bool = True) -> None:
-        """
-        Write the bees input file based on the provided input object.
+        self.logger.info(
+            f"Input has {len(self.bees_object.species)} species and {len(self.bees_object.enzymes)} enzymes."
+        )
+        self.logger.info(f"Environment Temperature: {self.bees_object.environment.temperature} K")
 
-        Args:
-            input (InputBase): The input object containing the necessary parameters.
-            path (Optional[str]): The path to save the input file. Defaults to None.
-            all_args (bool): Whether to include all arguments or only those set. Defaults to True.
-        """
-        if path is None:
-            path = os.path.join(self.project_directory, 'bees_auto_saved_input.yml')
-        if os.path.isdir(path):
-            path += '/' if path[-1] != '/' else ''
-            path += 'bees_auto_saved_input.yml'
-        base_path = os.path.dirname(path)
-        if not os.path.isdir(base_path):
-            os.makedirs(base_path)
-        self.logger.info(f'\n\nWriting input file to {path}')
-        save_yaml_file(path=path, content=self.schema if all_args else self.schema_exclude_unset)
-    
+        if hasattr(self.bees_object.database, "rate_law"):
+            self.logger.info(
+                f"Using '{self.bees_object.database.rate_law}' rate law "
+                f"from database '{self.bees_object.database.name}'."
+            )
+        else:
+            self.logger.info(
+                f"Database name: '{self.bees_object.database.name}'. No specific rate law defined."
+            )
 
+        if hasattr(self.bees_object.database, "parameter_estimator"):
+            self.logger.info(
+                f"Using parameter estimator: '{self.bees_object.database.parameter_estimator}'."
+            )
+        else:
+            self.logger.info(
+                f"No specific parameter estimator defined for database '{self.bees_object.database.name}'."
+            )
 
-#This File is not complete and needs to be filled with the correct methods and attributes.
+        if hasattr(self.bees_object, "settings") and hasattr(self.bees_object.settings, "end_time"):
+            self.logger.info(f"The simulation will run until {self.bees_object.settings.end_time} time units.")
+        else:
+            self.logger.warning("End time setting is not defined.")
+        self.logger.info(f"Using solver: {self.bees_object.database.solver}")
+        
+        time.sleep(1)  # Simulated work
+
+        self.logger.info(
+            f"BEES execution for project '{self.project}' completed in {common.time_lapse(self.t0)}."
+        )
+        self.logger.log_footer(success=True)
