@@ -1,239 +1,127 @@
-# A commented version of T3 input file
-project: project_name  # required
-project_directory: project_name  # optional
+# A commented version of BEES input file
 
-verbose: 20  # The logging level, optional. 10 - debug, 20 - info, 30 - warning, default: 20
-             # ``None`` will avoid logging to file.
+"""
+BEES Input File
+This file is an example file of the minimal parameters to run a program in BEES.
+"""
 
-# arguments related to T3 (optional)
-t3:
+# --- Project Information ---
+# 'project': Required. The name of your BEES project. This will also be used to create the project directory. Max length is 255 characters.
+project: MyFirstBEESProject
+project directory: /home/omerkfir/BEES/examples/commented
 
-  # options (optional block, all arguments have defaults)
-  options:
-    flux_adapter: RMG  # optional, can use any implemented simulation adapter, default: 'RMG'
-    profiles_adapter: RMG  # optional, can use any implemented simulation adapter, default: 'RMG'
-    collision_violators_thermo: false  # optional, whether to calculate thermo of species participating in collision violating reactions, default: ``False``
-    collision_violators_rates: false  # optional, whether to calculate rates of core collision violating reactions, default: ``False``. If ``True``, will only be done if all thermo of species in these reactions were calculated (will force ``collision_violators_thermo`` to be ``True`` if it's not
-    all_core_species: false  # optional, whether to calculate thermo for all core species, default: ``False``
-    all_core_reactions: false  # optional, whether to calculate rates (to be implemented) for all core species, default: ``False``
-    fit_missing_GAV: false  # optional, whether to capture wrong thermo groups of species estimated by RMG and attempt to calculate them, default: ``False``
-    max_T3_iterations: 10  # optional, maximum T3 iterations, default: 10
-    max_RMG_exceptions_allowed: 10  # optional, maximum number of times RMG is allowed to crash, default: 10
-    max_RMG_walltime: '00:02:00:00'  # optional, default: ``None``
-    max_T3_walltime: '01:00:00:00'  # optional, default: ``None``
-    library_name: T3  # optional, this is the name of the RMG libraries T3 creates as saves as output. default: 'T3'
-    shared_library_name: T3_shared  # optional, this is the name of RMG libraries (kinetics and thermo) created inside the respective RMG database paths that several T3 concurrent projects may share. default: ``None``
-    external_library_path: None  # optional, path to an external RMG library to use for saving shared libraries, default: ``None`` (i.e., use the RMG database path)
-    num_sa_per_temperature_range: 3  # optional, if a range of temperatures is given this argument specifies how many equally distributed points to generate for local SA runs, default: 3
-    num_sa_per_pressure_range: 3  # optional, if a range of pressures is given this argument specifies how many equally distributed points to generate for local SA runs, default: 3
-    num_sa_per_volume_range: 3  # optional, if a range of volumes is given this argument specifies how many equally distributed points to generate for local SA runs, default: 3
-    num_sa_per_concentration_range: 3  # optional, if a species concentration is given as a range this argument specifies how many equally distributed points to generate for local SA runs, default: 3
-    modify_concentration_ranges_together: True  # optional, if species concentration is given as a range, whether to vary the concentration of different species together (``True``) or to create combination when running local SA (``False``) - warning setting this to ``False`` may result in many combinations, especially if num_sa_per_concentration_range is set to a high value, and will spawn many SA runs which could be very slow, default: ``True``
-    modify_concentration_ranges_in_reverse: False  # optional, if species concentration is given as a range for two species only (e.g., fuel and oxidizer), whether to vary the concentration of the species inversely (in this case, you should define the concentration of N2 in an air mixture as ``balance: true``, default: ``False``
+# 'project_directory': Optional. The base directory where project files will be stored. If not specified, it defaults to 'projects/<project_name>'. relative to the BEES installation path. Max length is 255 characters.
+# project_directory: /path/to/your/custom/project_root
 
-  # sensitivity analysis (optional block, T3 can run w/o SA)
-  sensitivity:
-    adapter: RMGConstantTP  # *required* (this is how SA is requested), can use any implemented simulation adapter
-    atol: 1e-6  # optional, default: 1e-6
-    rtol: 1e-4  # optional, default: 1e-4
-    global_observables: ['IgD', 'ESR', 'SL']  # optional, only implemented in the Cantera adapter, default: ``None``
-    SA_threshold: 0.01  # optional, default: 0.01
-    pdep_SA_threshold: 0.001  # optional, used to determine wells and reactions (to be implemented) to calculate
-                              # thermo and rates for from a PES of a sensitive reaction, default: 0.001
-                              # Pass ``None`` to skip PES SA.
-    ME_methods: ['CSE', 'MSC']  # master equation methods, used to conduct a PES SA,
-                                # could be any combination of 'CSE', 'RS', 'MSC', default: ['CSE', 'MSC']
-    top_SA_species: 10  # optional, used per observable to determine thermo to calculate, default: 10
-    top_SA_reactions: 10  # optional, used per observable to determine rates to calculate as well as
-                          # thermo of species participating in these reactions, default: 10
-    compute_thermo: True  # Compute thermodynamic properties for species if needed
-    compute_kinetics: True  # Compute reaction rate coefficients if needed
+# --- Species Definition ---
+# 'species': Required. A list of chemical species involved in your biochemical system.
+#            Must contain at least one species.
+species:
+  - label: Glucose
+    concentration: 0.01  # Required. Initial concentration. Must be greater than 0.
+                         # Can be a single float or a tuple (min, max) for a range.
+    smiles: C(C1C(C(C(C(O1)CO)O)O)O)O # Optional. SMILES string for structural definition.
+    # inchi: InChI=1S/C6H12O6/c7-1-2-3(8)4(9)5(10)6(11)12-3/h2-6,8-11H,1H2/t2-,3-,4+,5-,6?/m1/s1 # Optional. InChI string.
+    # adjlist: Optional. Adjacency list representation.
+    charge: 0 #  The charge of the species. Optional, default: 0.
+    constant: false #  Whether this species' concentration remains constant. Optional, default: false.
+    reactive: true #  Whether this species participates in reactions. Optional, default: true.
+    observable: true #  Whether to track this species' concentration profiles. Optional, default: true.
+    solvent: false #  Indicates if this is the solvent. Optional, default: false.
+    
+    #Todo: right now, I don't know how to handle these fields in the schema but I still write it down here 
+    # xyz: Optional. XYZ coordinates for the species (dict or string). 
+
+  - label: ATP
+    concentration: 0.005
+    smiles: N1C=NC2=C1N=CN=C2C3C(C(C(O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O # ATP (simplified)
+    reactive: true
+    observable: true # Added to match default if not explicitly set
+
+  - label: Water
+    concentration: 55.5 # Molar concentration of water
+    smiles: O
+    solvent: true #  Indicates if this is the solvent. Optional, default: false.
+    reactive: true # Added to match default if not explicitly set
+    observable: true # Added to match default if not explicitly set
 
 
-  # uncertainty analysis for a predicted species concentration (optional block, T3 can run w/o UA)
-  # either local or global UA type must be specified to execute an UA
-  uncertainty:
-    adapter: RMG  # *required* (this is how UA is requested), currently only implemented in the RMG adapter
-    local_analysis: false  # optional, local uncertainty analysis using first-order sensitivity coefficients, default: ``False``
-    global_analysis: false  # optional, global uncertainty analysis varying largest sensitive input parameters, default: ``False``
-    correlated: true  # optional, whether to treat input parameters as correlated (RMG has ``correlated`` and ``uncorrelated``, ascribe correctly), default: ``True``
-    local_number: 10  # optional, the number of reported parameters in a local uncertainty analysis, default: 10
-    global_number: 5  # optional, number of sensitive input parameters to vary in the global uncertainty analysis per observable, applies independently to species and reactions, default: 5
-    termination_time: None  # only necessary for global UA if a termination time wasn't specified in the RMG reactor
-    PCE_run_time: 1800  # optional, sets a time limit for adapting the Polynomial Chaos Expansion (PCE) to the output, default: 1000, Units: s
-    PCE_error_tolerance: None  # optional, sets the target L2 error between the PCE model and the true output, default: ``None``
-    PCE_max_evals: None  # optional, sets a limit on the total number of model evaluations used to adapt the PCE, default: ``None``
-    logx: false  # optional, toggles the output parameter space between mole fractions and log mole fractions, results in mole fraction space are more physically meaningful, while results in log mole fraction space can be directly compared against local uncertainty results, default: ``False``
+# --- Enzyme Definition ---
+# 'enzymes': Required. A list of enzymes involved in your biochemical system.
+#            Must contain at least one enzyme.
+#            Enzymes inherit properties from Species.
 
-# arguments related to RMG, required
-rmg:
+enzymes:
+  - label: Hexokinase
+    concentration: 1e-6 # Enzyme concentration (e.g., Molar). Required. 
+    ecnumber: EC 2.7.1.1 # EC number (e.g., 'EC 2.7.1.1'). Must match pattern '^EC \d+\.\d+\.\d+\.\d+$'. Optional becuse if there is SMILES or InChI, it can also be used to find the EC number.
+    reactive: true #  Whether this enzyme participates in reactions. Optional, default: true.
+    
+    # Add other inherited Species attributes if needed, e.g., smiles, observable,
+    # smiles: Optional. SMILES string for the enzyme.
+  
 
-  # general
-  rmg_execution_type: incore  # optional, determines how to execute RMG. Currently, `incore` (running in the same process) and `local` (submitting to the local server queue, not via SSH) are supported. This argument is set from T3's settings.py file unless explicitly given here, default: ``None``
-  memory: 15  # optional, specifies the RMG memory to be used when executing on a server, units are GB. This argument is set from T3's settings.py file unless explicitly given here, default: ``None``
-  cpus: 16  # optional, specifies the number of processes to use for an RMG job. Could also be set from T3's settings.py file if not explicitly given here, default: 16
+  - label: Phosphofructokinase
+    concentration: 5e-7
+    ecnumber: EC 2.7.1.11
+    reactive: true
+    observable: true # Added to match default if not explicitly set
 
-  # database (a required block)
-  database:
-    thermo_libraries: ['BurkeH2O2', 'DFT_QCI_thermo', 'primaryThermoLibrary', 'CBS_QB3_1dHR']  # Can be None for auto-completion
-    kinetics_libraries: ['BurkeH2O2inN2', 'NOx2018', 'Klippenstein_Glarborg2016']  # Can be None for auto-completion
-    chemistry_sets: ['primary', 'nitrogen', 'combustion', 'CH_pyrolysis_light']  # The chemistry systems for which thermo and kinetics libraries will be loaded. Can be None to avoid auto-completion
-    use_low_credence_libraries: False # Whether to use low credence libraries during auto-completion, default: ``False``
-    transport_libraries: ['PrimaryTransportLibrary', 'OneDMinN2', 'NOx2018', 'GRI-Mech']  # optional, default: ['PrimaryTransportLibrary', 'OneDMinN2', 'NOx2018', 'GRI-Mech']
-    seed_mechanisms: []  # optional, default: []
-    kinetics_depositories: default  # optional, default: 'default'
-    kinetics_families: default  # optional, default: 'default'
-    kinetics_estimator: rate rules  # optional, default: 'rate rules'
 
-  # species (initial mixture) (a required block)
-  # concentration units are mole fraction for gas phase and mol/cm3 for liquid phase
-  # must specify either `smiles`, 'inchi', or `adj`
-  # not specifying `concentration` is allowed and will result in a 0 initial concentration.
-  species:
-    - label: ethane
-      smiles: CC
-      concentration: [1, 1.75]  # a concentration range can be defined (a length-2 list)
-      reactive: true  # optional, default: ``True``
-      xyz: [ethane.log]  # each entry could be a string/dictionary XYZ format or a file path to parse the information from
-      seed_all_rads: ['radical', 'alkoxyl', 'peroxyl']  # radical derivatives that will be added the RMG input file
-    - label: OH
-      smiles: '[OH]'
-      observable: true  # optional, will be used as both SA and UA observable, default: ``False``
-      SA_observable: true  # optional, will be used as an SA observable, default: ``False``
-      UA_observable: true  # optional, will be used as an UA observable, default: ``False``
-    - label: O2
-      smiles: '[O][O]'
-      concentration: 3.5
-    - label: N2
-      adjlist: |
-        1 N u0 p1 c0 {2,T}
-        2 N u0 p1 c0 {1,T}
-      concentration: 3.5 * 3.76
-      constant: true  # optional, only allowed to be ``True`` in liquid phase simulations, default: ``False``
-      balance: true  # optional, only allowed to be ``True`` in gas phase simulations, default: ``False``
-    - label: water
-      smiles: O
-      solvent: true  # optional, only allowed to be ``True`` in liquid phase simulations, required for one species for liquid phase simulations, default: ``False``
+# --- Environment Settings ---
+# 'environment': Required. Defines the physical and chemical conditions of the system.
+environment:
+  temperature: 310.15 # Required. Temperature in Kelvin. Must be greater than 0.
+                       # Can be a single float or a tuple (min, max) for a range.
+  pH: 7.4 # Required. pH level of the solution. Must be between 0 and 14.
+          # Can be a single float or a tuple (min, max) for a range.
+  ionic_strength: 0.15 # Ionic strength (measure of the concentration of ions in that solution) in Molar (must be >= 0). Optional, default: None. 
+  oxygen_level: 0.21 # Oxygen level (e.g., mole fraction or saturation, 0-1). Optional, default: None. 
+  seed_mechanisms: [] # List of paths to seed mechanisms (e.g., pre-defined reaction networks). Optional, default: None. 
 
-  # reactors (List[dict]) (a required block)
-  # reactor type can be either 'gas batch constant T P', or 'liquid batch constant T V'
-  # at least one of the three termination criteria must be given per reactor
-  # note that having a termination time is recommended, it will also be used for the simulations
-  # for species concentration profiles and SA. If not specified, the chemical time at which RMG terminated due to other
-  # termination criteria will be used.
-  # users may specify as many reactors as they wish, yet the must all be either gas or liquid phase
-  reactors:
-    - type: gas batch constant T P
-      T: [800, 1750]  # Could be a float (single T) or a list (range of Ts), Units: K
-      P: 1e0  # could be a float (single P) or a list (range of P), Units: bar
-      termination_conversion:
-        'ethane': 0.2
-      termination_time: [5, 's']  # allowed units: 'micro-s', 'ms', 's', 'hours', 'days'
-      termination_rate_ratio: 0.01
-      conditions_per_iteration: 12  # optional, number of times variable ranged-reactor conditions are ran per RMG iteration (nSims)
 
-  # model (a required block)
-  model:
-    # primary_tolerances:
-    core_tolerance: [0.05, 0.01]  # *required*, float or list (if a list, a different core tolerance value is used per T3 iteration) (toleranceMoveToCore)
-    atol: 1e-16  # optional, default: 1e-16
-    rtol: 1e-8  # optional, default: 1e-8
-    # filtering:
-    filter_reactions: false  # optional, filtering reactions
-    filter_threshold: 1e+8  # optional, filtering reactions
-    # pruning:
-    tolerance_interrupt_simulation: [0.05, 0.01]  # optional, float or list, pruning, will be set equal to core_tolerance if not specified
-    min_core_size_for_prune: 50  # optional, pruning
-    min_species_exist_iterations_for_prune: 2  # optional, pruning
-    tolerance_keep_in_edge: 0.02  # optional, pruning
-    maximum_edge_species: 1000000  # optional, pruning
-    tolerance_thermo_keep_species_in_edge:  # optional, thermo pruning
-    # staging:
-    max_num_species: None  # optional, staging
-    # dynamics:
-    tolerance_move_edge_reaction_to_core:  # optional, dynamics criterion
-    tolerance_move_edge_reaction_to_core_interrupt: 5.0  # optional, dynamics criterion
-    dynamics_time_scale: (0.0, 'sec')  # optional, dynamics criterion
-    # multiple_objects:
-    max_num_objs_per_iter: 1  # optional, multiple objects
-    terminate_at_max_objects: false  # optional, multiple objects
-    # misc:
-    ignore_overall_flux_criterion: false  # optional
-    tolerance_branch_reaction_to_core: 0.001  # optional
-    branching_index: 0.5  # optional
-    branching_ratio_max: 1.0  # optional
-    # surface algorithm
-    tolerance_move_edge_reaction_to_surface: None
-    tolerance_move_surface_species_to_core: None
-    tolerance_move_surface_reaction_to_core: None
-    tolerance_move_edge_reaction_to_surface_interrupt: None
+# --- Database Settings ---
+# 'database': Required. Configures how BEES accesses kinetic and thermodynamic data.
+database:
+  name: BEES_KineticDB # Required. A name for your database instance. Must not be empty.
+  parameters: # Specific parameters to override or provide (e.g., for custom rate laws). Optional, default: None. 
+              # This is a dictionary of string keys to float values.
+    kcat_Hexokinase: 100
+    Km_Glucose_Hexokinase: 0.001
+  thermo_libraries: [] #  List of thermodynamic libraries to use (e.g., ['MyCustomThermoLib']). Optional, default: None.
+  kinetics_libraries: [] # List of kinetics libraries to use.
+  use_low_credence_libraries: false # Whether to use less reliable libraries.
+  kinetics_depositories: default # Kinetics data sources. Can be 'default' or a list of strings. Optional, default: 'default'
+  kinetics_families: default # Reaction families to consider. Can be 'default' or a list of strings. Optional, default: None.
+  # The following fields were missing in your input.yml but are REQUIRED by your schema.py
+  # I've added them here with example values.
+  solver: odeint # Required. Numerical solver for ODEs. Options: "odeint", "CVODE", "BDF".
+  kinetics_estimator: rate rules # Required. Method for estimating kinetic parameters.
+                                 # This is a string field in schema, not an enum.
+                                 # Example: "rate rules", "ML", "group_contribution", "fixed_defaults"
 
-  # pressure dependence (optional block)
-  # only allowed for gas phase simulations
-  pdep:
-    method: MSC  # *required*, this is how PDep is requested
-    max_grain_size: 2  # optional, units: kJ/mol, default: 2
-    max_number_of_grains: 250  # optional, default: 250
-    T: [300, 2500, 10]  # optional, [T min, T max, number of points], default: [300, 2500, 10], Units: K
-    P: [0.01, 100, 10]  # optional, [P min, P max, number of points], default: [0.01, 100, 10], Units: bar
-    interpolation: Chebyshev  # optional, either 'PDepArrhenius' or 'Chebyshev', default: 'Chebyshev'
-    T_basis_set: 6  # optional, only used for a Chebyshev interpolation, default: 6
-    P_basis_set: 4  # optional, only used for a Chebyshev interpolation, default: 4
-    max_atoms: 16  # optional, default: 16
 
-  # options (optional block)
-  options:
-    seed_name: Seed  # optional, name for the generated seed, default: 'Seed'
-    save_edge: false  # optional, saves the Edge, default: ``False`` in T3 (``False`` in RMG) (saveEdgeSpecies)
-    save_html: false  # optional, default: ``False`` (have T3 generate HTML for the core after the last T3 iteration))
-    generate_seed_each_iteration: true  # optional, save a seed at each iteration, default: ``True``
-    save_seed_to_database: false  # optional, save the seed to the database as well, default: ``False``
-    units: si  # optional, currently RMG does not support any other units set
-    generate_plots: false  # optional, will generate RMG job statistics plots (core and edge size, memory used), default: ``False``
-    save_simulation_profiles: false  # optional, save RMG .csv simulation profiles files, default: ``False``
-    verbose_comments: false  # optional, adds significant verbosity to the chemkin files, default: ``False``
-    keep_irreversible: false  # optional, don't force library reactions to be reversible, default: ``False``
-    trimolecular_product_reversible: true  # optional, allow families with three products to react in the reverse direction, default: ``True``
-    save_seed_modulus: -1  # optional, save the seed every n iterations (-1 to only save the last iteration), default: -1
+# --- Application Settings ---
+# 'settings': Required. General operational settings for the BEES application.
+settings:
+  end_time: 3600.0 # Required. Simulation end time. Must be greater than 0.
+  time_step: 1.0 # Required. Simulation time step. Must be greater than 0.
+  time_units: s # . Units for end_time and time_step. Optional, default: 's'
+                # Options: 'micro-s', 'ms', 's', 'hrs', 'minutes', 'hours', 'days'.
+  toleranceKeepInEdge: 0.0 #  Tolerance for keeping species in edge. Must be >= 0. Optional, default: 0.0.
+  toleranceMoveToCore: 1e-5 # . Tolerance for moving species to core. Must be >= 0. Optional, default: 1e-5
+  termination_conversion: #  Terminate simulation when species conversion reaches a fraction. Optional, default: None.
+                          # Dictionary mapping species label to conversion fraction (0 < value < 1).
+    Glucose: 0.9 # Terminate when Glucose conversion reaches 90%
+  termination_rate_ratio: 0.01 #  Terminate when a rate ratio falls below this value (0 < value < 1). Optional, default: None.
+  max_edge_species: # Maximum number of species allowed in the edge. Must be > 0. Optional, default: None. 
+  filter_reactions: true #  Whether to filter reactions. Optional, default: true.
+  modify_concentration_ranges_together: true #  Whether to modify concentration ranges together. Optional, default: true.
+  max_iterations: 50 #  Maximum iterations for iterative refinement. Must be > 0. Optional, default: 50.
+  verbose: 20 # Logging verbosity level (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR, 50=CRITICAL).  Optional, default: 20 (INFO).
+  saveEdgeSpecies: true #  Whether to save edge species. Optional, default: true.
+  output_directory: # Optional. Custom path for output files. If not set, defaults to project_directory.
+  # output_directory: /path/to/custom/output/folder
+  generate_plots: false # Whether to generate plots of results. Optional, default: false. 
+  save_simulation_profiles: false # Whether to save raw simulation data profiles. Optional, default: false. 
 
-  # species constraints (optional block)
-  species_constraints:
-    allowed: ['input species', 'seed mechanisms', 'reaction libraries']  # optional, allow species from these sources to bypass the constraints, default: ['input species', 'seed mechanisms', 'reaction libraries']
-    max_C_atoms: 10  # required
-    max_O_atoms: 10  # required
-    max_N_atoms: 10  # required
-    max_Si_atoms: 10  # required
-    max_S_atoms: 10  # required
-    max_heavy_atoms: 10  # required
-    max_radical_electrons: 2  # required
-    max_singlet_carbenes: 1  # optional, default: 1
-    max_carbene_radicals: 0  # optional, default: 0
-    allow_singlet_O2: true  # optional, allows singlet O2 **from the input file**, default: ``True`` in T3 (``False`` in RMG)
-
-# arguments related to QM calcs, required to run QM calcs, otherwise T3 will only spawn RMG
-qm:
-  # currently only ARC is supported, we'd like to also incorporate AutoTST
-  # All legal ARC arguments are allowed here
-  # Note: If ``species`` or ``reactions`` are specified, ARC will be spawned prior to RMG to calculate them first
-  adapter: ARC
-  # any legal ARC argument can come here
-  adaptive_levels:
-    (1, 6):
-      opt_level: wb97xd/wb97xd/def2tzvp
-      sp: ccsd(t)-f12/aug-cc-pvtz-f12
-    (7, 30):
-      conformer_level:
-        method: wb97xd
-        basis: def2svp
-      opt_level:
-        method: wb97xd
-        basis: def2tzvp
-      sp_level:
-        method: dlpno-ccsd(T)
-        basis: def2-tzvp
-        auxiliary_basis: def2-tzvp/c
-    (31, 'inf'):
-      opt_level: wb97xd/wb97xd/def2tzvp
-  species:
-    - label: vinoxy
-      smiles: C=C[O]
