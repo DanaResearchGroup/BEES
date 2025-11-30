@@ -1,0 +1,91 @@
+2025-11-27 12:00:00,000 - INFO - ALWAYS: BEES execution initiated on Wed Nov 27 12:00:00 2025
+
+################################################################
+#                                                              #
+#       Biochemical Engine for Enzymatic modelS (BEES)         #
+#                                                              #
+#                                                              #
+#       Version:0.1.0                                          #
+#                                                              #
+################################################################
+
+
+2025-11-27 12:00:00,001 - INFO - ALWAYS: The current git HEAD for BEES is:
+    abc123def4567890123456789012345678901234
+    Wed Nov 27 12:00:00 2025 +0000
+2025-11-27 12:00:00,001 - INFO - ALWAYS:     (running on the main branch)
+
+2025-11-27 12:00:00,001 - INFO - ALWAYS: Starting project ExampleProject
+2025-11-27 12:00:00,001 - INFO - Logger initialized successfully in: /path/to/projects/ExampleProject
+2025-11-27 12:00:00,001 - INFO - Console output level: INFO
+2025-11-27 12:00:00,001 - INFO - Main log file: /path/to/projects/ExampleProject/ExampleProject.log (level: DEBUG)
+2025-11-27 12:00:00,001 - INFO - Error log file: /path/to/projects/ExampleProject/ExampleProject_errors.log (level: ERROR)
+2025-11-27 12:00:00,001 - INFO - Project 'ExampleProject' started at: 2025-11-27 12:00:00
+2025-11-27 12:00:00,001 - INFO - BEES version: 0.1.0
+2025-11-27 12:00:00,002 - INFO - Git branch: main
+2025-11-27 12:00:00,002 - INFO - Git commit: abc123def4567890123456789012345678901234 (Wed Nov 27 12:00:00 2025 +0000)
+2025-11-27 12:00:00,002 - INFO - 
+
+Using the following arguments:
+
+project: ExampleProject
+species: [{'label': 'Glucose', 'concentration': 1.0, 'observable': True, 'reactive': True}]
+enzymes: [{'label': 'Hexokinase', 'ecnumber': 'EC 1.1.1.1', 'concentration': 1e-06, 'reactive': True}]
+environment:
+  temperature: 310.0
+  pH: 7.4
+database:
+  name: ExampleDB
+  kinetics_estimator: rate rules
+  solver: odeint
+settings:
+  end_time: 100.0
+  time_step: 0.1
+  verbose: 20
+
+2025-11-27 12:00:00,010 - INFO - Input validated successfully against the schema.
+2025-11-27 12:00:00,011 - INFO - Saving validated input to /path/to/projects/ExampleProject/input.yml
+2025-11-27 12:00:00,011 - INFO - BEES project ExampleProject initialized successfully in 00:00:00.
+
+2025-11-27 12:00:00,011 - INFO - Starting BEES execution for project 'ExampleProject'...
+2025-11-27 12:00:00,011 - INFO - Input has 1 species and 1 enzymes.
+2025-11-27 12:00:00,011 - INFO - Environment Temperature: 310.0 K
+2025-11-27 12:00:00,011 - INFO - Database name: 'ExampleDB'. No specific rate law defined.
+2025-11-27 12:00:00,011 - INFO - No specific parameter estimator defined for database 'ExampleDB'.
+2025-11-27 12:00:00,011 - INFO - The simulation will run until 100.0 time units.
+2025-11-27 12:00:00,011 - INFO - Using solver: odeint
+
+2025-11-27 12:00:00,011 - INFO - 
+2025-11-27 12:00:00,011 - INFO - ============================================================
+2025-11-27 12:00:00,011 - INFO - STARTING MODEL GENERATION
+2025-11-27 12:00:00,011 - INFO - ============================================================
+2025-11-27 12:00:00,012 - INFO - Loading kinetic database from /path/to/db/db.csv
+2025-11-27 12:00:00,050 - INFO - Loaded 17 kinetic reactions from /path/to/db/db.csv
+2025-11-27 12:00:00,050 - INFO - Database loaded: 17 reactions, 17 unique enzymes, 17 unique substrates
+2025-11-27 12:00:00,050 - INFO -   - Reactions with Km: 17
+2025-11-27 12:00:00,050 - INFO -   - Reactions with kcat: 17
+2025-11-27 12:00:00,050 - INFO -   - Reactions with ΔG: 17
+
+2025-11-27 12:00:00,050 - INFO - ============================================================
+2025-11-27 12:00:00,050 - INFO - REACTION GENERATION
+2025-11-27 12:00:00,050 - INFO - ============================================================
+2025-11-27 12:00:00,050 - INFO - Found 1 reactive substrate(s) and 1 reactive enzyme(s)
+2025-11-27 12:00:00,050 - INFO - Generating reactions for 1 enzyme-substrate pair(s)...
+2025-11-27 12:00:00,050 - INFO - 
+2025-11-27 12:00:00,051 - INFO -   [1] Reaction: Glucose + ATP → Glucose-6-phosphate + ADP
+2025-11-27 12:00:00,051 - INFO -       ├─ Database match: Km=0.15 mM, kcat=100.0 1/s
+2025-11-27 12:00:00,051 - INFO -       └─ Type: oxidation_CH-OH (OXIDOREDUCTASE)
+
+2025-11-27 12:00:00,051 - INFO - 
+2025-11-27 12:00:00,051 - INFO - Generated 1 total reaction(s)
+2025-11-27 12:00:00,051 - INFO - 
+2025-11-27 12:00:00,051 - INFO - ✓ Successfully generated 1 reaction(s)
+2025-11-27 12:00:00,052 - INFO - ✓ Exported reaction summary to: /path/to/projects/ExampleProject/reactions_summary.txt
+
+2025-11-27 12:00:00,052 - INFO - 
+2025-11-27 12:00:00,052 - INFO - BEES execution for project 'ExampleProject' completed in 00:00:00.
+2025-11-27 12:00:00,052 - INFO - ============================================================
+2025-11-27 12:00:00,052 - INFO - BEES execution completed successfully
+2025-11-27 12:00:00,052 - INFO - ============================================================
+
+
