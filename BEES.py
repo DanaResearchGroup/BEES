@@ -1,81 +1,95 @@
 #!/usr/bin/env python3
-# encoding: utf-8
+r"""
+Executable wrapper for BEES (Biochemical Engine for Enzymatic kinetic modelS)
+
+
+This simply delegates to main.py so users don’t need to call `python main.py`. 
+
+For linux users:
+Make sure this file is executable: chmod +x BEES.py
+
+To run BEES from anywhere, add to your PATH (in ~/.bashrc or ~/.zshrc):
+    export PATH="$PATH:$HOME/BEES"
+
+Then you can run BEES like this:
+cd ~/BEES
+for linux users:
+./BEES.py -i ~/BEES/examples/minimal/input.yml -p MyProject
+for windows users:
+.\BEES.bat -i examples\\minimal\\input.yml -p MyProject  
+
+# Note that some tests are still run good only on linux (for now)
+# More examples can bo fonded on projects folder.
 
 """
-Bees executable module
-"""
 
-""""""
-#TODO: 
-
-
-import argparse
+import sys
 import os
+import argparse
 
-from arc.common import read_yaml_file
+# Import necessary modules from BEES
+import bees.common as common
 
-from bees import bees
-from bees.utils.dependencies import check_dependencies
+from bees.main import BEES
 
+BEES_PATH = common.BEES_PATH   
 
+if "bees_env" not in sys.executable:
+    print("Please activate the 'bees_env' environment before running BEES.")
+    sys.exit(1)
 
+def parse_and_load_input() -> dict:
+    parser = argparse.ArgumentParser(description="BEES")
+    parser.add_argument("-i", "--input_file", type=str, help="Path to input YAML")
+    parser.add_argument("-p", "--project", type=str, help="Project name")
+    parser.add_argument("-v", "--verbose", type=int, choices=[10, 20, 30, 40, 50], help="Log level")
+    parser.add_argument("-o", "--output_directory", type=str, help="Output directory")
+    args = parser.parse_args()
 
-def parse_command_line_arguments(command_line_args=None):
+    default_input_path = os.path.join(BEES_PATH, "examples", "minimal", "input.yml")
+    input_path = args.input_file or default_input_path
+
+    input_data = common.read_yaml_file(input_path)
+    input_data.setdefault("settings", {})
+
+    if args.project:
+        input_data["project"] = args.project
+    if args.verbose is not None:
+        input_data["settings"]["verbose"] = args.verbose
+    if args.output_directory:
+        input_data["settings"]["output_directory"] = args.output_directory
+
+    if not input_data.get("project"):
+        raise ValueError("Project name is required!")
+
+    return input_data
+
+def main():
     """
-    Parse command-line arguments.
-
-    Args:
-        command_line_args: The command line arguments.
-
-    Returns:
-        The parsed command-line arguments by key words.
+    the main BEES excutable function
+    Entrypoint without try/except — exceptions bubble up.
     """
-
-    parser = argparse.ArgumentParser(description='The Tandem Tool (bees)')
-    parser.add_argument('file', metavar='FILE', type=str, nargs=1,
-                        help='a file describing the job to execute')
-
-    # Options for controlling the amount of information printed to the console
-    # By default a moderate level of information is printed; you can either
-    # ask for less (quiet), more (verbose), or much more (debug)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('-d', '--debug', action='store_true', help='print debug information')
-    group.add_argument('-q', '--quiet', action='store_true', help='only print warnings and errors')
-
-    args = parser.parse_args(command_line_args)
-    args.file = args.file[0]
-
-    return args
-
-
-def main() -> None:
-    """
-    The main bees executable function.
-    """
-    args = parse_command_line_arguments()
-    input_file = args.file
-    project_directory = os.path.abspath(os.path.dirname(args.file))
-    input_dict = read_yaml_file(path=input_file)
-    if 'project' not in list(input_dict.keys()):
-        raise ValueError('A project name must be provided.')
-
-    verbose = 20
-    if args.debug:
-        verbose = 10
-    elif args.quiet:
-        verbose = 30
-    input_dict['verbose'] = input_dict['verbose'] if 'verbose' in input_dict else verbose
-    if 'project_directory' not in input_dict or not input_dict['project_directory']:
-        input_dict['project_directory'] = project_directory
+    input_data = parse_and_load_input()
+    bees_instance = BEES(input_data=input_data)
+    results = bees_instance.execute()
+    
+    # Print summary of results
+    if results and results.get('success'):
+        print(f"\n{'='*60}")
+        print(f"✓ BEES Execution Summary:")
+        print(f"  Project: {results['project']}")
+        print(f"  Reactions Generated: {results['n_reactions']}")
+        print(f"  Execution Time: {results['execution_time']}")
+        if results.get('summary_path'):
+            print(f"  Summary: {results['summary_path']}")
+        print(f"{'='*60}\n")
+    else:
+        print(f"\n⚠ BEES execution completed with warnings or errors.")
+        if results and results.get('message'):
+            print(f"  {results['message']}\n")
+    
+    return results
 
 
-
-    # check ____ are available
-    check_dependencies()
-
-    bees_object = bees(**input_dict)
-    bees_object.execute()
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

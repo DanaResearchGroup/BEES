@@ -175,3 +175,36 @@ cython_debug/
 
 # PyCharm
 .idea
+
+# BEES Project Specific Outputs
+# Keep test input files and summary, but ignore generated results
+# Keep: input.yml files, TEST_PROJECTS_SUMMARY.md
+# Ignore: log files, reactions_summary.txt, error files
+
+# In projects/ directory: keep structure and input.yml, ignore results
+projects/*/reactions_summary.txt
+projects/*/*.log
+projects/*/*_errors.log
+projects/*/log_archive/
+
+# In examples/ directory: keep input.yml files, ignore generated output files
+# But DO track example_output/ directory which shows what output should look like
+examples/*/reactions_summary.txt
+examples/*/*.log
+examples/*/*_errors.log
+examples/*/log_archive/
+# Exception: keep example_output directory to show users what output looks like
+!examples/example_output/
+
+# BEES Test Files (temporary/generated in root directory)
+test_first_time_user.yml
+test_programmatic_access.py
+
+# BEES Documentation (generated - comment out if you want to track them)
+IMPROVEMENTS.md
+TESTING_GUIDE.md
+TEST_SETUP_COMPLETE.md
+
+# BEES Output Files (general)
+*.log
+*_errors.log
