@@ -24,7 +24,7 @@ EC Number Classification:
 
 import logging
 import re
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Tuple, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -117,6 +117,95 @@ def get_ec_class(ec_number: str) -> ECClass:
         return ECClass.UNKNOWN
 
 
+# Base templates for each EC class
+EC_BASE_TEMPLATES: Dict[ECClass, Dict] = {
+    ECClass.OXIDOREDUCTASE: {
+        "template_type": "oxidoreduction",
+        "description": "Oxidoreduction reaction",
+        "reversible": True,
+    },
+    ECClass.TRANSFERASE: {
+        "template_type": "group_transfer",
+        "description": "Generic group transfer",
+        "cofactors": [],
+        "reversible": False,
+    },
+    ECClass.HYDROLASE: {
+        "template_type": "hydrolysis",
+        "description": "Hydrolysis reaction",
+        "reversible": False,
+    },
+    ECClass.LYASE: {
+        "template_type": "elimination",
+        "description": "Addition or elimination reaction",
+        "reversible": True,
+    },
+    ECClass.ISOMERASE: {
+        "template_type": "isomerization",
+        "description": "Intramolecular rearrangement",
+        "reversible": True,
+    },
+    ECClass.LIGASE: {
+        "template_type": "ligation",
+        "description": "Bond formation coupled to ATP hydrolysis",
+        "cofactors": ["ATP", "Mg2+"],
+        "reversible": False,
+    },
+    ECClass.TRANSLOCASE: {
+        "template_type": "translocation",
+        "description": "Movement across membrane",
+        "reversible": False,
+    },
+}
+
+# Subclass-specific overrides
+EC_SUBCLASS_OVERRIDES: Dict[ECClass, Dict[int, Dict]] = {
+    ECClass.OXIDOREDUCTASE: {
+        1: {
+            "template_type": "oxidation_CH-OH",
+            "description": "Oxidation of CH-OH group",
+        },
+        2: {
+            "template_type": "oxidation_C=O",
+            "description": "Oxidation of aldehyde or ketone",
+        },
+        3: {
+            "template_type": "oxidation_CH-CH",
+            "description": "Oxidation of CH-CH group",
+        },
+    },
+    ECClass.TRANSFERASE: {
+        7: {
+            "template_type": "phosphorylation",
+            "description": "Phosphate group transfer from ATP",
+            "cofactors": ["ATP", "Mg2+"],
+        },
+        3: {
+            "template_type": "acyl_transfer",
+            "description": "Acyl group transfer",
+        },
+        4: {
+            "template_type": "glycosyl_transfer",
+            "description": "Glycosyl group transfer",
+        },
+    },
+    ECClass.HYDROLASE: {
+        1: {
+            "template_type": "ester_hydrolysis",
+            "description": "Hydrolysis of ester bonds",
+        },
+        2: {
+            "template_type": "glycoside_hydrolysis",
+            "description": "Hydrolysis of glycosidic bonds",
+        },
+        4: {
+            "template_type": "peptide_hydrolysis",
+            "description": "Hydrolysis of peptide bonds",
+        },
+    },
+}
+
+
 def determine_template_from_ec(ec_number: str, substrate: Optional[str] = None) -> ReactionTemplate:
     """
     Determine reaction template based on EC number.
@@ -142,131 +231,58 @@ def determine_template_from_ec(ec_number: str, substrate: Optional[str] = None) 
             description="Generic enzymatic reaction"
         )
     
-    # Determine template based on EC class
-    if ec_class == ECClass.OXIDOREDUCTASE:
-        # EC 1: Oxidoreductases
-        if sub_class == 1:
-            template_type = "oxidation_CH-OH"
-            description = "Oxidation of CH-OH group"
-        elif sub_class == 2:
-            template_type = "oxidation_C=O"
-            description = "Oxidation of aldehyde or ketone"
-        elif sub_class == 3:
-            template_type = "oxidation_CH-CH"
-            description = "Oxidation of CH-CH group"
-        else:
-            template_type = "oxidoreduction"
-            description = "Oxidoreduction reaction"
-        
-        return ReactionTemplate(
-            template_type=template_type,
-            ec_class=ec_class,
-            description=description,
-            reversible=True
-        )
+    # Get base template for this EC class, or fall back to generic
+    base = EC_BASE_TEMPLATES.get(
+        ec_class,
+        {
+            "template_type": "generic",
+            "description": "Generic enzymatic reaction",
+            "reversible": False,
+        },
+    )
     
-    elif ec_class == ECClass.TRANSFERASE:
-        # EC 2: Transferases
-        if sub_class == 7:
-            # Phosphotransferases (kinases)
-            template_type = "phosphorylation"
-            description = "Phosphate group transfer from ATP"
-            cofactors = ["ATP", "Mg2+"]
-        elif sub_class == 3:
-            template_type = "acyl_transfer"
-            description = "Acyl group transfer"
-            cofactors = []
-        elif sub_class == 4:
-            template_type = "glycosyl_transfer"
-            description = "Glycosyl group transfer"
-            cofactors = []
-        else:
-            template_type = "group_transfer"
-            description = "Generic group transfer"
-            cofactors = []
-        
-        return ReactionTemplate(
-            template_type=template_type,
-            ec_class=ec_class,
-            cofactors=cofactors,
-            description=description,
-            reversible=False
-        )
+    # Get subclass override if present
+    subclass_overrides = EC_SUBCLASS_OVERRIDES.get(ec_class, {})
+    override = subclass_overrides.get(sub_class, {})
     
-    elif ec_class == ECClass.HYDROLASE:
-        # EC 3: Hydrolases
-        if sub_class == 1:
-            template_type = "ester_hydrolysis"
-            description = "Hydrolysis of ester bonds"
-        elif sub_class == 2:
-            template_type = "glycoside_hydrolysis"
-            description = "Hydrolysis of glycosidic bonds"
-        elif sub_class == 4:
-            template_type = "peptide_hydrolysis"
-            description = "Hydrolysis of peptide bonds"
-        else:
-            template_type = "hydrolysis"
-            description = "Hydrolysis reaction"
-        
-        return ReactionTemplate(
-            template_type=template_type,
-            ec_class=ec_class,
-            description=description,
-            reversible=False
-        )
+    # Merge, with subclass override taking precedence
+    template_kwargs = {**base, **override, "ec_class": ec_class}
     
-    elif ec_class == ECClass.LYASE:
-        # EC 4: Lyases
-        template_type = "elimination"
-        description = "Addition or elimination reaction"
-        return ReactionTemplate(
-            template_type=template_type,
-            ec_class=ec_class,
-            description=description,
-            reversible=True
-        )
-    
-    elif ec_class == ECClass.ISOMERASE:
-        # EC 5: Isomerases
-        template_type = "isomerization"
-        description = "Intramolecular rearrangement"
-        return ReactionTemplate(
-            template_type=template_type,
-            ec_class=ec_class,
-            description=description,
-            reversible=True
-        )
-    
-    elif ec_class == ECClass.LIGASE:
-        # EC 6: Ligases
-        template_type = "ligation"
-        description = "Bond formation coupled to ATP hydrolysis"
-        return ReactionTemplate(
-            template_type=template_type,
-            ec_class=ec_class,
-            cofactors=["ATP", "Mg2+"],
-            description=description,
-            reversible=False
-        )
-    
-    elif ec_class == ECClass.TRANSLOCASE:
-        # EC 7: Translocases
-        template_type = "translocation"
-        description = "Movement across membrane"
-        return ReactionTemplate(
-            template_type=template_type,
-            ec_class=ec_class,
-            description=description,
-            reversible=False
-        )
-    
-    else:
-        # Unknown
-        return ReactionTemplate(
-            template_type="generic",
-            ec_class=ECClass.UNKNOWN,
-            description="Generic enzymatic reaction"
-        )
+    return ReactionTemplate(**template_kwargs)
+
+
+def _infer_hydrolysis_products(substrate: str, template: ReactionTemplate, cofactor: Optional[str]) -> List[str]:
+    """Helper function for hydrolysis product inference."""
+    if "glycos" in template.template_type.lower() or "sacchar" in substrate.lower():
+        return [f"{substrate} fragments"]
+    return [f"{substrate} (hydrolyzed)"]
+
+
+def _infer_ester_hydrolysis_products(substrate: str, template: ReactionTemplate, cofactor: Optional[str]) -> List[str]:
+    """Helper function for ester hydrolysis product inference."""
+    if "ATP" in substrate or "ADP" in substrate:
+        return ["ADP" if "ATP" in substrate else "AMP", "Pi"]
+    return [f"{substrate} (hydrolyzed)"]
+
+
+def _infer_oxidation_products(substrate: str, template: ReactionTemplate, cofactor: Optional[str]) -> List[str]:
+    """Helper function for oxidation product inference."""
+    products = [f"{substrate} (oxidized)"]
+    if cofactor and "NAD" in cofactor.upper():
+        products.append("NADH" if "NAD+" in cofactor else "NADPH")
+    return products
+
+
+# Product inference rules by template type
+PRODUCT_INFERENCE_RULES: Dict[str, Callable[[str, ReactionTemplate, Optional[str]], List[str]]] = {
+    "phosphorylation": lambda s, t, c: [f"{s}-phosphate", "ADP"],
+    "hydrolysis": _infer_hydrolysis_products,
+    "ester_hydrolysis": _infer_ester_hydrolysis_products,
+    "isomerization": lambda s, t, c: [f"{s} (isomer)"],
+    "ligation": lambda s, t, c: [f"{s} (ligated)", "ADP", "Pi"],
+    "group_transfer": lambda s, t, c: [f"{s} (modified)"],
+    "generic": lambda s, t, c: [f"{s} (product)"],
+}
 
 
 def infer_products(
@@ -296,59 +312,22 @@ def infer_products(
     """
     # If database has products, use them
     if database_products:
-        # Split by common delimiters
         products = [p.strip() for p in re.split(r'[+,;]', database_products)]
         return [p for p in products if p]  # Remove empty strings
     
-    # Otherwise, infer based on template
-    products = []
+    # Get inference function for template type
+    template_type = template.template_type
     
-    if template.template_type == "phosphorylation":
-        # Substrate + ATP → Substrate-phosphate + ADP
-        products.append(f"{substrate}-phosphate")
-        products.append("ADP")
-    
-    elif template.template_type == "hydrolysis":
-        # Substrate + H2O → Product fragments
-        if "glycos" in template.template_type.lower() or "sacchar" in substrate.lower():
-            # Glycoside hydrolysis typically produces monosaccharides
-            products.append(f"{substrate} fragments")
-        else:
-            products.append(f"{substrate} (hydrolyzed)")
-    
-    elif template.template_type == "ester_hydrolysis":
-        # Ester + H2O → Alcohol + Acid
-        if "ATP" in substrate or "ADP" in substrate:
-            products.append("ADP" if "ATP" in substrate else "AMP")
-            products.append("Pi")
-        else:
-            products.append(f"{substrate} (hydrolyzed)")
-    
-    elif template.template_type.startswith("oxidation"):
-        # Substrate + NAD+ → Substrate-oxidized + NADH
-        if cofactor and "NAD" in cofactor.upper():
-            products.append(f"{substrate} (oxidized)")
-            products.append("NADH" if "NAD+" in cofactor else "NADPH")
-        else:
-            products.append(f"{substrate} (oxidized)")
-    
-    elif template.template_type == "isomerization":
-        # Substrate → Substrate-isomer
-        products.append(f"{substrate} (isomer)")
-    
-    elif template.template_type == "ligation":
-        # Substrate1 + Substrate2 + ATP → Product + ADP + Pi
-        products.append(f"{substrate} (ligated)")
-        products.append("ADP")
-        products.append("Pi")
-    
-    elif template.template_type == "group_transfer":
-        # Substrate + Acceptor → Substrate-group + Acceptor+group
-        products.append(f"{substrate} (modified)")
-    
+    # Handle oxidation templates (can start with "oxidation")
+    if template_type.startswith("oxidation"):
+        products = _infer_oxidation_products(substrate, template, cofactor)
     else:
-        # Generic/unknown
-        products.append(f"{substrate} (product)")
+        # Look up inference function in dictionary
+        inference_func = PRODUCT_INFERENCE_RULES.get(
+            template_type,
+            PRODUCT_INFERENCE_RULES["generic"]
+        )
+        products = inference_func(substrate, template, cofactor)
     
     logger.debug(f"Inferred products for {substrate} + {enzyme_label}: {products}")
     return products

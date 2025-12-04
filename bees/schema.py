@@ -41,6 +41,7 @@ class Species(BaseModel):
     class Config:
         extra = "forbid"
 
+    @classmethod
     @field_validator('concentration')
     def check_concentration_range_order(cls, value, info: ValidationInfo):
         label = info.data.get('label')
@@ -60,6 +61,7 @@ class Species(BaseModel):
             return value
         return value
 
+    @classmethod
     @field_validator('constant')
     def check_constant_species(cls, value, info: ValidationInfo):
         if value:
@@ -71,6 +73,7 @@ class Species(BaseModel):
                 raise ValueError("Observable species cannot be constant")
         return value
 
+    @classmethod
     @field_validator('smiles')
     def validate_smiles(cls, value):
         if value:
@@ -82,6 +85,7 @@ class Species(BaseModel):
                 raise ValueError("Invalid SMILES string")
         return value
 
+    @classmethod
     @field_validator('inchi')
     def validate_inchi(cls, value):
         if value:
@@ -93,6 +97,7 @@ class Species(BaseModel):
                 raise ValueError("Invalid InChI string")
         return value
 
+    @classmethod
     @field_validator('adjlist')
     def validate_adjlist(cls, value):
         if value:
@@ -114,18 +119,21 @@ class Enzyme(Species):
     ecnumber: Optional[constr(pattern=r"^EC \d+\.\d+\.\d+\.\d+$")] = None
     amino_acid_sequence: Optional[str] = None
 
+    @classmethod
     @field_validator('label')
     def check_label_not_empty(cls, value):
         if not value.strip():
             raise ValueError("Label cannot be empty")
         return value
 
+    @classmethod
     @field_validator('ecnumber')
     def validate_ecnumber(cls, value):
         if value and not value.startswith("EC "):
             raise ValueError("Invalid EC number: must start with 'EC '")
         return value
 
+    @classmethod
     @field_validator('amino_acid_sequence')
     def validate_amino_acid_sequence(cls, value):
         if value is None:
@@ -161,6 +169,7 @@ class Environment(BaseModel):
     class Config:
         extra = "forbid"
 
+    @classmethod
     @field_validator('temperature')
     def validate_temperature_range(cls, value):
         if isinstance(value, tuple) and len(value) != 2:
@@ -169,6 +178,7 @@ class Environment(BaseModel):
             raise ValueError("Temperature range min value cannot be greater than max value")
         return value
 
+    @classmethod
     @field_validator('pH')
     def validate_pH_range(cls, value):
         if isinstance(value, tuple) and len(value) != 2:
@@ -206,6 +216,7 @@ class Settings(BaseModel):
     class Config:
         extra = "forbid"
 
+    @classmethod
     @field_validator('time_step')
     def validate_time_step(cls, value, info: ValidationInfo):
         end_time = info.data.get('end_time')
@@ -213,6 +224,7 @@ class Settings(BaseModel):
             raise ValueError(f"'time_step' must be smaller than 'end_time' ({end_time}). Got: {value}")
         return value
 
+    @classmethod
     @field_validator('termination_conversion')
     def validate_termination_conversion(cls, value):
         if value:
@@ -221,12 +233,14 @@ class Settings(BaseModel):
                     raise ValueError(f"termination_conversion values must be between 0 and 1. Got: {species}: {frac}")
         return value
 
+    @classmethod
     @field_validator('termination_rate_ratio')
     def validate_rate_ratio(cls, value):
         if value and not (0 < value < 1):
             raise ValueError("termination_rate_ratio must be between 0 and 1 (exclusive).")
         return value
 
+    @classmethod
     @field_validator('verbose')
     def validate_verbose_level(cls, value):
         if value is not None and value not in [10, 20, 30, 40, 50]:
@@ -256,6 +270,7 @@ class SpeciesConstraints(BaseModel):
     class Config:
         extra = "forbid"
 
+    @classmethod
     @field_validator('allowed')
     def check_allowed_not_empty(cls, value):
         if not value:
@@ -281,12 +296,14 @@ class Database(BaseModel):
     class Config:
         extra = "forbid"
 
+    @classmethod
     @field_validator('name')
     def check_name_not_empty(cls, value):
         if not value.strip():
             raise ValueError("Name cannot be empty")
         return value
 
+    @classmethod
     @field_validator('thermo_libraries')
     def validate_thermo_libraries(cls, value):
         if value:
@@ -297,6 +314,7 @@ class Database(BaseModel):
                     raise ValueError("Each thermo library must be a string")
         return value
 
+    @classmethod
     @field_validator('kinetics_libraries')
     def validate_kinetics_libraries(cls, value):
         if value:
@@ -307,6 +325,7 @@ class Database(BaseModel):
                     raise ValueError("Each kinetics library must be a string")
         return value
 
+    @classmethod
     @field_validator('kinetics_depositories')
     def validate_kinetics_depositories(cls, value):
         if isinstance(value, list):
@@ -315,6 +334,7 @@ class Database(BaseModel):
                     raise ValueError("Each kinetics depository must be a string")
         return value
 
+    @classmethod
     @field_validator('kinetics_families')
     def validate_kinetics_families(cls, value):
         if isinstance(value, list):
@@ -337,18 +357,21 @@ class InputBase(BaseModel):
     class Config:
         extra = "forbid"
 
+    @classmethod
     @field_validator('project')
     def check_project_not_empty(cls, value):
         if not value.strip():
             raise ValueError("Project name cannot be empty")
         return value
 
+    @classmethod
     @field_validator('species')
     def check_species_list_not_empty(cls, value):
         if not value:
             raise ValueError("Species list cannot be empty")
         return value
 
+    @classmethod
     @field_validator('enzymes')
     def check_enzymes_list_not_empty(cls, value):
         if not value:

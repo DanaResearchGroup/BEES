@@ -1,5 +1,16 @@
 """
-The Biochemical Engine for Enzymatic kinetic modelS (BEES) for iterative kinetic model generation and refinement
+Main BEES application module for kinetic model generation and refinement.
+
+This module provides the BEES class, which orchestrates the kinetic model generation pipeline.
+It handles input validation, project initialization, logging setup, and execution coordination.
+
+The module processes YAML input files containing species, enzymes, environmental conditions,
+and simulation settings. It validates inputs against Pydantic schemas, initializes project
+directories and logging, and executes the model generation workflow.
+
+Required inputs:
+    - Input dictionary with 'project', 'species', 'enzymes', 'environment', 'database', and 'settings'
+    - Valid project directory path (created automatically if missing)
 
 This is probably the most important module in the code.
  run the code by executing this script directly python bees.py --input_file + directory
@@ -9,22 +20,22 @@ This is probably the most important module in the code.
 
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import bees.common as common
 from bees.logger import Logger
 from bees.schema import InputBase
-from bees.model_generator import ModelGenerator
 
 # Base paths
 BEES_PATH = common.BEES_PATH
 PROJECTS_BASE_PATH = common.PROJECTS_BASE_PATH
 
 
-class BEES(object):
+class BEES():
     """
     The main BEES application class.
     Orchestrates: setup, schema validation, logging, execution.
+    Also, here is where the model generation will be started. right now it is just a placeholder.
     """
 
     def __init__(self, input_data: Dict[str, Any]):
@@ -95,24 +106,24 @@ class BEES(object):
             f"BEES project {self.project} initialized successfully in {common.time_lapse(self.t0)}."
         )
 
-    def execute(self) -> Dict[str, Any]:
+    def execute(self):
         """
-        Execute BEES workflow: generate biochemical reaction model.
+        Execute the BEES kinetic model generation pipeline.
         
-        This method orchestrates:
-        1. Logging input configuration
-        2. Loading kinetic database
-        3. Generating reactions from enzyme-substrate pairs
-        4. Exporting results
+        Current functionality:
+        - Logs project initialization and input summary (species count, enzymes count, temperature, database info)
+        - Validates solver configuration and simulation end time settings
+        - Placeholder for future model generation (currently just sleeps for 1 second)
+        
+        Future planned functionality:
+        - Generate reaction networks from input species and enzymes
+        - Apply kinetic models and rate laws from database
+        - Perform parameter estimation for unknown kinetic parameters
+        - Run kinetic simulations using specified solver
+        - Generate output files and plots
         
         Returns:
-            dict: Execution results containing:
-                - success (bool): Whether execution completed successfully
-                - project (str): Project name
-                - n_reactions (int): Number of reactions generated
-                - reactions (List[GeneratedReaction]): Generated reactions
-                - summary_path (str): Path to reactions summary file
-                - execution_time (str): Total execution time
+            dict: Execution results (currently empty, will contain model data in future)
         """
 
         self.logger.info(f"Starting BEES execution for project '{self.project}'...")
@@ -122,23 +133,23 @@ class BEES(object):
         )
         self.logger.info(f"Environment Temperature: {self.bees_object.environment.temperature} K")
 
-        if hasattr(self.bees_object.database, "solver"):
+        if hasattr(self.bees_object.database, "rate_law"):
             self.logger.info(
-                f"Using solver: '{self.bees_object.database.solver}' "
-                f"with database '{self.bees_object.database.name}'."
+                f"Using '{self.bees_object.database.rate_law}' rate law "
+                f"from database '{self.bees_object.database.name}'."
             )
         else:
             self.logger.info(
-                f"Database name: '{self.bees_object.database.name}'. Using default solver."
+                f"Database name: '{self.bees_object.database.name}'. No specific rate law defined."
             )
 
-        if hasattr(self.bees_object.database, "kinetics_estimator"):
+        if hasattr(self.bees_object.database, "parameter_estimator"):
             self.logger.info(
-                f"Using kinetics estimator: '{self.bees_object.database.kinetics_estimator}'."
+                f"Using parameter estimator: '{self.bees_object.database.parameter_estimator}'."
             )
         else:
             self.logger.info(
-                f"No specific kinetics estimator defined for database '{self.bees_object.database.name}'."
+                f"No specific parameter estimator defined for database '{self.bees_object.database.name}'."
             )
 
         if hasattr(self.bees_object, "settings") and hasattr(self.bees_object.settings, "end_time"):
@@ -147,86 +158,9 @@ class BEES(object):
             self.logger.warning("End time setting is not defined.")
         self.logger.info(f"Using solver: {self.bees_object.database.solver}")
         
-        """
-        Model Generation Phase
-        """
-        self.logger.info("")
-        self.logger.info("=" * 60)
-        self.logger.info("STARTING MODEL GENERATION")
-        self.logger.info("=" * 60)
-        
-        # Initialize model generator
-        model_gen = ModelGenerator(
-            bees_object=self.bees_object,
-            logger=self.logger,
-            output_directory=self.output_directory
-        )
-        
-        # Load kinetic database
-        db_path = os.path.join(common.BEES_PATH, 'db', 'db.csv')
-        try:
-            model_gen.load_kinetic_database(db_path)
-        except FileNotFoundError:
-            self.logger.warning(f"Kinetic database not found at {db_path}. "
-                              f"Will proceed without database parameters.")
-        except Exception as e:
-            self.logger.error(f"Error loading kinetic database: {e}")
-            self.logger.log_footer(success=False)
-            raise
-        
-        # Generate reactions
-        try:
-            reactions = model_gen.generate_reactions()
-            
-            if not reactions:
-                self.logger.warning("No reactions were generated! Check your input configuration.")
-                # Store empty results as instance variables
-                self.reactions = []
-                self.model_generator = model_gen
-                
-                results = {
-                    'success': False,
-                    'project': self.project,
-                    'n_reactions': 0,
-                    'reactions': [],
-                    'summary_path': None,
-                    'execution_time': common.time_lapse(self.t0),
-                    'message': 'No reactions generated. Check enzyme-substrate pairs and database.'
-                }
-            else:
-                self.logger.info("")
-                self.logger.info(f"✓ Successfully generated {len(reactions)} reaction(s)")
-                
-                # Export summary
-                summary_path = model_gen.export_reactions_summary()
-                self.logger.info(f"✓ Exported reaction summary to: {summary_path}")
-                
-                # Store results as instance variables (Option 3)
-                self.reactions = reactions
-                self.model_generator = model_gen
-                
-                # Prepare return dictionary (Option 1)
-                results = {
-                    'success': True,
-                    'project': self.project,
-                    'n_reactions': len(reactions),
-                    'reactions': reactions,
-                    'summary_path': summary_path,
-                    'execution_time': common.time_lapse(self.t0),
-                    'database_path': db_path
-                }
-                
-        except Exception as e:
-            self.logger.error(f"Error during reaction generation: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            self.logger.log_footer(success=False)
-            raise
+        time.sleep(1)  # Simulated work
 
-        self.logger.info("")
         self.logger.info(
-            f"BEES execution for project '{self.project}' completed in {results['execution_time']}."
+            f"BEES execution for project '{self.project}' completed in {common.time_lapse(self.t0)}."
         )
-        self.logger.log_footer(success=results['success'])
-        
-        return results
+        self.logger.log_footer(success=True)

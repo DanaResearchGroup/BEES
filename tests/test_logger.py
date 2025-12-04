@@ -86,7 +86,8 @@ def test_info_and_debug_levels(tmp_dir: str, capsys: pytest.CaptureFixture[str])
 
     project_name = os.path.basename(tmp_dir)
     main_log = os.path.join(tmp_dir, f"{project_name}.log")
-    content = open(main_log).read()
+    with open(main_log) as f:
+        content = f.read()
     assert "hello-info" in content
     assert "hello-debug" in content
 
@@ -110,7 +111,8 @@ def test_warning_error_critical_to_console_and_error_file(tmp_dir: str, capsys: 
 
     project_name = os.path.basename(tmp_dir)
     err_log = os.path.join(tmp_dir, f"{project_name}_errors.log")
-    err_content = open(err_log).read()
+    with open(err_log) as f:
+        err_content = f.read()
     assert "err-this" in err_content
     assert "crit-this" in err_content
     assert "warn-this" not in err_content
@@ -181,5 +183,7 @@ def test_file_backup(tmp_dir: str):
     assert any(x.startswith(f"{project_name}_errors.old") for x in archived)
 
     # originals cleared
-    assert open(main_log).read() != "OLD_MAIN"
-    assert open(err_log).read()  != "OLD_ERR"
+    with open(main_log) as f:
+        assert f.read() != "OLD_MAIN"
+    with open(err_log) as f:
+        assert f.read() != "OLD_ERR"

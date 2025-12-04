@@ -13,14 +13,13 @@ This module orchestrates:
 4. Creating complete reaction objects with kinetics
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 import os
 
 from bees.reaction_template import (
     create_reaction_from_database,
     ReactionTemplate,
-    determine_template_from_ec
 )
 from db.kinetic_database import KineticDatabase, KineticData
 

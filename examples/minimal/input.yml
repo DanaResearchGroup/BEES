@@ -1,50 +1,38 @@
-project: MinimalBEESProject
-
-
 # --- Project Information ---
 # 'project': Required.
 project: MinimalBEESProject
 
 # --- Species Definition ---
-# 'species': Required At least one species 
+# 'species': Required. At least one species.
 species:
   - label: GenericSubstrate
     concentration: 1.0
-    smiles: C1=CC=CC=C1 # Example SMILES for a generic substrate
-    reactive: true 
-    observable: true 
-   
-
-    
+    smiles: C1=CC=CC=C1  # Example SMILES for a generic substrate
+    reactive: true
+    observable: true
 
 # --- Enzyme Definition ---
-
 enzymes:
   - label: GenericEnzyme
-    concentration: 1e-6 
-    ecnumber: EC 2.7.1.1 
+    concentration: 1e-6
+    ecnumber: EC 2.7.1.1
     reactive: true
-    # amino_acid_sequence: MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTLGQHDFSAGEGLYTHMKALRPDEDRLSPLHSVYVDQWDWERVMGDGERQFSTLKSTVEAIWAGIKATEAAVSEEFGLAPFLPDQIHFVHSQELLSRYPDLDAKGRERAIAKDLGAVFLVGIGGKLSDGHRHDVRAPDYDDWSTPSELGHAGLNGDILVWNPVLEDAFELSSMGIRVDADTLKHQLALTGDEDRLELEWHQALLRGEMPQTIGGGIGQSRLTMLLLQLPHIGQVQAGVWPAAVRESVPSLL 
-    
+    # amino_acid_sequence: MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTLGQHDFSAGEGLYTHMKALRPDEDRLSPLHSVYVDQWDWERVMGDGERQFSTLKSTVEAIWAGIKATEAAVSEEFGLAPFLPDQIHFVHSQELLSRYPDLDAKGRERAIAKDLGAVFLVGIGGKLSDGHRHDVRAPDYDDWSTPSELGHAGLNGDILVWNPVLEDAFELSSMGIRVDADTLKHQLALTGDEDRLELEWHQALLRGEMPQTIGGGIGQSRLTMLLLQLPHIGQVQAGVWPAAVRESVPSLL
+
 # --- Environment Settings ---
-
 environment:
-  temperature: 298.15 
-  pH: 7.0 
-
-
+  temperature: 298.15
+  pH: 7.0
 
 # --- Database Settings ---
-# 'database': Required parameters 
+# 'database': Required parameters.
 database:
-  name: MinimalDB 
-  kinetics_estimator: rate rules 
-  solver: odeint 
-
+  name: MinimalDB
+  kinetics_estimator: rate rules
+  solver: odeint
 
 # --- Application Settings ---
-# 'settings': Required parameters
+# 'settings': Required parameters.
 settings:
-  end_time: 100.0 
-  time_step: 0.1 
-  
+  end_time: 100.0
+  time_step: 0.1
