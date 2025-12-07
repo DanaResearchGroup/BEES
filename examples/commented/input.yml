@@ -8,9 +8,9 @@ This file is an example file of the minimal parameters to run a program in BEES.
 # --- Project Information ---
 # 'project': Required. The name of your BEES project. This will also be used to create the project directory. Max length is 255 characters.
 project: MyFirstBEESProject
-project directory: /home/omerkfir/BEES/examples/commented
+project_directory: /home/omerkfir/BEES/examples/commented
 
-# 'project_directory': Optional. The base directory where project files will be stored. If not specified, it defaults to 'projects/<project_name>'. relative to the BEES installation path. Max length is 255 characters.
+# 'project_directory': Optional. The base directory where project files will be stored. If not specified, it defaults to 'projects/<project_name>'. Relative to the BEES installation path. Max length is 255 characters.
 # project_directory: /path/to/your/custom/project_root
 
 # --- Species Definition ---
@@ -56,6 +56,7 @@ enzymes:
     concentration: 1e-6 # Enzyme concentration (e.g., Molar). Required. 
     ecnumber: EC 2.7.1.1 # EC number (e.g., 'EC 2.7.1.1'). Must match pattern '^EC \d+\.\d+\.\d+\.\d+$'. Optional becuse if there is SMILES or InChI, it can also be used to find the EC number.
     reactive: true #  Whether this enzyme participates in reactions. Optional, default: true.
+    # amino_acid_sequence: MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTLGQHDFSAGEGLYTHMKALRPDEDRLSPLHSVYVDQWDWERVMGDGERQFSTLKSTVEAIWAGIKATEAAVSEEFGLAPFLPDQIHFVHSQELLSRYPDLDAKGRERAIAKDLGAVFLVGIGGKLSDGHRHDVRAPDYDDWSTPSELGHAGLNGDILVWNPVLEDAFELSSMGIRVDADTLKHQLALTGDEDRLELEWHQALLRGEMPQTIGGGIGQSRLTMLLLQLPHIGQVQAGVWPAAVRESVPSLL # Optional. Amino acid sequence in single-letter code (uppercase, no spaces). Valid codes: A, C, D, E, F, G, H, I, K, L, M, N, P, Q, R, S, T, V, W, Y.
     
     # Add other inherited Species attributes if needed, e.g., smiles, observable,
     # smiles: Optional. SMILES string for the enzyme.

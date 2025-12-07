@@ -1,5 +1,16 @@
 """
-The Biochemical Engine for Enzymatic kinetic modelS (BEES) for iterative kinetic model generation and refinement
+Main BEES application module for kinetic model generation and refinement.
+
+This module provides the BEES class, which orchestrates the kinetic model generation pipeline.
+It handles input validation, project initialization, logging setup, and execution coordination.
+
+The module processes YAML input files containing species, enzymes, environmental conditions,
+and simulation settings. It validates inputs against Pydantic schemas, initializes project
+directories and logging, and executes the model generation workflow.
+
+Required inputs:
+    - Input dictionary with 'project', 'species', 'enzymes', 'environment', 'database', and 'settings'
+    - Valid project directory path (created automatically if missing)
 
 This is probably the most important module in the code.
  run the code by executing this script directly python bees.py --input_file + directory
@@ -9,7 +20,7 @@ This is probably the most important module in the code.
 
 import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import bees.common as common
 from bees.logger import Logger

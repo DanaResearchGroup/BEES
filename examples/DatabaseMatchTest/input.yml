@@ -1,0 +1,27 @@
+database:
+  kinetics_estimator: rate rules
+  name: TestDB
+  solver: odeint
+environment:
+  pH: 7.4
+  temperature: 310.0
+enzymes:
+- concentration: 1.0e-06
+  ecnumber: EC 1.1.1.1
+  label: Hexokinase
+  reactive: true
+project: DatabaseMatchTest
+settings:
+  end_time: 100.0
+  time_step: 0.1
+species:
+- concentration: 1.0
+  label: Glucose
+  observable: true
+  reactive: true
+  smiles: C(C1C(C(C(C(O1)CO)O)O)O)O
+- concentration: 5.0
+  label: ATP
+  observable: true
+  reactive: true
+  smiles: C1=NC(=C2C(=N1)N(C=N2)C3C(C(C(O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O)N

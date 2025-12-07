@@ -1,0 +1,49 @@
+================================================================================
+BEES GENERATED REACTIONS SUMMARY
+================================================================================
+
+Total Reactions: 2
+Project: ExampleProject
+Database: ExampleDB
+Temperature: 310.0 K
+pH: 7.4
+
+================================================================================
+
+Reaction 1:
+  Enzyme: Hexokinase
+  EC Class: OXIDOREDUCTASE
+  Type: oxidation_CH-OH
+  Description: Oxidation of CH-OH group
+  Equation: Glucose + ATP → Glucose-6-phosphate + ADP
+  Stoichiometry: {'Glucose': -1, 'ATP': -1, 'Glucose-6-phosphate': 1, 'ADP': 1}
+  Rate Law: Reversible-MM
+  Kinetic Parameters (from database):
+    Km = 0.15 mM
+    kcat = 100.0 1/s
+    Vmax = 2.5 mM/s
+    ΔG = -16.7 kJ/mol
+    Temperature = 310.0 K
+    pH = 7.4
+    Source: database
+  Reversible: True
+  Cofactors: ATP, Mg2+
+
+Reaction 2:
+  Enzyme: GenericEnzyme
+  EC Class: TRANSFERASE
+  Type: phosphorylation
+  Description: Phosphate group transfer from ATP
+  Equation: GenericSubstrate + ATP → GenericSubstrate-phosphate + ADP
+  Stoichiometry: {'GenericSubstrate': -1, 'ATP': -1, 'GenericSubstrate-phosphate': 1, 'ADP': 1}
+  Rate Law: Michaelis-Menten
+  Kinetic Parameters: NOT FOUND IN DATABASE
+    (Parameters will need to be estimated)
+  Reversible: False
+  Cofactors: ATP, Mg2+
+
+================================================================================
+END OF REACTIONS SUMMARY
+================================================================================
+
+

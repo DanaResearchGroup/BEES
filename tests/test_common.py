@@ -16,7 +16,7 @@ import time
 import datetime
 import yaml
 import numpy as np
-from unittest.mock import patch, mock_open
+from unittest.mock import patch
 import re
 import math
 
@@ -53,8 +53,6 @@ from bees.common import (
     calculate_arrhenius_rate_coefficient,
     R, # Gas constant
     EA_UNIT_CONVERSION, # Energy unit conversion dictionary
-    BEES_PATH, # Base path for BEES (for mocking)
-    PROJECTS_BASE_PATH # For mocking project paths
 )
 
 # Mock BEES_PATH and PROJECTS_BASE_PATH for isolated testing

@@ -9,7 +9,6 @@ import os
 import sys
 import shutil
 import time
-import bees.common as common
 from typing import Dict, List, Optional, Tuple
 import logging
 
@@ -103,54 +102,39 @@ class Logger(object):
         Configures and attaches handlers (console, main file, error file) to the global 'BEES' logger.
         Also handles backing up existing log files before creating new ones.
         """
-        # Ensure the project directory exists to store log files
         os.makedirs(self.project_directory, exist_ok=True)
-
-        # Clear any existing handlers from the logger. This is crucial for avoiding duplicate messages
-        # if this setup method were to be called more than once (e.g., in testing).
         while logger.handlers:
             logger.removeHandler(logger.handlers[0])
 
-        # Define a consistent formatter for all handlers.
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        # Formatters
+        console_formatter = logging.Formatter('%(levelname)s - %(message)s')  
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-        # --- Console Handler (StreamHandler) ---
+        # --- Console Handler ---
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(self.console_level)
-        console_handler.setFormatter(formatter)
+        console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
 
-        # --- Main Log File Handler (FileHandler) ---#
-       
-        """
-        Backup the old log file before creating a new one.
-        """
-
+        # --- Main Log File Handler ---
         if os.path.isfile(self.main_log_file_path):
             self._backup_log_file(self.main_log_file_path, f'{self.project}_main.old')
 
         main_file_handler = logging.FileHandler(filename=self.main_log_file_path, mode='w')
         main_file_handler.setLevel(self.main_file_level)
-        main_file_handler.setFormatter(formatter)
+        main_file_handler.setFormatter(file_formatter)
         logger.addHandler(main_file_handler)
 
-        # --- Error Log File Handler (FileHandler) ---
-        """
-        # Backup the old error log file before creating a new one.
-        """
-       
+        # --- Error Log File Handler ---
         if os.path.isfile(self.error_log_file_path):
             self._backup_log_file(self.error_log_file_path, f'{self.project}_errors.old')
 
-        error_file_handler = logging.FileHandler(filename=self.error_log_file_path, mode='w')
+        error_file_handler = logging.FileHandler(filename = self.error_log_file_path, mode='w')
         error_file_handler.setLevel(self.error_file_level)
-        error_file_handler.setFormatter(formatter)
+        error_file_handler.setFormatter(file_formatter)
         logger.addHandler(error_file_handler)
 
-        # Set the global logger's effective level to the lowest level of all handlers.
-        # This ensures all messages are processed by the logger before individual handlers filter them.
         logger.setLevel(min(self.console_level, self.main_file_level, self.error_file_level))
-
     def _backup_log_file(self, file_path: str, base_name: str):
         """
         Helper method to backup an existing log file before it's overwritten.
@@ -223,11 +207,14 @@ class Logger(object):
                     f'#                                                              #\n'
                     f'################################################################\n\n')
 
-        head,date = get_git_commit( path= BEES_PATH)
-        branch_name = get_git_branch( path= BEES_PATH)
-        if head != '' and date != '':
-            self.always(f'The current git HEAD for BEES is:\n'
-                        f'    {head}\n    {date}')
+        head, date = get_git_commit(path=BEES_PATH)
+        branch_name = get_git_branch(path=BEES_PATH)
+        if head and date:
+            self.always(
+                'The current git HEAD for BEES is:\n'
+                f'    {head}\n'
+                f'    {date}'
+            )
         if branch_name and branch_name != 'main':
             self.always(f'    (running on the {branch_name} branch)\n')
         else:
@@ -242,10 +229,10 @@ class Logger(object):
         Args:
             max_time (str): The maximum BEES walltime.
         """
-        execution_time = common.time_lapse(self.t0)
-        self.always(f'Terminating BEES due to time limit.\n'
-                 f'Max time set: {max_time}\n'
-                 f'Current run time: {execution_time}\n')
+        execution_time = time_lapse(self.t0)
+        self.always(f'\n\n\nTotal BEES execution time: {execution_time}')
+        self.always('BEES execution terminated because the maximum run time was reached.')
+    
 
     def log_footer(self, success: bool = True): # Added success parameter
         """
@@ -330,8 +317,7 @@ class Logger(object):
             reaction_dict (dict): The bees reaction dictionary.
         """
         if len(reaction_keys):
-            if len(reaction_keys):
-             self.info('\n\nReactions to calculate high-pressure limit rate coefficients for:')
+            self.info('\n\nReactions to calculate high-pressure limit rate coefficients for:')
             try:
                 max_label_length = max([len(rxn_dict['label']) for key, rxn_dict in reaction_dict.items() if key in reaction_keys] + [6])
                 max_smiles_length = max([len(rxn_dict['SMILES label']) for key, rxn_dict in reaction_dict.items() if key in reaction_keys] + [6])

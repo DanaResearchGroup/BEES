@@ -3,7 +3,7 @@ r"""
 Executable wrapper for BEES (Biochemical Engine for Enzymatic kinetic modelS)
 
 
-This simply delegates to main.py so users don't need to call `python main.py`. 
+This simply delegates to main.py so users don’t need to call `python main.py`. 
 
 For linux users:
 Make sure this file is executable: chmod +x BEES.py
@@ -14,11 +14,12 @@ To run BEES from anywhere, add to your PATH (in ~/.bashrc or ~/.zshrc):
 Then you can run BEES like this:
 cd ~/BEES
 for linux users:
-./BEES.py -i ~/BEES/examples/minimal/input.yml -p MyProject
+./BEES.py -i ~/BEES/examples/minimal/input.yml 
 for windows users:
-.\BEES.bat -i examples\\minimal\\input.yml -p MyProject  
+.\BEES.bat -i examples\\minimal\\input.yml 
 
-#note that some tests are still run good only on linux (for now)
+# Note that some tests are still run good only on linux (for now)
+# More examples can bo fonded on projects folder.
 
 """
 
@@ -26,20 +27,12 @@ import sys
 import os
 import argparse
 
-# Check if BEES modules can be imported (more flexible than checking environment name)
-try:
-    import bees.common as common
-    import bees.schema
-    import bees.main
-except ImportError as e:
-    print(f"BEES modules not found. Please ensure BEES is properly installed in your Python environment.")
-    print(f"Error: {e}")
-    sys.exit(1)
-
 # Import necessary modules from BEES
+import bees.common as common
+
 from bees.main import BEES
 
-BEES_PATH = common.BEES_PATH
+BEES_PATH = common.BEES_PATH   
 
 if "bees_env" not in sys.executable:
     print("Please activate the 'bees_env' environment before running BEES.")
@@ -78,7 +71,24 @@ def main():
     """
     input_data = parse_and_load_input()
     bees_instance = BEES(input_data=input_data)
-    bees_instance.execute()
+    results = bees_instance.execute()
+    
+    # Print summary of results
+    if results and results.get('success'):
+        print(f"\n{'='*60}")
+        print(f"✓ BEES Execution Summary:")
+        print(f"  Project: {results['project']}")
+        print(f"  Reactions Generated: {results['n_reactions']}")
+        print(f"  Execution Time: {results['execution_time']}")
+        if results.get('summary_path'):
+            print(f"  Summary: {results['summary_path']}")
+        print(f"{'='*60}\n")
+    else:
+        print(f"\n⚠ BEES execution completed with warnings or errors.")
+        if results and results.get('message'):
+            print(f"  {results['message']}\n")
+    
+    return results
 
 
 if __name__ == "__main__":

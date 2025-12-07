@@ -39,7 +39,6 @@ def test_Species():
         reactive=True,
         constant=False,
         observable=True,
-        smiles="C([C@@H]1[C@H]([C@@H]([C@H](C(O1)O)O)O)O)O"
     )
     assert species.label == "Glucose"
     assert species.concentration == 0.1
@@ -48,35 +47,16 @@ def test_Species():
     assert species.charge == 0
     assert species.solvent is False
     assert species.xyz is None
-    assert species.smiles == "C([C@@H]1[C@H]([C@@H]([C@H](C(O1)O)O)O)O)O"
+    assert species.smiles is None
     assert species.inchi is None
     assert species.adjlist is None
 
 
-    # Test species with different molecular descriptors (separately, since we now enforce exclusivity)
-    species_with_smiles = Species(
+    species_with_all_formats = Species(
         label="Fructose",
         concentration=(0.1, 1.0),
-        smiles="C(C1C(C(C(C(O1)CO)O)O)O)O"
-    )
-    assert species_with_smiles.concentration == (0.1, 1.0)
-    assert species_with_smiles.smiles == "C(C1C(C(C(C(O1)CO)O)O)O)O"
-    assert species_with_smiles.inchi is None
-    assert species_with_smiles.adjlist is None
-    
-    species_with_inchi = Species(
-        label="Methane",
-        concentration=(0.1, 1.0),
-        inchi="InChI=1S/CH4/h1H4" # Valid InChI for Methane for testing purposes
-    )
-    assert species_with_inchi.concentration == (0.1, 1.0)
-    assert species_with_inchi.inchi == "InChI=1S/CH4/h1H4"
-    assert species_with_inchi.smiles is None
-    assert species_with_inchi.adjlist is None
-    
-    species_with_adjlist = Species(
-        label="Carbon",
-        concentration=(0.1, 1.0),
+        smiles="C(C1C(C(C(C(O1)CO)O)O)O)O",
+        inchi="InChI=1S/CH4/h1H4", # Valid InChI for Methane for testing purposes
         # A minimal valid MolBlock for a single Carbon atom for reliable RDKit parsing
         adjlist="""
   MOL
@@ -85,10 +65,10 @@ def test_Species():
     0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
 M  END"""
     )
-    assert species_with_adjlist.concentration == (0.1, 1.0)
-    assert species_with_adjlist.adjlist is not None
-    assert species_with_adjlist.smiles is None
-    assert species_with_adjlist.inchi is None
+    assert species_with_all_formats.concentration == (0.1, 1.0)
+    assert species_with_all_formats.smiles == "C(C1C(C(C(C(O1)CO)O)O)O)O"
+    assert species_with_all_formats.inchi == "InChI=1S/CH4/h1H4"
+    assert species_with_all_formats.adjlist is not None # Check that it's set
 
     # Test validators
     with pytest.raises(ValidationError, match="Concentration range cannot have identical values"):
@@ -115,52 +95,6 @@ M  END"""
         Species(label="InvalidInChI", concentration=0.1, inchi="InvalidInChI")
     with pytest.raises(ValidationError, match="Invalid adjacency list"): # Updated message for adjlist
         Species(label="InvalidAdjlist", concentration=0.1, adjlist="Invalid Adjlist Content")
-    
-    # Test molecular descriptor exclusivity validator
-    # Test 1: Multiple descriptors should fail
-    with pytest.raises(ValidationError, match="Only one molecular descriptor can be provided"):
-        Species(label="MultipleDescriptors", concentration=0.1, smiles="CCO", inchi="InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3")
-    
-    with pytest.raises(ValidationError, match="Only one molecular descriptor can be provided"):
-        Species(label="MultipleDescriptors2", concentration=0.1, smiles="CCO", adjlist="""
-  MOL
-
-  1  0  0  0  0  0            999 V2000
-    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
-M  END""")
-    
-    with pytest.raises(ValidationError, match="Only one molecular descriptor can be provided"):
-        Species(label="MultipleDescriptors3", concentration=0.1, inchi="InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3", adjlist="""
-  MOL
-
-  1  0  0  0  0  0            999 V2000
-    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
-M  END""")
-    
-    # Test 2: No descriptors should fail
-    with pytest.raises(ValidationError, match="At least one molecular descriptor must be provided"):
-        Species(label="NoDescriptors", concentration=0.1)
-    
-    # Test 3: Single descriptor should work (already tested above, but let's be explicit)
-    species_smiles_only = Species(label="SmilesOnly", concentration=0.1, smiles="CCO")
-    assert species_smiles_only.smiles == "CCO"
-    assert species_smiles_only.inchi is None
-    assert species_smiles_only.adjlist is None
-    
-    species_inchi_only = Species(label="InchiOnly", concentration=0.1, inchi="InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3")
-    assert species_inchi_only.inchi == "InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3"
-    assert species_inchi_only.smiles is None
-    assert species_inchi_only.adjlist is None
-    
-    species_adjlist_only = Species(label="AdjlistOnly", concentration=0.1, adjlist="""
-  MOL
-
-  1  0  0  0  0  0            999 V2000
-    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
-M  END""")
-    assert species_adjlist_only.adjlist is not None
-    assert species_adjlist_only.smiles is None
-    assert species_adjlist_only.inchi is None
 
 
 def test_Enzyme():
@@ -172,8 +106,7 @@ def test_Enzyme():
         reactive=True,
         constant=False,
         observable=True,
-        ecnumber="EC 2.7.1.1",
-        smiles="C1=NC2=C(C(=N1)N)N=CN2C3C(C(C(O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O"
+        ecnumber="EC 2.7.1.1"
     )
     assert enzyme.label == "ATP"
     assert enzyme.concentration == 0.01
@@ -184,23 +117,46 @@ def test_Enzyme():
     enzyme = Enzyme(
         label="Phosphofructokinase",
         concentration=(0.1, 1.0),
-        smiles="CC(C)CC1=NC(=CS1)C(=O)N[C@@H](CCC(=O)O)C(=O)O"
     )
     assert enzyme.concentration == (0.1, 1.0)
 
+    # Test amino_acid_sequence field
+    enzyme_with_sequence = Enzyme(
+        label="TestEnzyme",
+        concentration=0.01,
+        amino_acid_sequence="MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTLGQHDFSAGEGLYTHMKALRPDEDRLSPLHSVYVDQWDWERVMGDGERQFSTLKSTVEAIWAGIKATEAAVSEEFGLAPFLPDQIHFVHSQELLSRYPDLDAKGRERAIAKDLGAVFLVGIGGKLSDGHRHDVRAPDYDDWSTPSELGHAGLNGDILVWNPVLEDAFELSSMGIRVDADTLKHQLALTGDEDRLELEWHQALLRGEMPQTIGGGIGQSRLTMLLLQLPHIGQVQAGVWPAAVRESVPSLL"
+    )
+    assert enzyme_with_sequence.amino_acid_sequence == "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTLGQHDFSAGEGLYTHMKALRPDEDRLSPLHSVYVDQWDWERVMGDGERQFSTLKSTVEAIWAGIKATEAAVSEEFGLAPFLPDQIHFVHSQELLSRYPDLDAKGRERAIAKDLGAVFLVGIGGKLSDGHRHDVRAPDYDDWSTPSELGHAGLNGDILVWNPVLEDAFELSSMGIRVDADTLKHQLALTGDEDRLELEWHQALLRGEMPQTIGGGIGQSRLTMLLLQLPHIGQVQAGVWPAAVRESVPSLL"
+    
+    # Test that None is allowed (optional field)
+    enzyme_no_sequence = Enzyme(
+        label="TestEnzyme2",
+        concentration=0.01,
+        amino_acid_sequence=None
+    )
+    assert enzyme_no_sequence.amino_acid_sequence is None
+    
+    # Test short valid sequence
+    enzyme_short = Enzyme(
+        label="TestEnzyme3",
+        concentration=0.01,
+        amino_acid_sequence="ACDEFGHIKLMNPQRSTVWY"
+    )
+    assert enzyme_short.amino_acid_sequence == "ACDEFGHIKLMNPQRSTVWY"
+
     # Test validators
     with pytest.raises(ValidationError, match="Concentration range cannot have identical values"):
-        Enzyme(label="SameRange", concentration=(0.5, 0.5), smiles="CCO")
+        Enzyme(label="SameRange", concentration=(0.5, 0.5))
     with pytest.raises(ValidationError, match="Constant species cannot have a concentration range"):
-        Enzyme(label="RangeConstant", concentration=(0.1, 0.9), constant=True, smiles="CCO")
+        Enzyme(label="RangeConstant", concentration=(0.1, 0.9), constant=True)
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
-        Enzyme(label="NegativeConcentration", concentration=-0.1, smiles="CCO")
+        Enzyme(label="NegativeConcentration", concentration=-0.1)
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
-        Enzyme(label="NegativeRange", concentration=(-0.1, 0.5), smiles="CCO")
+        Enzyme(label="NegativeRange", concentration=(-0.1, 0.5))
     with pytest.raises(ValidationError, match=r"String should match pattern '\^EC \\d\+\\.\\d\+\\.\\d\+\\.\\d\+\$'"): 
-        Enzyme(label="InvalidEC", concentration=0.1, ecnumber="not.a.valid.ecnumber", smiles="CCO")
+        Enzyme(label="InvalidEC", concentration=0.1, ecnumber="not.a.valid.ecnumber")
     with pytest.raises(ValidationError, match=r"String should match pattern '\^EC \\d\+\\.\\d\+\\.\\d\+\\.\\d\+\$'"): 
-        Enzyme(label="InvalidEC2", concentration=0.1, ecnumber="2.7.1.1", smiles="CCO") # Missing 'EC ' prefix
+        Enzyme(label="InvalidEC2", concentration=0.1, ecnumber="2.7.1.1") # Missing 'EC ' prefix
     
     # The following tests are commented out for the same reason as in test_Species.
     # with pytest.raises(ValidationError, match="Reactive species cannot be constant"):
@@ -209,7 +165,17 @@ def test_Enzyme():
     
     #     Enzyme(label="ObservableConstant", observable=True, constant=True, concentration=0.1)
     with pytest.raises(ValidationError, match=r"Label.* cannot be empty"):
-        Enzyme(label="", concentration=0.1, smiles="CCO")
+        Enzyme(label="", concentration=0.1)
+    
+    # Test amino_acid_sequence validators
+    with pytest.raises(ValidationError, match="Amino acid sequence cannot contain spaces"):
+        Enzyme(label="InvalidSequence", concentration=0.1, amino_acid_sequence="MKTAY IAKQR")
+    with pytest.raises(ValidationError, match="Amino acid sequence must be in capital letters"):
+        Enzyme(label="InvalidSequence2", concentration=0.1, amino_acid_sequence="mktayiakqr")
+    with pytest.raises(ValidationError, match="Amino acid sequence contains invalid characters"):
+        Enzyme(label="InvalidSequence3", concentration=0.1, amino_acid_sequence="MKTAYIAKQRX")  # X is not a standard amino acid code
+    with pytest.raises(ValidationError, match="Amino acid sequence contains invalid characters"):
+        Enzyme(label="InvalidSequence4", concentration=0.1, amino_acid_sequence="MKTAYIAKQR1")  # 1 is not a valid amino acid code
 
 
 def test_Environment():
@@ -463,8 +429,8 @@ def test_InputBase():
     # Test with minimal required fields
     input_data_minimal = InputBase(
         project="TestProjectMinimal",
-        species=[Species(label="Glucose", concentration=0.1, smiles="C([C@@H]1[C@H]([C@@H]([C@H](C(O1)O)O)O)O)O")],
-        enzymes=[Enzyme(label="Hexokinase", concentration=0.01, smiles="CC(C)CC1=NC(=CS1)C(=O)N[C@@H](CCC(=O)O)C(=O)O")],
+        species=[Species(label="Glucose", concentration=0.1)],
+        enzymes=[Enzyme(label="Hexokinase", concentration=0.01)],
         environment=Environment(temperature=298.15, pH=7.0),
         settings=Settings(end_time=100.0, time_step=1.0), # Use minimal settings
         database=Database(name="enzyme_catalysis") # Use minimal database
@@ -481,11 +447,11 @@ def test_InputBase():
         project="TestProjectFull",
         project_directory="/tmp/test_full",
         species=[
-            Species(label="Glucose", concentration=0.1, observable=True, smiles="C([C@@H]1[C@H]([C@@H]([C@H](C(O1)O)O)O)O)O"),
-            Species(label="ATP", concentration=0.05, smiles="C1=NC2=C(C(=N1)N)N=CN2C3C(C(C(O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O")
+            Species(label="Glucose", concentration=0.1, observable=True),
+            Species(label="ATP", concentration=0.05)
         ],
         enzymes=[
-            Enzyme(label="Hexokinase", concentration=0.001, ecnumber="EC 2.7.1.1", smiles="CC(C)CC1=NC(=CS1)C(=O)N[C@@H](CCC(=O)O)C(=O)O")
+            Enzyme(label="Hexokinase", concentration=0.001, ecnumber="EC 2.7.1.1")
         ],
         environment=Environment(
             temperature=[298.15, 310.15],
@@ -543,7 +509,7 @@ def test_InputBase():
         InputBase(
             project="TestProject",
             species="not_a_list", # Invalid type
-                enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment=Environment(temperature=298.15, pH=7.0),
             settings=Settings(end_time=100.0, time_step=1.0),
             database=Database(name="enzyme_catalysis")
@@ -552,7 +518,7 @@ def test_InputBase():
     with pytest.raises(ValidationError, match="Input should be a valid list"):
         InputBase(
             project="TestProject",
-                species=[Species(label="Glucose", concentration=0.1, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=0.1)],
             enzymes="not_a_list", # Invalid type
             environment=Environment(temperature=298.15, pH=7.0),
             settings=Settings(end_time=100.0, time_step=1.0),
@@ -562,8 +528,8 @@ def test_InputBase():
     with pytest.raises(ValidationError, match="Input should be a valid dictionary"):
         InputBase(
             project="TestProject",
-                species=[Species(label="Glucose", concentration=0.1, smiles="CCO")],
-                enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=0.1)],
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment="not_a_dict", # Invalid type
             settings=Settings(end_time=100.0, time_step=1.0),
             database=Database(name="enzyme_catalysis")
@@ -572,8 +538,8 @@ def test_InputBase():
     with pytest.raises(ValidationError, match="Input should be a valid dictionary"):
         InputBase(
             project="TestProject",
-                species=[Species(label="Glucose", concentration=0.1, smiles="CCO")],
-                enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=0.1)],
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment=Environment(temperature=298.15, pH=7.0),
             settings="not_a_dict", # Invalid type
             database=Database(name="enzyme_catalysis")
@@ -582,8 +548,8 @@ def test_InputBase():
     with pytest.raises(ValidationError, match="Input should be a valid dictionary"):
         InputBase(
             project="TestProject",
-                species=[Species(label="Glucose", concentration=0.1, smiles="CCO")],
-                enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=0.1)],
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment=Environment(temperature=298.15, pH=7.0),
             settings=Settings(end_time=100.0, time_step=1.0),
             database="not_a_dict" # Invalid type
@@ -593,8 +559,8 @@ def test_InputBase():
     with pytest.raises(ValidationError):
         InputBase(
             project="TestProject",
-            species=[Species(label="Glucose", concentration=-0.1, smiles="CCO")], # Invalid concentration
-            enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=-0.1)], # Invalid concentration
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment=Environment(temperature=298.15, pH=7.0),
             settings=Settings(end_time=100.0, time_step=1.0),
             database=Database(name="enzyme_catalysis")
@@ -603,8 +569,8 @@ def test_InputBase():
     with pytest.raises(ValidationError):
         InputBase(
             project="TestProject",
-            species=[Species(label="Glucose", concentration=0.1, smiles="CCO")],
-            enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=0.1)],
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment=Environment(temperature=298.15, pH=15.0), # Invalid pH
             settings=Settings(end_time=100.0, time_step=1.0),
             database=Database(name="enzyme_catalysis")
@@ -613,8 +579,8 @@ def test_InputBase():
     with pytest.raises(ValidationError):
         InputBase(
             project="TestProject",
-            species=[Species(label="Glucose", concentration=0.1, smiles="CCO")],
-            enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=0.1)],
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment=Environment(temperature=298.15, pH=7.0),
             settings=Settings(end_time=100.0, time_step=100.0), # Invalid time_step
             database=Database(name="enzyme_catalysis")
@@ -623,8 +589,8 @@ def test_InputBase():
     with pytest.raises(ValidationError):
         InputBase(
             project="TestProject",
-            species=[Species(label="Glucose", concentration=0.1, smiles="CCO")],
-            enzymes=[Enzyme(label="ATP", concentration=0.01, smiles="CCO")],
+            species=[Species(label="Glucose", concentration=0.1)],
+            enzymes=[Enzyme(label="ATP", concentration=0.01)],
             environment=Environment(temperature=298.15, pH=7.0),
             settings=Settings(end_time=100.0, time_step=1.0),
             database=Database(name="", solver="odeint") # Invalid database name
