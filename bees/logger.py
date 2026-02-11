@@ -502,20 +502,35 @@ class Logger(object):
 
     def log_args(self, schema: dict):
         """
- 
-        Log the arguments used in BEES.
-
-        * This function relies on `dict_to_str` being available from `bees.common`.
-
-        Args:
-            schema (dict): All non-default arguments.
+        Log the full arguments used in BEES. debug level only.
+        At INFO level, only a concise summary is shown via log_input_summary.
         """
-        verbose_map = {10: 'debug', 20: 'info', 30: 'warning', None: 'info'} 
-        schema_copy = schema.copy() # Avoid modifying original dict
-        schema_copy['verbose'] = verbose_map[schema_copy.get('verbose', 20)] 
+        verbose_map = {10: 'debug', 20: 'info', 30: 'warning', None: 'info'}
+        schema_copy = schema.copy()
+        schema_copy['verbose'] = verbose_map[schema_copy.get('verbose', 20)]
 
-        self.info(f'\n\nUsing the following arguments:\n\n'
-                  f'{dict_to_str(schema_copy)}')
+        self.debug(f'\n\nFull input arguments:\n\n'
+                   f'{dict_to_str(schema_copy)}')
+
+    def log_input_summary(self, schema: dict):
+        """
+        Log a concise input summary at INFO level.
+        Species/enzyme names are listed; long fields (sequences, SMILES) are omitted.
+        Full details are available at DEBUG level via log_args.
+        """
+        species = schema.get("species", [])
+        enzymes = schema.get("enzymes", [])
+
+        species_labels = [s.get("label", "?") for s in species]
+        enzyme_labels = [
+            f"{e.get('label', '?')} ({e.get('ecnumber', '?')})" for e in enzymes
+        ]
+
+        self.info(f"Species: {', '.join(species_labels)}")
+        self.info(f"Enzymes: {', '.join(enzyme_labels)}")
+
+        # Full dump at debug level only
+        self.log_args(schema)
 
 
 

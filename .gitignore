@@ -1,3 +1,6 @@
+# install.sh: generated env (CatPred lives in parent dir, ARC-style)
+.env.bees
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
