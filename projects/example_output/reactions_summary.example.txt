@@ -1,0 +1,31 @@
+===============================================================================
+BEES GENERATED REACTIONS SUMMARY
+===============================================================================
+
+Total Reactions: 1
+Project: ExampleProject
+Database: db
+Temperature: 310.0 K
+pH: 7.4
+
+===============================================================================
+
+Reaction 1:
+  Enzyme: Hexokinase
+  EC Class: TRANSFERASE
+  Type: phosphorylation
+  Description: Phosphate group transfer from ATP
+  Equation: Glucose + ATP -> Glucose-6-phosphate + ADP
+  Stoichiometry: {'Glucose': -1, 'ATP': -1, 'Glucose-6-phosphate': 1, 'ADP': 1}
+  Rate Law: Michaelis-Menten
+  Kinetic Parameters (estimated with CatPred):
+    Km = 0.15 mM
+    kcat = 100.0 1/s
+    SD = 0.12
+    Source: catpred
+  Reversible: False
+  Cofactors: ATP, Mg2+
+
+===============================================================================
+END OF REACTIONS SUMMARY
+===============================================================================
