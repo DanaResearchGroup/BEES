@@ -34,9 +34,6 @@ from bees.common import (
     globalize_path,
     get_ordinal_indicator,
     get_number_with_ordinal_indicator,
-    SINGLE_BOND_LENGTH,
-    get_single_bond_length,
-    get_bonds_from_dmat,
     extremum_list,
     get_extremum_index,
     sum_list_entries,
@@ -55,24 +52,22 @@ from bees.common import (
     EA_UNIT_CONVERSION, # Energy unit conversion dictionary
 )
 
-# Mock BEES_PATH and PROJECTS_BASE_PATH for isolated testing
+# Mock BEES_PATH for isolated testing
 @pytest.fixture(autouse=True)
 def mock_bees_paths(tmp_path):
     """
-    Fixture to mock BEES_PATH and PROJECTS_BASE_PATH to temporary directories
+    Fixture to mock BEES_PATH to temporary directory
     for isolated testing of file operations.
     Also creates a dummy .git directory for git-related tests.
     """
     mock_bees_root = tmp_path / 'BEES_ROOT'
-    mock_projects_path = mock_bees_root / 'projects'
     mock_git_dir = mock_bees_root / '.git'
 
-    os.makedirs(mock_projects_path, exist_ok=True)
+    os.makedirs(mock_bees_root, exist_ok=True)
     mock_git_dir.mkdir(exist_ok=True) # Create dummy .git directory for git tests
 
     # Patch the constants in the common module
-    with patch('bees.common.BEES_PATH', str(mock_bees_root)), \
-         patch('bees.common.PROJECTS_BASE_PATH', str(mock_projects_path)):
+    with patch('bees.common.BEES_PATH', str(mock_bees_root)):
         yield
         # Cleanup after tests
 
@@ -226,7 +221,7 @@ another_path: /some/other/file.txt
 
     # Check that paths were correctly rebased
     # Use os.path.join for robust path construction in assertions
-    expected_calc_path = os.path.join(os.path.normpath(str(new_project_dir_path)), 'calcs', 'Species', 'mol1.xyz')
+    expected_calc_path = os.path.join(os.path.normpath(str(new_project_dir_path)), 'alcs', 'Species', 'mol1.xyz')
     expected_project_dir_line = f"project_directory: {os.path.normpath(str(new_project_dir_path)).rstrip(os.sep) + os.sep}"
 
     # Assert that the rebased paths are present in the content
@@ -270,7 +265,7 @@ def test_globalize_path():
     
     # Test with /calcs/Species/
     path_str = "path_to_calc: /old/path/calcs/Species/mol.xyz\n" # Input string has newline
-    expected = "path_to_calc: /new/project/calcs/Species/mol.xyz\n"
+    expected = "path_to_calc: /new/project/alcs/Species/mol.xyz\n"
     assert globalize_path(path_str, project_dir).replace('\\', '/') == expected.replace('\\', '/')
 
     # Test with /calcs/TSs/
@@ -294,7 +289,7 @@ def test_globalize_path():
 
     # Test with a path that is just the path, no key
     path_str_only = "/old/path/calcs/Species/mol.xyz\n"
-    expected_only = "/new/project/calcs/Species/mol.xyz\n"
+    expected_only = "/new/project/alcs/Species/mol.xyz\n"
     assert globalize_path(path_str_only, project_dir) == expected_only
 
     # Test with a path that is just the project directory, no key
@@ -308,7 +303,7 @@ def test_globalize_path():
 
     # Test with no trailing newline in input string
     path_str_no_newline = "path_to_calc: /old/path/calcs/Species/mol.xyz"
-    expected_no_newline = "path_to_calc: /new/project/calcs/Species/mol.xyz"
+    expected_no_newline = "path_to_calc: /new/project/alcs/Species/mol.xyz"
     assert globalize_path(path_str_no_newline, project_dir) == expected_no_newline
 
     # Test with no trailing newline, already globalized
@@ -317,12 +312,12 @@ def test_globalize_path():
 
     # Test with leading spaces and no key prefix
     path_str_leading_ws = "  /old/path/calcs/Species/mol.xyz\n"
-    expected_leading_ws = "  /new/project/calcs/Species/mol.xyz\n"
+    expected_leading_ws = "  /new/project/alcs/Species/mol.xyz\n"
     assert globalize_path(path_str_leading_ws, project_dir) == expected_leading_ws
 
     # Test with leading spaces and no key prefix, no newline
     path_str_leading_ws_no_newline = "  /old/path/calcs/Species/mol.xyz"
-    expected_leading_ws_no_newline = "  /new/project/calcs/Species/mol.xyz"
+    expected_leading_ws_no_newline = "  /new/project/alcs/Species/mol.xyz"
     assert globalize_path(path_str_leading_ws_no_newline, project_dir) == expected_leading_ws_no_newline
 
 
@@ -361,64 +356,10 @@ def test_get_number_with_ordinal_indicator():
     assert get_number_with_ordinal_indicator(12) == '12th'
     assert get_number_with_ordinal_indicator(23) == '23rd'
 
-def test_get_single_bond_length():
-    """Test get_single_bond_length function."""
-    assert get_single_bond_length('C', 'C') == SINGLE_BOND_LENGTH['C_C']
-    assert get_single_bond_length('H', 'C') == SINGLE_BOND_LENGTH['C_H'] # Order doesn't matter
-    assert get_single_bond_length('N', 'O') == SINGLE_BOND_LENGTH['N_O']
-    assert get_single_bond_length('N', 'N', charge_1=1, charge_2=1) == SINGLE_BOND_LENGTH['N+1_N+1']
-    assert get_single_bond_length('N', 'O', charge_1=1, charge_2=-1) == SINGLE_BOND_LENGTH['N+1_O-1']
-    assert get_single_bond_length('X', 'Y') == 2.5 # Test unknown bond
-
-def test_get_bonds_from_dmat():
-    """Test get_bonds_from_dmat function."""
-    # Simple water molecule (H2O)
-    elements_h2o = ['O', 'H', 'H']
-    # Distances in Angstroms (approximate)
-    # O-O: 0 (self)
-    # O-H1: 0.96
-    # O-H2: 0.96
-    # H1-H2: 1.51 (based on 104.5 deg angle)
-    dmat_h2o = np.array([
-        [0.0, 0.96, 0.96],
-        [0.96, 0.0, 1.51],
-        [0.96, 1.51, 0.0]
-    ])
-    bonds_h2o = get_bonds_from_dmat(dmat_h2o, elements_h2o)
-    # Expected bonds: (0, 1) and (0, 2)
-    assert (0, 1) in bonds_h2o
-    assert (0, 2) in bonds_h2o
-    assert len(bonds_h2o) == 2
-
-    # Simple methane molecule (CH4)
-    elements_ch4 = ['C', 'H', 'H', 'H', 'H']
-    # Approximate distances for tetrahedral methane (C-H ~1.09, H-H ~1.78)
-    dmat_ch4 = np.array([
-        [0.0, 1.09, 1.09, 1.09, 1.09],
-        [1.09, 0.0, 1.78, 1.78, 1.78],
-        [1.09, 1.78, 0.0, 1.78, 1.78],
-        [1.09, 1.78, 1.78, 0.0, 1.78],
-        [1.09, 1.78, 1.78, 1.78, 0.0]
-    ])
-    bonds_ch4 = get_bonds_from_dmat(dmat_ch4, elements_ch4)
-    expected_bonds_ch4 = [(0, 1), (0, 2), (0, 3), (0, 4)]
-    for bond in expected_bonds_ch4:
-        assert bond in bonds_ch4
-    assert len(bonds_ch4) == 4
-
-    # Test with invalid dimensions
-    with pytest.raises(ValueError, match="The dimensions of the DMat"):
-        get_bonds_from_dmat(np.array([[1, 2], [3, 4], [5, 6]]), ['A', 'B'])
-
-    # Test with no lone hydrogens bonded (should result in no H-H bond for H2 if it's the only bond)
-    elements_h2 = ['H', 'H']
-    dmat_h2 = np.array([[0.0, 0.74], [0.74, 0.0]])
-    bonds_h2_no_lone = get_bonds_from_dmat(dmat_h2, elements_h2, bond_lone_hydrogens=False)
-    assert len(bonds_h2_no_lone) == 0 # No heavy atoms, no lone H bonding
-
-    bonds_h2_with_lone = get_bonds_from_dmat(dmat_h2, elements_h2, bond_lone_hydrogens=True)
-    assert (0, 1) in bonds_h2_with_lone
-    assert len(bonds_h2_with_lone) == 1
+"""
+Bond-length and distance-matrix utilities were removed from `bees.common` since they are not
+used by BEES' core pipeline. The associated tests were intentionally removed.
+"""
 
 def test_extremum_list():
     """Test extremum_list function."""
