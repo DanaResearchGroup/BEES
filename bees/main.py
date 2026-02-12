@@ -25,7 +25,6 @@ from typing import Any, Dict
 import bees.common as common
 from bees.logger import Logger
 from bees.schema import InputBase
-from db.reaction_database import ReactionDatabase
 from bees.model_generator import ModelGenerator
 
 # Base paths
@@ -148,71 +147,6 @@ class BEES():
             f"BEES project {self.project} initialized successfully in {common.time_lapse(self.t0)}."
         )
 
-    def _fetch_amino_acid_sequences_from_database(self, input_data: Dict[str, Any]) -> None:
-        """
-        Fetch amino acid sequences from the database for enzymes that don't have them.
-        
-        This method loads the kinetic database and attempts to find amino acid sequences
-        for enzymes in the input data by matching EC numbers. If a sequence is found,
-        it is added to the enzyme dictionary in input_data.
-        
-        Args:
-            input_data: The input data dictionary that will be modified in-place
-        """
-        # Deprecated in function-first mode. Kept for backward compatibility if needed later.
-        return
-        # Check if there are enzymes that need amino acid sequences
-        enzymes = input_data.get("enzymes", [])
-        if not enzymes:
-            return
-        
-        # Check if any enzyme is missing amino_acid_sequence
-        needs_fetching = any(
-            not enzyme.get("amino_acid_sequence") or not enzyme.get("amino_acid_sequence", "").strip()
-            for enzyme in enzymes
-        )
-        
-        if not needs_fetching:
-            return  # All enzymes already have sequences
-        
-        # Load the database (same selection strategy as execute())
-        default_db = os.path.join(BEES_PATH, "db", "db.csv")
-        db_path = default_db
-
-        if not os.path.exists(db_path):
-            self.logger.warning(f"Database file not found at {db_path}. Cannot fetch amino acid sequences.")
-            return
-        
-        try:
-            kinetic_db = ReactionDatabase(logger=self.logger, ontology=self.ontology)
-            kinetic_db.load_from_csv(db_path)
-            
-            # For each enzyme missing a sequence, try to find it in the database
-            for enzyme in enzymes:
-                if not enzyme.get("amino_acid_sequence") or not enzyme.get("amino_acid_sequence", "").strip():
-                    ec_number = enzyme.get("ecnumber")
-                    if ec_number:
-                        # Query database by EC number
-                        reactions = kinetic_db.query_by_enzyme(ec_number)
-                        if reactions and reactions[0].amino_acid_sequence:
-                            enzyme["amino_acid_sequence"] = reactions[0].amino_acid_sequence
-                            self.logger.info(
-                                f"Fetched amino acid sequence from database for enzyme '{enzyme.get('label')}' "
-                                f"(EC {ec_number})"
-                            )
-                        else:
-                            self.logger.warning(
-                                f"No amino acid sequence found in database for enzyme '{enzyme.get('label')}' "
-                                f"(EC {ec_number})"
-                            )
-                    else:
-                        self.logger.warning(
-                            f"Enzyme '{enzyme.get('label')}' is missing both amino_acid_sequence and EC number. "
-                            f"Cannot fetch from database."
-                        )
-        except Exception as e:
-            self.logger.warning(f"Failed to load database or fetch amino acid sequences: {e}")
-
     def execute(self):
         """
         Execute the BEES kinetic model generation pipeline.
@@ -320,6 +254,6 @@ class BEES():
             'n_reactions': len(reactions),
             'execution_time': execution_time,
             'summary_path': summary_path,
-            'sbml_path': sbml_path,
+            'sbml_path': None,  # SBML export not yet implemented
             'message': f'Execution completed successfully. Generated {len(reactions)} reaction(s).'
         }

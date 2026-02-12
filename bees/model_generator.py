@@ -17,7 +17,6 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 import os
 from types import SimpleNamespace
-import json
 import time
 
 from bees.reaction_template import (
@@ -162,9 +161,6 @@ class ModelGenerator:
             s
             for s in self.bees_object.species
             if s.reactive and not s.solvent and s.label.lower().strip() not in GENERAL_COFACTORS
-        ]
-        reactive_species_labels = [
-            s.label for s in self.bees_object.species if s.reactive and not s.solvent
         ]
         excluded_general_cofactors = [
             s.label

@@ -566,7 +566,6 @@ class ReactionDatabase:
         
         # Get all aliases for this substrate (including chemical class categories)
         substrate_aliases = get_chemical_aliases(substrate_label)
-        alias_set = {alias.lower() for alias in substrate_aliases}
         
         matches = []
         for rxn in self.reactions:

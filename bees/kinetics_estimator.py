@@ -11,6 +11,7 @@ Current status:
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import uuid
@@ -133,8 +134,10 @@ class CatPredEstimator(BaseKineticsEstimator):
             if not os.path.exists(dst):
                 try:
                     os.symlink(src, dst)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Best-effort symlinking: continue if a symlink cannot be created,
+                    # but emit a warning so environment or permission issues are visible.
+                    print(f"Warning: failed to create symlink from {src} to {dst}: {exc}")
         
         os.makedirs(os.path.join(catpred_work_dir, "output"), exist_ok=True)
         os.makedirs(os.path.join(catpred_work_dir, "demo"), exist_ok=True)
@@ -254,8 +257,13 @@ class CatPredEstimator(BaseKineticsEstimator):
         if os.path.exists(catpred_work_dir):
             try:
                 shutil.rmtree(catpred_work_dir)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Best-effort cleanup: ignore failure but log for diagnostics.
+                logging.getLogger(__name__).warning(
+                    "Failed to remove CatPred work directory %s: %s",
+                    catpred_work_dir,
+                    exc,
+                )
 
         source = "catpred"
         errors = [results.get(f"{p}_error") for p in ["km", "kcat"] if f"{p}_error" in results]
