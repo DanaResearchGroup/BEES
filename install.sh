@@ -9,4 +9,5 @@ bash "$SCRIPT_DIR/devtools/install_all.sh"
 
 echo ""
 echo "To run BEES: conda activate bees_env"
-echo "With CatPred: source .env.bees   then run BEES as above."
+echo "            python BEES.py -i projects/Glycolysis/input.yml"
+echo "(If you installed CatPred, .env.bees is auto-loaded when present.)"

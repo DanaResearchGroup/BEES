@@ -114,6 +114,14 @@ class CatPredEstimator(BaseKineticsEstimator):
         if not reactant_smiles:
             return EstimatedKinetics(source="catpred(no reactants)")
 
+        if not os.path.isdir(self.CATPRED_DIR):
+            raise FileNotFoundError(
+                f"CatPred directory not found: {self.CATPRED_DIR!r}. "
+                "Set CATPRED_DIR to your CatPred clone path. "
+                "Run ./install.sh to install CatPred, or manually: clone CatPred, create the catpred conda env, "
+                "Run ./install.sh to create .env.bees (auto-loaded by BEES), or export CATPRED_DIR=... CATPRED_CHECKPOINT_BASE=... CATPRED_CONDA_ENV=catpred."
+            )
+
         # 1. Create a unique ID for this prediction request to avoid file collisions
         run_id = f"bees_{uuid.uuid4().hex[:8]}"
         

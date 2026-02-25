@@ -20,12 +20,15 @@ fi
 
 echo "Using $COMMAND_PKG"
 
+# Use CONDA_ALWAYS_YES to avoid prompts (some mamba versions reject -y/--yes for env commands)
+export CONDA_ALWAYS_YES=true
+
 if $COMMAND_PKG env list | awk '{print $1}' | sed 's/^\*//' | grep -Fxq "$ENV_NAME"; then
   echo "Updating environment: $ENV_NAME"
-  $COMMAND_PKG env update -n "$ENV_NAME" -f "$ENV_FILE" -y
+  $COMMAND_PKG env update -n "$ENV_NAME" -f "$ENV_FILE"
 else
   echo "Creating environment: $ENV_NAME"
-  $COMMAND_PKG env create -n "$ENV_NAME" -f "$ENV_FILE" -y
+  $COMMAND_PKG env create -n "$ENV_NAME" -f "$ENV_FILE"
 fi
 
 echo "BEES environment ready. Activate with: conda activate $ENV_NAME"

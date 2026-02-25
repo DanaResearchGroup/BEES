@@ -18,7 +18,7 @@ help:
 	@echo ""
 	@echo "After install:"
 	@echo "  conda activate bees_env"
-	@echo "  source .env.bees              # if you installed CatPred"
+	@echo "  (BEES auto-loads .env.bees when present)"
 	@echo "  python BEES.py -i projects/minimal/input.yml"
 	@echo ""
 	@echo "Other:"
