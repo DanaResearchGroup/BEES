@@ -25,7 +25,24 @@ for windows users:
 
 import sys
 import os
+import re
 import argparse
+
+# Load .env.bees from repo root if present (sets CATPRED_DIR, etc.) so users don't need to source it
+_repo_root = os.path.dirname(os.path.abspath(__file__))
+_env_bees = os.path.join(_repo_root, ".env.bees")
+if os.path.isfile(_env_bees):
+    with open(_env_bees) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = re.match(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+            if m:
+                key, val = m.group(1), m.group(2).strip()
+                if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                    val = val[1:-1]
+                os.environ[key] = val
 
 # Import necessary modules from BEES
 import bees.common as common

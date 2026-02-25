@@ -1,0 +1,194 @@
+# Chemical Ontology for BEES
+# This file maps specific molecule names to their general chemical classes.
+# The structure is category-centric (human-readable) and will be inverted in memory for fast lookups.
+
+# Usage: When a user provides "Butyryl-CoA" for example, BEES will also search for "an acyl-CoA" reactions.
+
+# Fatty Acids (by chain length)
+# Cross-mapping: Acyl-CoAs can also match their corresponding fatty acid categories
+# This allows "Butyryl-CoA" to match reactions for "a short-chain fatty acid"
+
+a short-chain fatty acid: # SCFAs
+  - acetate
+  - butyrate
+  - propionate
+  - valerate
+  - butyryl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - acetyl-CoA   # Acyl-CoA form can match fatty acid reactions
+  - propionyl-CoA  # Acyl-CoA form can match fatty acid reactions
+
+a medium-chain fatty acid:
+  - hexanoate
+  - octanoate
+  - decanoate
+  - dodecanoate
+  - tetradecanoate
+  - hexanoic acid
+  - octanoic acid
+  - decanoic acid
+  - dodecanoic acid
+  - tetradecanoic acid
+  - hexanoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - octanoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - decanoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - dodecanoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - tetradecanoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+
+a long-chain fatty acid:
+  - palmitate
+  - stearate
+  - oleate
+  - linoleate
+  - palmitic acid
+  - stearic acid
+  - oleic acid
+  - linoleic acid
+  - palmitoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - stearoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - oleoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+  - linoleoyl-CoA  # Acyl-CoA form can match fatty acid reactions
+
+# Acyl-CoA derivatives (by chain length)
+a short-chain acyl-CoA:
+  - acetyl-CoA
+  - propionyl-CoA
+  - butyryl-CoA
+  - propanoyl-CoA
+
+a medium-chain acyl-CoA:
+  - hexanoyl-CoA
+  - octanoyl-CoA
+  - decanoyl-CoA
+  - dodecanoyl-CoA
+  - tetradecanoyl-CoA
+
+a long-chain acyl-CoA:
+  - palmitoyl-CoA
+  - stearoyl-CoA
+  - oleoyl-CoA
+  - linoleoyl-CoA
+
+# Generic categories (broadest matches)
+an acyl-CoA:
+  - acetyl-CoA
+  - propionyl-CoA
+  - butyryl-CoA
+  - propanoyl-CoA
+  - malonyl-CoA
+  - hexanoyl-CoA
+  - octanoyl-CoA
+  - decanoyl-CoA
+  - dodecanoyl-CoA
+  - tetradecanoyl-CoA
+  - palmitoyl-CoA
+  - stearoyl-CoA
+  - oleoyl-CoA
+  - linoleoyl-CoA
+  - acetoacetyl-CoA
+  - 3-hydroxy-2-methylpropanoyl-CoA
+  - (S)-3-hydroxy-3-methylglutaryl-CoA
+
+a fatty acid:
+  - acetate
+  - butyrate
+  - propionate
+  - valerate
+  - hexanoate
+  - octanoate
+  - decanoate
+  - dodecanoate
+  - tetradecanoate
+  - palmitate
+  - stearate
+  - oleate
+  - linoleate
+  - hexanoic acid
+  - octanoic acid
+  - decanoic acid
+  - dodecanoic acid
+  - tetradecanoic acid
+  - palmitic acid
+  - stearic acid
+  - oleic acid
+  - linoleic acid
+
+# Sugar phosphates
+a hexose phosphate:
+  - glucose 6-phosphate
+  - fructose 6-phosphate
+  - mannose 6-phosphate
+  - galactose 6-phosphate
+  - D-glucose 6-phosphate
+  - D-fructose 6-phosphate
+
+D-glucose:
+  - Glucose
+  - alpha-D-glucose
+  - beta-D-glucose
+  - D-glucopyranose
+
+D-fructose 6-phosphate:
+  - fructose 6-phosphate
+
+D-glucose 6-phosphate:
+  - glucose 6-phosphate
+
+a pentose phosphate:
+  - ribose 5-phosphate
+  - xylose 5-phosphate
+  - ribulose 5-phosphate
+  - D-ribose 5-phosphate
+  - D-xylose 5-phosphate
+
+# Amino acids (by category)
+an amino acid:
+  - alanine
+  - glycine
+  - valine
+  - leucine
+  - isoleucine
+  - serine
+  - threonine
+  - cysteine
+  - methionine
+  - aspartate
+  - glutamate
+  - asparagine
+  - glutamine
+  - lysine
+  - arginine
+  - histidine
+  - phenylalanine
+  - tyrosine
+  - tryptophan
+  - proline
+
+# Nucleotides
+a purine nucleotide:
+  - ATP
+  - ADP
+  - AMP
+  - GTP
+  - GDP
+  - GMP
+  - ITP
+  - IDP
+  - IMP
+
+a pyrimidine nucleotide:
+  - CTP
+  - CDP
+  - CMP
+  - UTP
+  - UDP
+  - UMP
+  - TTP
+  - TDP
+  - TMP
+
+# Carbonate/bicarbonate
+hydrogencarbonate:
+  - HCO3-
+  - bicarbonate
+  - HCO3
+  - carbonic acid (deprotonated)

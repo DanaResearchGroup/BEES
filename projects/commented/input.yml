@@ -1,0 +1,80 @@
+# BEES Input File (commented template)
+# This template reflects the current project status:
+# - Database is db (main reaction database)
+# - Kinetics estimation uses CatPred via settings
+# - Solver is not configured in the input
+# - Enzymes can include amino_acid_sequence (or BEES will try to fetch it by EC number)
+
+# --- Project Information ---
+# 'project': Required. The name of your BEES project. Max length is 255 characters.
+project: MyFirstBEESProject
+project_directory: projects/commented
+
+# --- Species Definition ---
+# 'species': Required. A list of chemical species involved in your biochemical system.
+species:
+  - label: Glucose
+    concentration: 0.01  # Required. Float or (min, max).
+    smiles: C(C1C(C(C(C(O1)CO)O)O)O)O
+    # inchi: InChI=1S/C6H12O6/c7-1-2-3(8)4(9)5(10)6(11)12-3/h2-6,8-11H,1H2/t2-,3-,4+,5-,6?/m1/s1
+    # adjlist: Optional adjacency list representation.
+    charge: 0
+    constant: false
+    reactive: true
+    observable: true
+    solvent: false
+    # xyz: Optional. XYZ coordinates (not used yet).
+
+  - label: ATP
+    concentration: 0.005
+    smiles: N1C=NC2=C1N=CN=C2C3C(C(C(O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O
+    reactive: true
+    observable: true
+
+  - label: Water
+    concentration: 55.5
+    smiles: O
+    solvent: true
+    reactive: true
+    observable: true
+
+# --- Enzyme Definition ---
+# 'enzymes': Required. Enzymes inherit Species attributes.
+enzymes:
+  - label: Hexokinase
+    concentration: 1e-6
+    ecnumber: EC 2.7.1.1
+    reactive: true
+    # Optional. If missing, BEES will try to fetch from the database using the EC number.
+    amino_acid_sequence: MIAAQLLAYYFTELKDDQVKKIDKYLYAMRLSDETLIDIMTRFRKEMKNGLSRDFNPTATVKMLPTFVRSIPDGSEKGDFIALDLGGSSFRILRVQVNHEKNQNVHMESEVYDTPENIVHGSGSQLFDHVAECLGDFMEKRKIKDKKLPVGFTFSFPCQQSKIDEAILITWTKRFKASGVEGADVVKLLNKAIKKRGDYDANIVAVVNDTVGTMMTCGYDDQHCEVGLIIGTGTNACYMEELRHIDLVEGDEGRMCINTEWGAFGDDGSLEDIRTEFDREIDRGSLNPGKQLFEKMVSGMYLGELVRLILVKMAKEGLLFEGRITPELLTRGKFNTSDVSAIEKNKEGLHNAKEILTRLGVEPSDDDCVSVQHVCTIVSFRSANLVAATLGAILNRLRDNKGTPRLRTTVGVDGSLYKTHPQYSRRFHKTLRRLVPDSDVRFLLSESGSGKGAAMVTAVAYRLAEQHRQIEETLAHFHLTKDMLLEVKKRMRAEMELGLRKQTHNNAVVKMLPSFVRRTPDGTENGDFLALDLGGTNFRVLLVKIRSGKKRTVEMHNKIYAIPIEIMQGTGEELFDHIVSCISDFLDYMGIKGPRMPLGFTFSFPCQQTSLDAGILITWTKGFKATDCVGHDVVTLLRDAIKRREEFDLDVVAVVNDTVGTMMTCAYEEPTCEVGLIVGTGSNACYMEEMKNVEMVEGDQGQMCINMEWGAFGDNGCLDDIRTHYDRLVDEYSLNAGKQRYEKMISGMYLGEIVRNILIDFTKKGFLFRGQISETLKTRGIFETKFLSQIESDRLALLQVRAILQQLGLNSTCDDSILVKTVCGVVSRRAAQLCGAGMAAVVDKIRENRGLDRLNVTVGVDGTLYKLHPHFSRIMHQTVKELSPKCNVSFLLSEDGSGKGAALITAVGVRLRTEASS
+
+  - label: Phosphofructokinase
+    concentration: 5e-7
+    ecnumber: EC 2.7.1.11
+    reactive: true
+    amino_acid_sequence: ERRFQDAVRLRGRSFAGNLNTYKRLAIKLPDDQIPKTNCNVAVINVGAPAAGMNAGVRSAVRVGIADGHRMLAIYDGFDGFAKGQIKEIGWTDVGGWTGQGGSILGTKRVLPGKYLEEIATQMRTHSINALLIIGGFEAYLGLLELSAAREKHEEFCVPMVMVPATVSNNVPGSDFSIGADTALNTITDTCDRIKQSASGTKRRVFIIETMGGYCGYLANMGGLAAGADAAYIFEEPFDIRDLQSNVEHLTEKMKTTIQRGLVLRNESCSENYTTDFIYQLYSEEGKGVFDCRKNVLGHMQQGGAPSPFDRNFGTKISARAMEWITEKLKEARGRGKKFTTDDSICVLGISKRNVIFQPVAELKKQTDFEHRIPKEQWWLKLRPLMKILAKYKASYDVSDSGQLEHVQPWSV
+
+# --- Environment Settings ---
+environment:
+  temperature: 310.15
+  pH: 7.4
+  # ionic_strength: 0.15
+  # oxygen_level: 0.21
+  # seed_mechanisms: []
+
+# --- Database Settings ---
+database:
+  name: db
+
+# --- Application Settings ---
+settings:
+  estimate_kinetics: true
+  kinetics_estimator: catpred
+  kinetics_include_sd: false
+  verbose: 20
+  # end_time: 3600.0
+  # time_step: 1.0
+  # time_units: s
+  # output_directory: /path/to/custom/output/folder
+  # export_sbml: false
+  # sbml_filename: model.xml

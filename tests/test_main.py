@@ -9,7 +9,7 @@ import yaml
 import pytest
 from unittest import mock
 
-import main
+import bees.main as main
 from BEES import parse_and_load_input
 from bees.common import InputError  # raised by read_yaml_file on missing file
 
@@ -20,21 +20,17 @@ from bees.common import InputError  # raised by read_yaml_file on missing file
 @pytest.fixture(autouse=True)
 def patch_paths_and_deps(tmp_path, monkeypatch):
     """
-    - Redirect BEES_PATH and PROJECTS_BASE_PATH to temp dirs.
-    - Create examples/minimal/ for the parser's default path.
+    - Redirect BEES_PATH to temp dir.
+    - Create projects/minimal/ for the parser's default path.
     - Stub git helpers for deterministic logs.
     """
     bees_path = tmp_path / "bees_path"
-    projects_base = tmp_path / "projects_base"
 
-    (bees_path / 'examples' / 'minimal').mkdir(parents=True)
-    projects_base.mkdir(parents=True)
+    (bees_path / 'projects' / 'minimal').mkdir(parents=True)
 
     # Patch globals used by main.py and its imported common
     monkeypatch.setattr(main, 'BEES_PATH', str(bees_path))
-    monkeypatch.setattr(main, 'PROJECTS_BASE_PATH', str(projects_base))
     monkeypatch.setattr(main.common, 'BEES_PATH', str(bees_path))
-    monkeypatch.setattr(main.common, 'PROJECTS_BASE_PATH', str(projects_base))
 
     # Patch BEES.py (the parser file)
     import BEES as bees_cli
@@ -57,6 +53,7 @@ def _write_yaml(path, data):
 
 def test_parser_uses_default_input_when_none_provided(tmp_path, monkeypatch):
     default_dir = os.path.join(main.BEES_PATH, 'examples', 'minimal')
+    os.makedirs(default_dir, exist_ok=True)
     default_yaml = os.path.join(default_dir, 'input.yml')
     _write_yaml(default_yaml, {
         'project': 'DefaultProj',
@@ -192,8 +189,8 @@ class DummySchema:
     def model_dump(self, exclude_unset):
         return {}
 
-@mock.patch('main.Logger')
-@mock.patch('main.InputBase', new=DummySchema)
+@mock.patch('bees.main.Logger')
+@mock.patch('bees.main.InputBase', new=DummySchema)
 def test_BEES_init_success(MockLogger):
     data = {
         'project': 'testproj',
@@ -206,11 +203,11 @@ def test_BEES_init_success(MockLogger):
     bees = main.BEES(data)
 
     assert os.path.isdir(bees.project_directory)
-    assert bees.input_schema.project == 'testproj'
+    assert bees.bees_object.project == 'testproj'
     MockLogger.assert_called_once()
 
 
-@mock.patch('main.Logger')
+@mock.patch('bees.main.Logger')
 def test_BEES_init_dir_fail(MockLogger, monkeypatch):
     data = {'project': 'proj'}
     monkeypatch.setattr(os, 'makedirs', lambda *a, **k: (_ for _ in ()).throw(OSError("deny")))
@@ -218,8 +215,8 @@ def test_BEES_init_dir_fail(MockLogger, monkeypatch):
         main.BEES(data)
 
 
-@mock.patch('main.Logger')
-@mock.patch('main.InputBase', side_effect=Exception("schema error"))
+@mock.patch('bees.main.Logger')
+@mock.patch('bees.main.InputBase', side_effect=Exception("schema error"))
 def test_BEES_init_schema_fail(MockInputBase, MockLogger):
     data = {
         'project': 'x',

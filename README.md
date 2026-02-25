@@ -1,106 +1,92 @@
 # BEES
 Biochemical Engine for Enzymatic kinetic modelS
 
-## Overview
+## What BEES does
 
-BEES is a tool for generating biochemical reaction networks from enzyme and substrate inputs. It automatically creates reaction networks by combining enzyme-substrate pairs, retrieves kinetic parameters from a database when available and take envriomantal factors into consideration.  
-
-## Purpose
-
-BEES will helps researchers and engineering to model biochemical systems by:
-- Generating reaction networks from enzyme and substrate specifications
-- Retrieving kinetic parameters from a database
-- Creating structured reaction summaries with stoichiometry and rate laws
-
-## Current Capabilities
-
-This version of BEES provides two main capabilities:
-
-1. **Network Generation**: Automatically generates biochemical reaction networks from enzyme-substrate pairs. Given a set of enzymes and substrates, BEES creates all possible reactions, determines products, and establishes stoichiometry based on enzyme EC numbers.
-
-2. **Kinetic Parameter Retrieval**: Queries a kinetic database to find kinetic parameters (Km, kcat, Vmax, ΔG) for enzyme-substrate reactions. When parameters are found, they are included in the reaction model. When not found, the system falls back to template-based generation without kinetic parameters.
+- Builds biochemical reaction networks from enzyme-substrate pairs (EC-based stoichiometry).
+- Pulls kinetic parameters (Km, kcat, Vmax, delta-G) from a local database (37K+ reactions from BKMS).
+- Can estimate missing kinetics via [CatPred](https://github.com/DanaResearchGroup/CatPred) when the database has no match.
 
 ## Installation
 
-### Prerequisites
+**Prerequisites:** Python 3.12+, Conda. For CatPred: `git` and `wget` (or `curl`) on PATH. Use a normal directory (not e.g. inside Trash).
 
-- Python 3.12 or higher
-- Conda (for environment management)
+### Clone and install this branch (from zero)
 
-### Setup
+1. **Clone and enter the repo** (use your branch if different from `dev-for-pr`):
+   ```bash
+   git clone <repo-url> BEES
+   cd BEES
+   git checkout dev-for-pr
+   ```
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd BEES
-```
+2. **One-shot install (BEES + CatPred):**
+   ```bash
+   ./install.sh
+   ```
+   This creates the `bees_env` conda env, clones CatPred into the **parent** of BEES (`../CatPred`, `../catpred_pipeline`), downloads and extracts the pretrained data (~1 GB), and writes `.env.bees` in the BEES root. If the download or extraction fails, the script exits with a clear error.
 
-2. Create the conda environment:
-```bash
-conda env create -f environment.yaml
-```
+3. **Run BEES:**
+   ```bash
+   conda activate bees_env
+   python BEES.py -i projects/Glycolysis/input.yml
+   ```
+   No need to `source .env.bees`; BEES loads it automatically when present.
 
-3. Activate the environment:
-```bash
-conda activate bees_env
-```
+4. **If the install script reports that it could not find `kcat/` and `km/`:** set `CATPRED_CHECKPOINT_BASE` manually to the directory that contains those folders (often `.../catpred_pipeline/data/pretrained/production`). Put it in `.env.bees` or export it before running; see [Manual CatPred setup](#kinetics-estimation-catpred) below.
 
-4. Verify installation:
-```bash
-python BEES.py --help
-```
+**BEES only (no CatPred):** run `make install-bees` (or `conda env create -f environment.yaml -n bees_env`) instead of `./install.sh`. Then run as above; kinetics come from the database only.
+
+`.env.bees` is gitignored and is created by `install.sh` when CatPred is installed.
 
 ## Quick Start
 
-1. Create an input YAML file. You can start with the minimal example:
-```bash
-cp examples/minimal/input.yml my_input.yml
-```
+1. Copy and edit an input file: `cp projects/minimal/input.yml my_input.yml` — set project name, at least one species and one enzyme (with EC number), environment (temperature, pH), `database.name: db`, and settings (end_time, time_step).
+2. Run: `python BEES.py --input_file my_input.yml`
+3. Output appears in `output/` in your project folder: `reactions_summary.txt`, logs.
 
-2. Edit `my_input.yml` to specify your species and enzymes. At minimum, you need:
-   - A project name
-   - At least one species (substrate)
-   - At least one enzyme with an EC number
-   - Environment settings (temperature, pH)
-   - Database settings
-   - Settings (end_time, time_step)
+## Examples
 
-3. Run BEES:
-```bash
-python BEES.py --input_file my_input.yml
-```
-
-4. Check the output. BEES will create a project directory in `projects/` containing:
-   - `reactions_summary.txt` - Summary of all generated reactions
-   - `<ProjectName>.log` - Execution log
-   - `<ProjectName>_errors.log` - Error log (if any)
-
-## Running Examples
-
-BEES includes several example configurations that demonstrate different capabilities. you will find all the explantion in the example file in " Test_project_summeary.md"
+Example configs in `projects/`: `minimal/`, `Glycolysis/`, `fattyAcidSynthesis/FattyAcidSynthesisDemo/`, `ComprehensiveDemo/`, `commented/` (commented template). See `projects/Project_folder_README.md` for descriptions.
 
 ## Database
 
-BEES uses a CSV database located at `db/db.csv`. The database contains kinetic parameters for various enzyme-substrate reactions. See `docs/kinetic_database_schema.md` for database structure details.
+Kinetics are read from `db/db.csv`. In your input YAML set `database.name: db`.
 
-## Documentation
+## Kinetics estimation (CatPred)
 
-- `examples/TEST_PROJECTS_SUMMARY.md` - Complete guide to all example projects
-- `docs/kinetic_database_schema.md` - Database schema documentation
-- `examples/example_output/` - Example output files showing expected format
+CatPred runs in a separate conda env. If you used `./install.sh`, BEES auto-loads `.env.bees` when present, so just `conda activate bees_env` and run.
+
+Enable in your input:
+
+```yaml
+settings:
+  estimate_kinetics: true
+  kinetics_estimator: catpred
+  kinetics_include_sd: false
+  smiles_mode: auto   # or 'interactive' to prompt for missing SMILES
+```
+
+Enzymes that need estimation must have `amino_acid_sequence` (or BEES will try to resolve it by EC). When the database has no kinetics, BEES calls CatPred as a subprocess; predictions go into the reaction summary.
+
+**Manual CatPred setup (without install.sh):** clone CatPred into a sibling of BEES (e.g. `CatPred` and `catpred_pipeline`), download the pretrained archive into `catpred_pipeline`, extract it, then create the `catpred` conda env. Set `CATPRED_DIR` to the CatPred clone, `CATPRED_CHECKPOINT_BASE` to the directory that contains `kcat/` and `km/` (often `.../catpred_pipeline/data/pretrained/production`), and `CATPRED_CONDA_ENV=catpred`. BEES auto-loads `.env.bees` when present; otherwise export these in your shell before running.
+
+## Project structure
+
+```
+BEES/
+  BEES.py       # CLI
+  install.sh    # One-command setup
+  bees/         # Core package (main, schema, model_generator, kinetics_estimator, ...)
+  db/           # db.csv, reaction_database.py, ontology.yaml
+  projects/     # Example configs
+  tests/
+```
 
 ## Development
 
-To run tests:
-```bash
-pytest tests/
-```
-
-To run a specific test:
-```bash
-pytest tests/test_comprehensive_demo.py -v
-```
+Run tests: `pytest tests/ -v` (or `make test`).
 
 ## License
 
-See LICENSE file for details.
+See LICENSE.

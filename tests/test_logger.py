@@ -122,7 +122,7 @@ def test_helper_methods_and_args(tmp_dir: str, capsys: pytest.CaptureFixture[str
     """
     Test .always(), .log_max_time_reached(), .log_footer(), .log_args().
     """
-    logger = Logger(project_directory=tmp_dir, verbose=logging.INFO, t0=time.time())
+    logger = Logger(project_directory=tmp_dir, verbose=10, t0=time.time())
     capsys.readouterr()
 
     logger.always("go-always")
@@ -150,7 +150,7 @@ def test_helper_methods_and_args(tmp_dir: str, capsys: pytest.CaptureFixture[str
     schema = {"x": 1, "verbose": 20, "y": "yes"}
     logger.log_args(schema)
     out = capsys.readouterr().out
-    assert "Using the following arguments" in out
+    assert "Full input arguments" in out
     assert "verbose: info" in out
 
 

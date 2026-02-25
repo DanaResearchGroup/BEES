@@ -7,9 +7,10 @@ to avoid circular imports.
 
 """
 
-import os 
+import logging
+import os
 import subprocess
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union, Dict
 import datetime
 import shutil
 import time
@@ -31,13 +32,244 @@ DATA_BASE_PATH = os.path.join(BEES_PATH, 'data')
 
 VERSION = '0.1.0'  
 
-
-
 # Constants
 R = 8.31446261815324  # J/(mol*K)
 EA_UNIT_CONVERSION = {'J/mol': 1, 'kJ/mol': 1e+3, 'cal/mol': 4.184, 'kcal/mol': 4.184e+3}
 
+# General cofactors (energy carriers, redox agents, vitamin-derived, metals)
+GENERAL_COFACTORS = {
+    'atp', 'adp', 'amp', 'gtp', 'gdp', 'gmp', 'utp', 'udp', 'ump', 'ctp', 'cdp', 'cmp',
+    'nadh', 'nad+', 'nad', 'nadh2', 'nadph', 'nadp+', 'nadp', 'nadph2',
+    'fad', 'fadh2', 'coa', 'coenzyme a', 'coash',
+    'h2o', 'water', 'h+', 'proton',
+    'phosphate', 'pi', 'orthophosphate', 'pyrophosphate', 'ppi', 'diphosphate',
+    'co2', 'carbon dioxide', 'hco3-', 'bicarbonate', 'o2', 'oxygen', 'h2', 'hydrogen',
+    'tpp', 'thiamine pyrophosphate', 'thiamin pyrophosphate',
+    'plp', 'pyridoxal phosphate', 'pyridoxal 5-phosphate',
+    'thf', 'tetrahydrofolate', 'tetrahydrofolic acid', 'h4folate',
+    'sam', 's-adenosylmethionine', 's-adenosyl-l-methionine',
+    'lipoic acid', 'lipoamide', 'lipoyl',
+    'cobalamin', 'vitamin b12', 'adenosylcobalamin', 'methylcobalamin',
+    'mg2+', 'magnesium', 'mn2+', 'manganese', 'zn2+', 'zinc',
+    'fe2+', 'fe3+', 'iron', 'cu2+', 'copper', 'ca2+', 'calcium',
+}
 
+# Energy carriers for strict matching
+ENERGY_CARRIERS = {
+    "atp", "adp", "amp", "gtp", "gdp", "gmp", "itp", "idp", "imp",
+    "utp", "udp", "ump", "ctp", "cdp", "cmp",
+}
+
+# EC number aliases
+EC_ALIASES = {
+    'EC 2.3.1.85': ['EC 2.3.1.86'],
+    'EC 2.3.1.86': ['EC 2.3.1.85'],
+}
+
+# Cofactor substitutions
+COFACTOR_SUBSTITUTIONS = {
+    'nad+': ['nadp+'], 'nadp+': ['nad+'],
+    'nadh': ['nadph'], 'nadph': ['nadh'],
+}
+
+# Enzyme domain cofactors
+ENZYME_DOMAIN_COFACTORS = {
+    'synthase': ['acp', 'acyl carrier protein'],
+    'carboxylase': ['biotin'],
+}
+
+# Chemical ontology lookup table (populated by load_chemical_ontology at runtime)
+_CHEMICAL_ONTOLOGY: Optional[Dict[str, List[str]]] = None
+_ONTOLOGY_CATEGORIES_RAW: Optional[Dict[str, List[str]]] = None
+
+# Acyl prefixes for ACP metabolites
+_ACP_ACYL_PREFIXES = frozenset({
+    "acetyl", "malonyl", "propionyl", "butyryl", "butanoyl", "acetoacetyl",
+    "hexanoyl", "octanoyl", "decanoyl", "dodecanoyl", "tetradecanoyl",
+    "hexadecanoyl", "octadecanoyl", "icosanoyl", "docosanoyl", "tetracosanoyl",
+    "hexacosanoyl", "lauroyl", "myristoyl", "palmitoyl", "stearoyl",
+    "cerotoyl", "lignoceroyl", "hydroxybutyryl", "crotonyl",
+})
+
+# Energy carriers for strict matching
+ENERGY_CARRIERS = {
+    "atp", "adp", "amp", "gtp", "gdp", "gmp", "itp", "idp", "imp",
+    "utp", "udp", "ump", "ctp", "cdp", "cmp",
+    "dttp", "dtdp", "dtmp", "datp", "dadp", "damp",
+    "dgtp", "dgdp", "dgmp", "dctp", "dcdp", "dcmp"
+}
+
+def _normalize_compound_label(label: str) -> str:
+    """Normalize compound label for comparison."""
+    return str(label).lower().strip().replace("-", " ").replace("_", " ")
+
+def _has_acyl_attachment_to_acp(label: str) -> bool:
+    """True if label describes acyl-ACP (e.g. acetyl-ACP), not carrier-only."""
+    normalized = _normalize_compound_label(label)
+    for prefix in _ACP_ACYL_PREFIXES:
+        if prefix in normalized:
+            return True
+    if "3 oxoacyl" in normalized or "3 oxo" in normalized and "acp" in normalized:
+        return True
+    if "3 hydroxyacyl" in normalized or "3 hydroxy" in normalized and "acp" in normalized:
+        return True
+    if "enoyl" in normalized or "dehydroacyl" in normalized:
+        return True
+    if normalized.startswith("acyl ") or " acyl " in normalized:
+        return True
+    return False
+
+def get_coenzyme_like_flags(label: str) -> Dict[str, bool]:
+    """Get flags indicating if compound is a coenzyme-like molecule."""
+    normalized = _normalize_compound_label(label)
+    is_free_coa = normalized in {"coa", "coenzyme a", "co enzyme a", "coenzyme a (coa)"}
+    is_acp_like = ("acyl carrier protein" in normalized or "acp" in normalized.split())
+    is_acyl_acp = is_acp_like and _has_acyl_attachment_to_acp(label)
+    is_acp_carrier_only = is_acp_like and not is_acyl_acp
+    is_biotin_like = ("biotin" in normalized or "carboxyl carrier protein" in normalized)
+    is_coenzyme_like = is_free_coa or is_acp_carrier_only
+    return {
+        "normalized": normalized,
+        "is_free_coa": is_free_coa,
+        "is_acp_like": is_acp_like,
+        "is_acyl_acp": is_acyl_acp,
+        "is_acp_carrier_only": is_acp_carrier_only,
+        "is_biotin_like": is_biotin_like,
+        "is_coenzyme_like": is_coenzyme_like,
+        "is_debug_target": is_coenzyme_like or is_biotin_like or is_acyl_acp,
+    }
+
+def build_coenzyme_debug_data(label: str, label_lc: str, is_general_cofactor: bool, added_to_substrates: bool) -> Dict[str, object]:
+    """Build debug data for coenzyme handling."""
+    flags = get_coenzyme_like_flags(label)
+    return {
+        "product_label": label, "product_lc": label_lc,
+        "is_general_cofactor": is_general_cofactor,
+        "added_to_substrates": added_to_substrates,
+        "coenzyme_flags": flags,
+    }
+
+def load_chemical_ontology(ontology_path: Optional[str] = None) -> Dict[str, List[str]]:
+    """Load and invert chemical ontology from YAML (material -> [categories])."""
+    global _CHEMICAL_ONTOLOGY
+    if _CHEMICAL_ONTOLOGY is not None:
+        return _CHEMICAL_ONTOLOGY
+    if ontology_path is None:
+        ontology_path = os.path.join(BEES_PATH, 'db', 'ontology.yaml')
+    if not os.path.exists(ontology_path):
+        _CHEMICAL_ONTOLOGY = {}
+        return _CHEMICAL_ONTOLOGY
+    try:
+        categories = read_yaml_file(ontology_path)
+    except Exception:
+        _CHEMICAL_ONTOLOGY = {}
+        return _CHEMICAL_ONTOLOGY
+    inverted_ontology: Dict[str, List[str]] = {}
+    if isinstance(categories, dict):
+        for category, materials in categories.items():
+            if isinstance(materials, list):
+                for material in materials:
+                    material_lower = material.lower().strip()
+                    if material_lower not in inverted_ontology:
+                        inverted_ontology[material_lower] = []
+                    inverted_ontology[material_lower].append(category)
+    _CHEMICAL_ONTOLOGY = inverted_ontology
+    return _CHEMICAL_ONTOLOGY
+
+def load_ontology_categories(ontology_path: Optional[str] = None) -> Dict[str, List[str]]:
+    """Load raw ontology mapping (category -> [materials])."""
+    global _ONTOLOGY_CATEGORIES_RAW
+    if _ONTOLOGY_CATEGORIES_RAW is not None:
+        return _ONTOLOGY_CATEGORIES_RAW
+    if ontology_path is None:
+        ontology_path = os.path.join(BEES_PATH, 'db', 'ontology.yaml')
+    if not os.path.exists(ontology_path):
+        _ONTOLOGY_CATEGORIES_RAW = {}
+        return _ONTOLOGY_CATEGORIES_RAW
+    try:
+        categories = read_yaml_file(ontology_path)
+        if not isinstance(categories, dict):
+            _ONTOLOGY_CATEGORIES_RAW = {}
+            return _ONTOLOGY_CATEGORIES_RAW
+        normalized: Dict[str, List[str]] = {}
+        for category, materials in categories.items():
+            if not isinstance(materials, list):
+                continue
+            cat_lc = str(category).lower().strip()
+            normalized[cat_lc] = [str(m).lower().strip() for m in materials]
+        _ONTOLOGY_CATEGORIES_RAW = normalized
+        return _ONTOLOGY_CATEGORIES_RAW
+    except Exception:
+        _ONTOLOGY_CATEGORIES_RAW = {}
+        return _ONTOLOGY_CATEGORIES_RAW
+
+def get_ontology_equivalents(label: str) -> List[str]:
+    """Return equivalent labels based on ontology categories."""
+    l_lc = str(label).lower().strip()
+    out: List[str] = [l_lc]
+    if l_lc in ENERGY_CARRIERS:
+        return out
+    aliases = get_chemical_aliases(l_lc)
+    out.extend(aliases)
+    categories_raw = load_ontology_categories()
+    for alias in aliases:
+        alias_lc = str(alias).lower().strip()
+        if alias_lc in categories_raw:
+            members = categories_raw[alias_lc]
+            out.extend(members)
+    return list(dict.fromkeys(out))
+
+def get_chemical_aliases(molecule_label: str) -> List[str]:
+    """Get all chemical class aliases for a molecule label."""
+    molecule_lower = molecule_label.lower().strip()
+    aliases = [molecule_lower]
+    ontology = load_chemical_ontology()
+    if molecule_lower in ontology:
+        aliases.extend(ontology[molecule_lower])
+    ontology_path = os.path.join(BEES_PATH, 'db', 'ontology.yaml')
+    if os.path.exists(ontology_path):
+        try:
+            categories = read_yaml_file(ontology_path)
+            if isinstance(categories, dict):
+                for category in categories.keys():
+                    if category.lower() == molecule_lower:
+                        aliases.append(category)
+                        break
+        except Exception:
+            # Non-fatal: aliases from the main ontology are still returned.
+            logging.getLogger(__name__).debug("Failed to read ontology.yaml for category aliases", exc_info=True)
+    return aliases
+
+def log10_sd_to_linear_sd(linear_mean: float, sd_log10: float) -> float:
+    """Convert standard deviation from log10 space to linear space."""
+    ln10 = math.log(10)
+    sigma_ln = ln10 * sd_log10
+    exp_s2 = math.exp(sigma_ln * sigma_ln)
+    var_linear = (exp_s2 - 1) * (linear_mean * linear_mean) * exp_s2
+    return math.sqrt(max(0, var_linear))
+
+def load_and_invert_ontology(path: str) -> Dict[str, List[str]]:
+    """Read category-based YAML ontology and invert for lookups."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        categories = read_yaml_file(path)
+        if not categories or not isinstance(categories, dict):
+            return {}
+        lookup_table = {}
+        for category, materials in categories.items():
+            if not isinstance(materials, list):
+                continue
+            for material in materials:
+                mat_lower = material.lower().strip()
+                if mat_lower not in lookup_table:
+                    lookup_table[mat_lower] = []
+                cat_name = category.strip()
+                if cat_name not in lookup_table[mat_lower]:
+                    lookup_table[mat_lower].append(cat_name)
+        return lookup_table
+    except Exception:
+        return {}
 
 #All the functions in the common module
 

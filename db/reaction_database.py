@@ -1,0 +1,627 @@
+#!/usr/bin/env python3
+
+"""
+Reaction Database Module
+------------------------
+This module provides access to enzyme-catalyzed reaction data from local CSV database 
+with methods for querying reactions by enzyme EC number, substrate, and cofactors.
+
+This module handles:
+- Loading reaction data from CSV files (including stoichiometry, EC numbers, enzyme names)
+- Querying by enzyme EC number and substrate
+- Handling missing values gracefully
+- Logging database access for debugging
+"""
+
+import os
+import csv
+import json
+from typing import Dict, List, Optional, Any, Tuple, Set, Union
+from dataclasses import dataclass
+from bees.logger import Logger
+from bees.common import GENERAL_COFACTORS, get_ontology_equivalents
+
+@dataclass
+class KineticData:
+    """
+    This class use as a container for reaction data with kinetic parameters retrieved from database.
+    All concentration units in mM, energy in kJ/mol, temperature in K.
+    SD fields hold standard deviation of estimated parameters (e.g. from CatPred).
+    """
+    
+    ec_number: str
+    enzyme_name: str
+    reaction_string: str
+    stoichiometry: Dict[str, int]
+    meta: Optional[Dict[str, Any]] = None
+    temperature: Optional[float] = None
+    ph: Optional[float] = None
+    km: Optional[float] = None
+    km_per_substrate: Optional[Dict[str, float]] = None
+    vmax: Optional[float] = None
+    kcat: Optional[float] = None
+    delta_g: Optional[float] = None
+    kinetic_parameters_source: Optional[str] = None
+    source: str = "database"
+    km_sd: Optional[float] = None
+    km_sd_per_substrate: Optional[Dict[str, float]] = None
+    kcat_sd: Optional[float] = None
+    ki_sd: Optional[float] = None
+    compound_smiles: Optional[Dict[str, str]] = None
+    
+    def __repr__(self):
+        return (f"KineticData(ec={self.ec_number}, reaction={self.reaction_string}, "
+                f"Km={self.km} mM, ΔG={self.delta_g} kJ/mol)")
+
+
+class ReactionDatabase:
+    """
+    Enzyme reaction database interface.
+    
+    Loads and queries reaction data from CSV files. Provides methods to search
+    for reactions by enzyme, substrate, and cofactor combinations.
+    
+    CSV Format:
+        Supports both legacy BEES `db.csv` and the new minimal BKMS-like schema.
+
+        New (preferred) minimal columns:
+            index,enzyme,ec_number,reaction,stoichiometry,temp,ph,km,vmax,kcat,delta_g,meta
+
+        Legacy columns are tolerated and ignored where not needed.
+    
+    Attributes:
+        data (List[Dict]): Raw data loaded from CSV
+        reactions (List[KineticData]): Parsed reaction data objects
+        logger (Logger): BEES Logger instance for logging database operations
+    """
+    
+    def __init__(self, logger: Logger, ontology: Optional[Dict[str, List[str]]] = None):
+        """
+        Initialize empty database.
+        
+        Args:
+            logger (Logger): BEES Logger instance (required).
+            ontology (dict, optional): Chemical ontology for alias matching.
+            
+        Raises:
+            TypeError: If logger is not a BEES Logger instance.
+        """
+        if not isinstance(logger, Logger):
+            raise TypeError(
+                f"logger must be a BEES Logger instance, got {type(logger).__name__}. "
+                f"Import from bees.logger and pass a Logger object."
+            )
+        
+        self.data: List[Dict[str, Any]] = []
+        self.reactions: List[KineticData] = []
+        self.source_file: Optional[str] = None
+        self.logger = logger
+        self.ontology = ontology or {}
+    
+    def load_from_csv(self, csv_path: str) -> int:
+        """
+        Load reaction data from CSV file.
+        
+        Args:
+            csv_path (str): Path to CSV file containing reaction data
+            
+        Returns:
+            int: Number of reactions loaded
+        """
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"Reaction database file not found: {csv_path}")
+        
+        self.source_file = csv_path
+        self.data = []
+        self.reactions = []
+        
+        try:
+            with open(csv_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    self.data.append(row)
+                    
+                    # Parse row into KineticData object
+                    try:
+                        kinetic_data = self._parse_row(row, len(self.reactions) + 2)
+                        self.reactions.append(kinetic_data)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to parse row in {csv_path}: {row}. Error: {e}")
+                        continue
+            
+            self.logger.info(f"Loaded {len(self.reactions)} reactions from {csv_path}")
+            return len(self.reactions)
+            
+        except Exception as e:
+            raise ValueError(f"Error reading CSV file {csv_path}: {e}")
+
+    def _parse_row(self, row: Dict[str, Any], row_index: int) -> KineticData:
+        """Parse a single CSV row into a KineticData object."""
+        # Parse and validate parameters
+        km_val = self._parse_float(row.get('km'))
+        vmax_val = self._parse_float(row.get('vmax'))
+        kcat_val = self._parse_float(row.get('kcat'))
+        delta_g_val = self._parse_float(row.get('delta_g'))
+        temp_val = self._parse_float(row.get('temp'))
+        ph_val = self._parse_float(row.get('ph'))
+        
+        # Validate units
+        km_val = self._validate_and_convert_units(km_val, 'km', row_index)
+        vmax_val = self._validate_and_convert_units(vmax_val, 'vmax', row_index)
+        kcat_val = self._validate_and_convert_units(kcat_val, 'kcat', row_index)
+        delta_g_val = self._validate_and_convert_units(delta_g_val, 'delta_g', row_index)
+        temp_val = self._validate_and_convert_units(temp_val, 'temp', row_index)
+        ph_val = self._validate_and_convert_units(ph_val, 'ph', row_index)
+        
+        # Pull meta JSON (preferred) OR fall back to legacy `kinetic_parameters_source`
+        meta_raw = (row.get("meta") or "").strip()
+        kinetic_parameters_source = (row.get("kinetic_parameters_source") or "").strip()
+        meta = self._parse_json_blob(meta_raw) or self._parse_json_blob(kinetic_parameters_source)
+
+        # Reaction string: explicit column OR meta["reaction"]
+        reaction_string = (row.get("reaction") or row.get("reaction_string") or "").strip()
+        if not reaction_string and isinstance(meta, dict):
+            reaction_string = str(meta.get("reaction") or "").strip()
+
+        # Stoichiometry: explicit column OR meta["stoichiometry"] OR legacy parse fallback
+        stoich_raw = (row.get("stoichiometry") or "").strip()
+        stoichiometry = self._parse_stoichiometry(
+            stoich_raw=stoich_raw,
+            meta=meta,
+            fallback_blob=kinetic_parameters_source,
+            row_index=row_index,
+        )
+
+        ec_number = (row.get("ec_number") or "").strip()
+        enzyme_name = (row.get("enzyme") or row.get("enzyme_name") or "").strip()
+
+        compound_smiles = self._parse_smiles_map(
+            row.get("compound_smiles"),
+            row.get("reactants_smiles"),
+            row.get("products_smiles"),
+        )
+
+        return KineticData(
+            ec_number=ec_number,
+            enzyme_name=enzyme_name,
+            reaction_string=reaction_string,
+            stoichiometry=stoichiometry or {},
+            meta=meta if isinstance(meta, dict) else None,
+            km=km_val,
+            vmax=vmax_val,
+            kcat=kcat_val,
+            delta_g=delta_g_val,
+            temperature=temp_val,
+            ph=ph_val,
+            kinetic_parameters_source=kinetic_parameters_source or None,
+            source="database",
+            km_sd=None,
+            kcat_sd=None,
+            ki_sd=None,
+            compound_smiles=compound_smiles,
+        )
+    
+    def _parse_float(self, value: Any) -> Optional[float]:
+        """
+        Safely parse float from string, handling None, empty, and 'None' strings.
+        
+        Args:
+            value: Value to parse
+            
+        Returns:
+            float or None
+        """
+        if value is None or value == '' or str(value).strip().lower() == 'none':
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+    def _parse_json_blob(self, raw: str) -> Optional[Dict[str, Any]]:
+        if not raw:
+            return None
+        raw = raw.strip()
+        if not raw.startswith("{"):
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _parse_smiles_map(
+        self,
+        compound_smiles_raw: Any,
+        reactants_smiles_raw: Any,
+        products_smiles_raw: Any,
+    ) -> Optional[Dict[str, str]]:
+        compound_smiles: Dict[str, str] = {}
+
+        def merge_smiles(raw: Any) -> None:
+            if not raw:
+                return
+            parsed = self._parse_json_blob(str(raw).strip())
+            if not isinstance(parsed, dict):
+                return
+            for key, value in parsed.items():
+                if key and value:
+                    compound_smiles[str(key)] = str(value)
+
+        merge_smiles(compound_smiles_raw)
+        if not compound_smiles:
+            merge_smiles(reactants_smiles_raw)
+            merge_smiles(products_smiles_raw)
+
+        return compound_smiles or None
+
+    def _parse_stoichiometry(
+        self,
+        stoich_raw: str,
+        meta: Optional[Dict[str, Any]],
+        fallback_blob: Optional[str],
+        row_index: int,
+    ) -> Optional[Dict[str, int]]:
+        """
+        Parse stoichiometry from:
+        1) explicit `stoichiometry` column (JSON dict)
+        2) meta["stoichiometry"]
+        3) legacy blob that might itself be the stoichiometry dict
+        """
+        candidates: List[Any] = []
+        if stoich_raw:
+            candidates.append(self._parse_json_blob(stoich_raw) or stoich_raw)
+        if isinstance(meta, dict) and "stoichiometry" in meta:
+            candidates.append(meta.get("stoichiometry"))
+        if fallback_blob:
+            fb = self._parse_json_blob(fallback_blob)
+            if fb is not None:
+                candidates.append(fb.get("stoichiometry", fb))
+
+        for cand in candidates:
+            if isinstance(cand, dict):
+                stoich: Dict[str, int] = {}
+                for species, coeff in cand.items():
+                    if not species:
+                        continue
+                    try:
+                        coeff_int = int(coeff)
+                    except (ValueError, TypeError):
+                        continue
+                    if coeff_int == 0:
+                        continue
+                    stoich[str(species)] = coeff_int
+                if stoich:
+                    return stoich
+
+        self.logger.debug(f"Row {row_index}: No valid stoichiometry found.")
+        return None
+    
+    def _validate_and_convert_units(self, value: Optional[float], param_name: str, row_index: int) -> Optional[float]:
+        """
+        Validate that parameter values are in reasonable ranges for their expected units.
+        Logs warnings for values that seem outside expected ranges but still returns them.
+        
+        Expected units:
+        - km: mM (typically 0.001 to 1000 mM)
+        - vmax: mM/s (typically 0.001 to 1000 mM/s)
+        - kcat: 1/s (typically 0.001 to 10000 1/s)
+        - delta_g: kJ/mol (typically -200 to 200 kJ/mol)
+        - temperature: K (typically 273 to 373 K for biological systems)
+        - ph: unitless (must be 0-14)
+        
+        Args:
+            value: Parameter value to validate
+            param_name: Name of parameter (km, vmax, kcat, delta_g, temp, ph)
+            row_index: Row index in database for error reporting
+            
+        Returns:
+            float or None: Validated value (or None if invalid)
+        """
+        if value is None:
+            return None
+        
+        # Define reasonable ranges for each parameter
+        ranges = {
+            'km': (1e-6, 1e6),  # mM: from nanomolar to molar range
+            'vmax': (1e-6, 1e6),  # mM/s
+            'kcat': (1e-6, 1e7),  # 1/s
+            'delta_g': (-500, 500),  # kJ/mol
+            'temp': (200, 400),  # K: reasonable biological range
+            'ph': (0, 14)  # pH scale
+        }
+        
+        if param_name not in ranges:
+            return value  # Unknown parameter, return as-is
+        
+        min_val, max_val = ranges[param_name]
+        
+        # Check if value is within reasonable range
+        if value < min_val or value > max_val:
+            self.logger.warning(
+                f"Row {row_index}: {param_name} value {value} may be outside expected range "
+                f"[{min_val}, {max_val}] for its units. Please verify units are correct."
+            )
+        
+        # Additional specific checks
+        if param_name == 'ph' and (value < 0 or value > 14):
+            self.logger.warning(f"Row {row_index}: pH value {value} is outside valid range [0, 14]")
+            return None  # pH outside valid range is invalid
+        
+        if param_name == 'temp' and value < 0:
+            self.logger.warning(f"Row {row_index}: Temperature value {value} K is negative (invalid)")
+            return None
+        
+        return value
+    
+    def query_by_enzyme_substrate(
+        self, 
+        ec_number: str, 
+        substrate_label: str,
+        cofactor: Optional[str] = None,
+        strict: bool = False,
+        temperature_range: Optional[Tuple[float, float]] = None,
+        ph_range: Optional[Tuple[float, float]] = None,
+        available_species_labels_lc: Optional[Set[str]] = None,
+        return_all: bool = False
+    ) -> Union[Optional[KineticData], List[KineticData]]:
+        """
+        Query database for reactions by enzyme and substrate.
+        
+        Args:
+            ec_number (str): Enzyme EC number (e.g., "EC 2.7.1.1")
+            substrate_label (str): Substrate name/label
+            cofactor (str, optional): Cofactor name if required
+            strict (bool): If True, require exact cofactor match. If False, ignore cofactor.
+            temperature_range (tuple, optional): (min_temp, max_temp) in K. Only return if database
+                                                 temperature falls within this range.
+            ph_range (tuple, optional): (min_ph, max_ph). Only return if database pH falls within
+                                        this range.
+            available_species_labels_lc (set, optional): Set of species labels (lowercase) that are 
+                                                         actually available in the system. Used to
+                                                         prioritize reactions.
+            return_all (bool): If True, return all matches sorted by priority. If False, return top.
+            
+        Returns:
+            KineticData, List[KineticData] or None: Matching reaction data or list of matches
+        """
+        self.logger.debug(f"Querying database: EC={ec_number}, Substrate={substrate_label}, "
+                         f"Cofactor={cofactor}, TempRange={temperature_range}, pHRange={ph_range}")
+        
+        # Normalize inputs
+        ec_number = ec_number.strip()
+        substrate_label = substrate_label.strip()
+        
+        # Get all equivalents for this substrate (including chemical class categories and siblings)
+        substrate_equivalents = get_ontology_equivalents(substrate_label)
+        self.logger.debug(f"Substrate '{substrate_label}' equivalents: {substrate_equivalents}")
+        
+        # Collect all matching reactions and prioritize them
+        # When multiple matches exist, prefer:
+        # 1. Reactions where more reactants are in available_species_labels_lc
+        # 2. Reactions with more complete stoichiometry (more species)
+        # 3. Normal direction over reversed
+        # 4. Reactions with kinetic parameters
+        matches = []
+        for reaction in self.reactions:
+            # First, filter by EC number
+            if reaction.ec_number != ec_number:
+                continue
+
+            # Primary matching: check if substrate is a reactant (normal case)
+            # Also check if substrate is a product (reversed database entry case)
+            # We do NOT allow general cofactors to be the only trigger.
+            is_match = False
+            needs_reversal = False
+            if reaction.stoichiometry:
+                stoich_lc = {str(k).lower().strip(): v for k, v in reaction.stoichiometry.items()}
+                for equiv in substrate_equivalents:
+                    e_lc = str(equiv).lower().strip()
+                    if e_lc in stoich_lc:
+                        if stoich_lc[e_lc] < 0:  # Substrate is a reactant (normal case)
+                            if e_lc in GENERAL_COFACTORS:
+                                continue
+                            is_match = True
+                            break
+                        elif stoich_lc[e_lc] > 0:  # Substrate is a product (reversed DB entry)
+                            if e_lc in GENERAL_COFACTORS:
+                                continue
+                            is_match = True
+                            needs_reversal = True
+                            break
+            
+            if is_match:
+                # Check temperature range if specified
+                if temperature_range and reaction.temperature is not None:
+                    temp_min, temp_max = temperature_range
+                    if not (temp_min <= reaction.temperature <= temp_max):
+                        self.logger.debug(f"Database entry temperature {reaction.temperature} K outside "
+                                        f"range [{temp_min}, {temp_max}] K")
+                        continue
+                
+                # Check pH range if specified
+                if ph_range and reaction.ph is not None:
+                    ph_min, ph_max = ph_range
+                    if not (ph_min <= reaction.ph <= ph_max):
+                        self.logger.debug(f"Database entry pH {reaction.ph} outside "
+                                        f"range [{ph_min}, {ph_max}]")
+                        continue
+                
+                # Calculate priority score for ranking matches
+                # Higher score = better match
+                priority_score = 0
+                
+                # High priority: prefer reactions where all/most reactants are in provided species
+                if available_species_labels_lc and reaction.stoichiometry:
+                    # reactants are species with negative coefficients
+                    reaction_reactants_lc = {
+                        str(k).lower().strip() 
+                        for k, v in reaction.stoichiometry.items() 
+                        if (v < 0 if not needs_reversal else v > 0)
+                    }
+                    
+                    # Count how many of the reaction's reactants are in our available set
+                    provided_match_count = sum(
+                        1 for r in reaction_reactants_lc if r in available_species_labels_lc
+                    )
+                    
+                    # significantly boost score if more reactants match our inputs
+                    priority_score += provided_match_count * 100
+                
+                # Prefer reactions with more complete stoichiometry
+                if reaction.stoichiometry:
+                    num_species = len(reaction.stoichiometry)
+                    priority_score += num_species * 0.1  # More species = slightly higher priority
+                
+                # Prefer normal direction over reversed
+                if not needs_reversal:
+                    priority_score += 10
+                
+                # Prefer reactions with kinetic parameters
+                has_km = reaction.km is not None or (getattr(reaction, "km_per_substrate", None) and reaction.km_per_substrate)
+                if has_km or reaction.kcat is not None:
+                    priority_score += 5
+                
+                matches.append((reaction, needs_reversal, priority_score))
+        
+        # If we have matches, sort by priority (highest first)
+        if matches:
+            matches.sort(key=lambda x: -x[2])  # Sort by priority_score descending
+            
+            result_list = []
+            for match_rxn, needs_reversal, score in matches:
+                # Process match
+                final_rxn = match_rxn
+                if needs_reversal:
+                    # Create a reversed copy of the reaction
+                    reversed_stoich = {k: -v for k, v in match_rxn.stoichiometry.items()}
+                    final_rxn = KineticData(
+                        ec_number=match_rxn.ec_number,
+                        enzyme_name=match_rxn.enzyme_name,
+                        reaction_string=f"Reversed: {match_rxn.reaction_string}",
+                        stoichiometry=reversed_stoich,
+                        meta=match_rxn.meta,
+                        temperature=match_rxn.temperature,
+                        ph=match_rxn.ph,
+                        km=match_rxn.km,
+                        km_per_substrate=getattr(match_rxn, "km_per_substrate", None),
+                        vmax=match_rxn.vmax,
+                        kcat=match_rxn.kcat,
+                        delta_g=-match_rxn.delta_g if match_rxn.delta_g is not None else None,
+                        kinetic_parameters_source=match_rxn.kinetic_parameters_source,
+                        source=match_rxn.source,
+                        km_sd=match_rxn.km_sd,
+                        km_sd_per_substrate=getattr(match_rxn, "km_sd_per_substrate", None),
+                        kcat_sd=match_rxn.kcat_sd,
+                        ki_sd=match_rxn.ki_sd,
+                        compound_smiles=match_rxn.compound_smiles,
+                    )
+                
+                # Filter by cofactor if strict
+                if strict and cofactor:
+                    stoich_lc = {str(k).lower().strip(): v for k, v in final_rxn.stoichiometry.items()}
+                    c_lc = str(cofactor).lower().strip()
+                    if not (c_lc in stoich_lc and stoich_lc[c_lc] < 0):
+                        continue
+                
+                result_list.append(final_rxn)
+                if not return_all:
+                    break
+            
+            if not result_list:
+                return [] if return_all else None
+                
+            return result_list if return_all else result_list[0]
+        
+        return [] if return_all else None
+    
+    def query_by_enzyme(self, ec_number: str) -> List[KineticData]:
+        """
+        Query all reactions for a given enzyme EC number.
+        
+        Args:
+            ec_number (str): Enzyme EC number
+            
+        Returns:
+            List[KineticData]: All matching reactions
+        """
+        ec_number = ec_number.strip()
+        matches = [rxn for rxn in self.reactions if rxn.ec_number == ec_number]
+        self.logger.debug(f"Found {len(matches)} reactions for enzyme {ec_number}")
+        return matches
+    
+    def query_by_substrate(self, substrate_label: str) -> List[KineticData]:
+        """
+        Query all reactions involving a substrate.
+        Uses chemical ontology to match generic reactions.
+        Skips triggers by general cofactors unless they are the primary substrate.
+        
+        Args:
+            substrate_label (str): Substrate name/label
+            
+        Returns:
+            List[KineticData]: All matching reactions
+        """
+        substrate_label = substrate_label.strip()
+        
+        # Get all aliases for this substrate (including chemical class categories)
+        substrate_aliases = get_chemical_aliases(substrate_label)
+        
+        matches = []
+        for rxn in self.reactions:
+            if rxn.stoichiometry:
+                stoich_lc = {str(k).lower().strip(): v for k, v in rxn.stoichiometry.items()}
+                for alias in substrate_aliases:
+                    a_lc = str(alias).lower().strip()
+                    if a_lc in stoich_lc and stoich_lc[a_lc] < 0:
+                        if a_lc not in GENERAL_COFACTORS:
+                            matches.append(rxn)
+                            break  # Avoid duplicate matches
+
+        self.logger.debug(f"Found {len(matches)} reactions for substrate {substrate_label} (checked {len(substrate_aliases)} aliases)")
+        return matches
+    
+    def get_all_reactions(self) -> List[KineticData]:
+        """
+        Get all reactions in the database.
+        
+        Returns:
+            List[KineticData]: All loaded reactions
+        """
+        return self.reactions
+    
+    def summary(self) -> Dict[str, Any]:
+        """
+        Get database summary statistics.
+        
+        Returns:
+            dict: Summary statistics
+        """
+        total = len(self.reactions)
+        has_km = lambda r: r.km is not None or (getattr(r, "km_per_substrate", None) and r.km_per_substrate)
+        with_km = sum(1 for r in self.reactions if has_km(r))
+        with_vmax = sum(1 for r in self.reactions if r.vmax is not None)
+        with_kcat = sum(1 for r in self.reactions if r.kcat is not None)
+        with_delta_g = sum(1 for r in self.reactions if r.delta_g is not None)
+        
+        unique_enzymes = len(set(r.ec_number for r in self.reactions))
+        # Count "unique substrates" as unique non-cofactor reactants across all stoichiometries
+        unique_substrates_set = set()
+        for r in self.reactions:
+            if not r.stoichiometry:
+                continue
+            for name, coeff in r.stoichiometry.items():
+                if coeff < 0 and name.lower().strip() not in GENERAL_COFACTORS:
+                    unique_substrates_set.add(name)
+        unique_substrates = len(unique_substrates_set)
+        
+        return {
+            'total_reactions': total,
+            'unique_enzymes': unique_enzymes,
+            'unique_substrates': unique_substrates,
+            'reactions_with_km': with_km,
+            'reactions_with_vmax': with_vmax,
+            'reactions_with_kcat': with_kcat,
+            'reactions_with_delta_g': with_delta_g,
+            'source_file': self.source_file
+        }

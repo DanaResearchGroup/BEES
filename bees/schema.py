@@ -193,8 +193,14 @@ class Settings(BaseModel):
     A class for validate input.BEES.Settings arguments.
     """
 
-    end_time: confloat(gt=0)  # PLACEHOLDER: Simulation end time (ODE simulation not yet implemented)
-    time_step: confloat(gt=0)  # PLACEHOLDER: Simulation time step (ODE simulation not yet implemented)
+    end_time: Optional[confloat(gt=0)] = None  # PLACEHOLDER: Simulation end time (ODE simulation not yet implemented)
+    time_step: Optional[confloat(gt=0)] = None  # PLACEHOLDER: Simulation time step (ODE simulation not yet implemented)
+    
+    # Kinetics estimation settings (currently implemented)
+    estimate_kinetics: bool = False  # Enable kinetics estimation
+    kinetics_estimator: Optional[Literal['catpred']] = None  # Estimator backend
+    kinetics_include_sd: bool = False  # Include prediction uncertainty
+    smiles_mode: Literal['auto', 'interactive'] = 'auto'  # SMILES resolution mode
     time_units : TerminationTimeEnum = TerminationTimeEnum.s  # PLACEHOLDER: Time units for simulation (ODE simulation not yet implemented)
 
     # PLACEHOLDERS for future iterative network refinement functionality (not yet implemented)
