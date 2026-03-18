@@ -1,10 +1,14 @@
+# Glycolysis — single reusable BEES input (species, enzymes, environment, database).
+# Default `settings` below: longer run (end_time 1000 s, max_iterations 50).
+# For a shorter debug loop, replace the entire `settings:` block with the commented
+# template at the bottom of this file.
 
 project: GlycolysisIterative
-project_directory: projects/Glycolysis
+project_directory: projects/Glycolysis/general
 
 species:
   - label: beta-D-glucose
-    concentration: 1 
+    concentration: 1
     smiles: C([C@@H]1[C@H]([C@@H]([C@H]([C@@H](O1)O)O)O)O)O
     reactive: true
   - label: ATP
@@ -14,7 +18,7 @@ species:
   - label: H2O
     concentration: 55.5
     smiles: O
-    reactive: false 
+    reactive: false
   - label: NAD+
     concentration: 0.5
     smiles: C1=CC(=C[N+](=C1)[C@H]2[C@@H]([C@@H]([C@H](O2)COP(=O)([O-])OP(=O)([O-])OC[C@@H]3[C@H]([C@H]([C@@H](O3)N4C=NC5=C(N=CN=C54)N)O)O)O)O)C(=O)N
@@ -89,14 +93,20 @@ database:
   name: db
 
 settings:
-  # Iterative mode
-  end_time: 100.0
+  # Iterative mode 
+  end_time: 1000.0
   time_step: 2.0
-  toleranceMoveToCore: 2
-  toleranceKeepInEdge: 0.2
-  max_iterations: 15
+  toleranceMoveToCore: 0.01
+  toleranceKeepInEdge: 10e-10
+  toleranceInterruptSimulation: 0.01
+  max_iterations: 50
 
-  # Kinetics estimation (needed for flux computation)
+  # ODE solver (speed vs accuracy)
+  ode_rtol: 1.0e-06
+  ode_atol: 1.0e-08
+  ode_method: BDF
+
+  # Kinetics estimation
   estimate_kinetics: true
   kinetics_estimator: catpred
   kinetics_include_sd: true
