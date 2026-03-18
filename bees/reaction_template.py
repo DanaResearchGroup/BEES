@@ -6,25 +6,11 @@ Reaction Template Module
 Determines reaction types and templates based on enzyme EC numbers.
 Provides simple product inference for enzymatic reactions.
 
-EC Number Classification:
-- EC 1.x.x.x: Oxidoreductases (electron transfer)
-- EC 2.x.x.x: Transferases (group transfer)
-- EC 3.x.x.x: Hydrolases (hydrolysis)
-- EC 4.x.x.x: Lyases (addition/removal without hydrolysis)
-- EC 5.x.x.x: Isomerases (intramolecular rearrangement)
-- EC 6.x.x.x: Ligases (bond formation with ATP)
-- EC 7.x.x.x: Translocases (movement across membranes)
-
-
-#TODO Future possible enhancements:
-- SMARTS-based pattern matching for substrate structure analysis
-- More detailed sub-class templates
-- Cofactor-specific product determination
 """
 
 import logging
 import re
-from typing import List, Optional, Dict, Tuple, Callable
+from typing import List, Optional, Dict, Tuple, Callable, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -33,14 +19,25 @@ logger = logging.getLogger('BEES')
 
 
 class ECClass(Enum):
-    """EC Number main classes."""
-    OXIDOREDUCTASE = 1  # Electron transfer reactions
-    TRANSFERASE = 2      # Group transfer reactions
-    HYDROLASE = 3        # Hydrolysis reactions
-    LYASE = 4            # Addition/elimination reactions
-    ISOMERASE = 5        # Isomerization reactions
-    LIGASE = 6           # Bond formation with ATP cleavage
-    TRANSLOCASE = 7      # Translocation reactions
+    """EC Number main classes.
+
+- EC 1.x.x.x: Oxidoreductases (electron transfer)
+- EC 2.x.x.x: Transferases (group transfer)
+- EC 3.x.x.x: Hydrolases (hydrolysis)
+- EC 4.x.x.x: Lyases (addition/removal without hydrolysis)
+- EC 5.x.x.x: Isomerases (intramolecular rearrangement)
+- EC 6.x.x.x: Ligases (bond formation with ATP)
+- EC 7.x.x.x: Translocases (movement across membranes)
+
+    
+    """
+    OXIDOREDUCTASE = 1  
+    TRANSFERASE = 2      
+    HYDROLASE = 3        
+    LYASE = 4            
+    ISOMERASE = 5        
+    LIGASE = 6           
+    TRANSLOCASE = 7      
     UNKNOWN = 0
 
 
@@ -102,15 +99,18 @@ def parse_ec_number(ec_number: str) -> Tuple[int, int, int, int]:
 def get_ec_class(ec_number: str) -> ECClass:
     """
     Get the main EC class from an EC number.
-    
+
     Args:
         ec_number (str): EC number
-        
+
     Returns:
         ECClass: Main enzyme class
     """
     try:
         main_class, _, _, _ = parse_ec_number(ec_number)
+        if main_class not in (1, 2, 3, 4, 5, 6, 7):
+            logger.warning(f"EC class {main_class} out of range for {ec_number}")
+            return ECClass.UNKNOWN
         return ECClass(main_class)
     except (ValueError, KeyError):
         logger.warning(f"Could not determine EC class for {ec_number}")
@@ -206,23 +206,25 @@ EC_SUBCLASS_OVERRIDES: Dict[ECClass, Dict[int, Dict]] = {
 }
 
 
-def determine_template_from_ec(ec_number: str, substrate: Optional[str] = None) -> ReactionTemplate:
+def determine_template_from_ec(ec_number: str) -> ReactionTemplate:
     """
     Determine reaction template based on EC number.
-    
+
     Uses EC classification to infer reaction type. More specific templates
     can be determined by analyzing EC sub-classes.
-    
+
     Args:
         ec_number (str): Enzyme EC number
-        substrate (str, optional): Substrate name for more specific inference
-        
+
     Returns:
         ReactionTemplate: Inferred reaction template
     """
     try:
         main_class, sub_class, _, _ = parse_ec_number(ec_number)
-        ec_class = ECClass(main_class)
+        if main_class not in (1, 2, 3, 4, 5, 6, 7):
+            ec_class = ECClass.UNKNOWN
+        else:
+            ec_class = ECClass(main_class)
     except (ValueError, KeyError):
         logger.warning(f"Invalid EC number {ec_number}, using generic template")
         return ReactionTemplate(
@@ -280,75 +282,112 @@ def _infer_oxidation_products(substrate: str, template: ReactionTemplate, cofact
     return products
 
 
-# Product inference rules by template type
+# Product inference rules by template type.
+# Oxidation types use startswith("oxidation") in infer_products. Others fall back to "generic".
 PRODUCT_INFERENCE_RULES: Dict[str, Callable[[str, ReactionTemplate, Optional[str]], List[str]]] = {
     "phosphorylation": lambda s, t, c: [f"{s}-phosphate", "ADP"],
     "hydrolysis": _infer_hydrolysis_products,
     "ester_hydrolysis": _infer_ester_hydrolysis_products,
+    "glycoside_hydrolysis": _infer_hydrolysis_products,
+    "peptide_hydrolysis": _infer_hydrolysis_products,
     "isomerization": lambda s, t, c: [f"{s} (isomer)"],
     "ligation": lambda s, t, c: [f"{s} (ligated)", "ADP", "Pi"],
     "group_transfer": lambda s, t, c: [f"{s} (modified)"],
+    "acyl_transfer": lambda s, t, c: [f"{s} (modified)"],
+    "glycosyl_transfer": lambda s, t, c: [f"{s} (modified)"],
+    "elimination": lambda s, t, c: [f"{s} (product)"],
+    "oxidoreduction": _infer_oxidation_products,
+    "translocation": lambda s, t, c: [f"{s} (translocated)"],
     "generic": lambda s, t, c: [f"{s} (product)"],
 }
 
 
-def _add_cofactor_products(products: List[str], cofactor: Optional[str], template_type: Optional[str] = None) -> List[str]:
+def _add_cofactor_products(
+    products: List[str],
+    cofactor_source: Optional[Union[str, List[str]]] = None,
+    template_type: Optional[str] = None,
+) -> List[str]:
     """
     Add cofactor-derived products to the product list.
-    
+
     Rules:
-    - ATP consumed → ADP + Pi produced (except for phosphorylation)
-    - NAD+ consumed → NADH + H+ produced
-    - NADP+ consumed → NADPH + H+ produced
-    - NADH consumed → NAD+ + H+ produced
-    - NADPH consumed → NADP+ + H+ produced
-    
+    - ATP consumed -> ADP + Pi produced (except for phosphorylation)
+    - NAD+ consumed -> NADH + H+ produced
+    - NADP+ consumed -> NADPH + H+ produced
+    - NADH consumed -> NAD+ + H+ produced
+    - NADPH consumed -> NADP+ + H+ produced
+
     Args:
         products: Existing product list
-        cofactor: Cofactor name if present
-        template_type: Optional template type to refine rules
-        
+        cofactor_source: Single cofactor string, or list of reactant labels to scan
+        template_type: Optional template type to refine rules (e.g. skip Pi for phosphorylation)
+
     Returns:
         Updated product list with cofactor products
     """
-    if not cofactor or cofactor.lower() in ['none', 'null', '']:
+    if not cofactor_source:
         return products
-    
-    cofactor_upper = cofactor.upper()
-    products_set = {p.upper() for p in products}  # Case-insensitive check
-    
-    # Handle ATP
-    if "ATP" in cofactor_upper:
-        if "ADP" not in products_set:
-            products.append("ADP")
-        # Only add Pi if it's not a phosphorylation reaction
-        if template_type != "phosphorylation" and "PI" not in products_set:
-            products.append("Pi")
-    
-    # Handle NAD+/NADH
-    if "NAD+" in cofactor_upper:
-        if "NADH" not in products_set:
-            products.append("NADH")
-        if "H+" not in products_set:
-            products.append("H+")
-    elif "NADH" in cofactor_upper:
-        if "NAD+" not in products_set:
-            products.append("NAD+")
-        if "H+" not in products_set:
-            products.append("H+")
-    
-    # Handle NADP+/NADPH
-    if "NADP+" in cofactor_upper:
-        if "NADPH" not in products_set:
-            products.append("NADPH")
-        if "H+" not in products_set:
-            products.append("H+")
-    elif "NADPH" in cofactor_upper:
-        if "NADP+" not in products_set:
-            products.append("NADP+")
-        if "H+" not in products_set:
-            products.append("H+")
-    
+
+    # Normalize to list of strings to check (exact match for reactants, substring for cofactor str)
+    if isinstance(cofactor_source, str):
+        if cofactor_source.lower() in ('none', 'null', ''):
+            return products
+        sources = [cofactor_source]
+        use_substring_match = True  # "NAD+" in "NADP+" for cofactor param
+    else:
+        sources = [s for s in cofactor_source if s and str(s).lower() not in ('none', 'null', '')]
+        use_substring_match = False  # exact match for reactant labels
+
+    products_set = {p.upper() for p in products}
+
+    for src in sources:
+        su = str(src).upper()
+        if use_substring_match:
+            has_atp = "ATP" in su
+            # Check NADP before NAD to avoid "NAD+" matching "NADP+"
+            has_nadp = "NADP+" in su or "NADPH" in su
+            has_nad = (("NAD+" in su or "NADH" in su) and not has_nadp)
+        else:
+            has_atp = su == "ATP"
+            has_nadp = su in ("NADP+", "NADPH")
+            has_nad = su in ("NAD+", "NADH")
+
+        if has_atp:
+            if "ADP" not in products_set:
+                products.append("ADP")
+                products_set.add("ADP")
+            if template_type != "phosphorylation" and "PI" not in products_set:
+                products.append("Pi")
+                products_set.add("PI")
+
+        if has_nad and not has_nadp:
+            is_oxidized = "NAD+" in su or su == "NAD+"
+            if is_oxidized:
+                if "NADH" not in products_set:
+                    products.append("NADH")
+                    products_set.add("NADH")
+            else:
+                if "NAD+" not in products_set:
+                    products.append("NAD+")
+                    products_set.add("NAD+")
+            if "H+" not in products_set:
+                products.append("H+")
+                products_set.add("H+")
+
+        if has_nadp:
+            is_oxidized = "NADP+" in su or su == "NADP+"
+            if is_oxidized:
+                if "NADPH" not in products_set:
+                    products.append("NADPH")
+                    products_set.add("NADPH")
+            else:
+                if "NADP+" not in products_set:
+                    products.append("NADP+")
+                    products_set.add("NADP+")
+            if "H+" not in products_set:
+                products.append("H+")
+                products_set.add("H+")
+
     return products
 
 
@@ -372,7 +411,7 @@ def infer_products(
         enzyme_label (str): Enzyme name
         template (ReactionTemplate): Reaction template
         cofactor (str, optional): Cofactor if present
-        database_products (str, optional): Products from database (if available)
+        database_products (str, optional): Products from database 
         
     Returns:
         List[str]: Predicted product names
@@ -427,7 +466,7 @@ def create_reaction_from_database(
         ReactionTemplate: Complete reaction template with inferred/known products
     """
     # Determine template from EC number
-    template = determine_template_from_ec(ec_number, substrate)
+    template = determine_template_from_ec(ec_number)
     
     # Set reactants
     template.reactants = [substrate]
@@ -456,37 +495,12 @@ def create_reaction_from_database(
         cofactor=cofactor,
         database_products=database_products
     )
-    
-    # Ensure cofactor products are added based on reactants (not just cofactor parameter)
-    # This handles cases where ATP/NAD+/NADPH are in reactants directly
-    for reactant in template.reactants:
-        if reactant.upper() == "ATP":
-            if "ADP" not in [p.upper() for p in template.products]:
-                template.products.append("ADP")
-            # Only add Pi if it's not a phosphorylation reaction
-            if template.template_type != "phosphorylation" and "PI" not in [p.upper() for p in template.products]:
-                template.products.append("Pi")
-        elif reactant.upper() == "NAD+":
-            if "NADH" not in [p.upper() for p in template.products]:
-                template.products.append("NADH")
-            if "H+" not in [p.upper() for p in template.products]:
-                template.products.append("H+")
-        elif reactant.upper() == "NADH":
-            if "NAD+" not in [p.upper() for p in template.products]:
-                template.products.append("NAD+")
-            if "H+" not in [p.upper() for p in template.products]:
-                template.products.append("H+")
-        elif reactant.upper() == "NADP+":
-            if "NADPH" not in [p.upper() for p in template.products]:
-                template.products.append("NADPH")
-            if "H+" not in [p.upper() for p in template.products]:
-                template.products.append("H+")
-        elif reactant.upper() == "NADPH":
-            if "NADP+" not in [p.upper() for p in template.products]:
-                template.products.append("NADP+")
-            if "H+" not in [p.upper() for p in template.products]:
-                template.products.append("H+")
-    
+
+    # Ensure cofactor products from reactants (e.g. ATP from template.cofactors)
+    template.products = _add_cofactor_products(
+        template.products, template.reactants, template.template_type
+    )
+
     # Create stoichiometry
     for reactant in template.reactants:
         template.stoichiometry[reactant] = -1
@@ -495,7 +509,4 @@ def create_reaction_from_database(
     
     logger.debug(f"Created reaction template: {template}")
     return template
-
-
-
 

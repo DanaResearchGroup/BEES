@@ -1,5 +1,4 @@
 """
-Kinetics estimation module.
 
 This module defines a small abstraction layer so BEES can fill missing kinetic
 parameters (kcat, Km, Ki) using external tools (e.g., CatPred) without coupling
@@ -10,7 +9,7 @@ Current status:
 """
 
 from __future__ import annotations
-
+import shutil
 import logging
 import os
 import subprocess
@@ -19,8 +18,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 import pandas as pd
-
-from bees.common import log10_sd_to_linear_sd
+from bees.common import canonical_smiles, log10_sd_to_linear_sd
 
 
 @dataclass(frozen=True)
@@ -68,15 +66,24 @@ class BaseKineticsEstimator:
                 Used for: kcat = concatenated SMILES; Km = one per substrate.
             inhibitor_smiles: Optional inhibitor SMILES for Ki
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "BaseKineticsEstimator is an interface. Use build_estimator('catpred') "
+        )
 
 
 class CatPredEstimator(BaseKineticsEstimator):
     """
-    CatPred kinetics estimator.
+    CatPred kinetics estimator. This class is used to estimate the kinetics of a reaction using CatPred.
 
-    Uses a CLI wrapper to call CatPred in its own conda environment.
-    This avoids dependency conflicts between BEES and CatPred.
+    Args:
+        include_sd: If True, include SD_total (standard deviation) from CatPred output for each parameter.
+    Attributes:
+        include_sd: If True, include SD_total (standard deviation) from CatPred output for each parameter.
+        CATPRED_DIR: Path to CatPred installation.
+        CHECKPOINT_BASE: Path to pretrained production models.
+        CONDA_ENV: Name of conda environment containing CatPred.
+
+    Methods:
     """
 
     name = "catpred"
@@ -87,6 +94,9 @@ class CatPredEstimator(BaseKineticsEstimator):
             include_sd: If True, include SD_total (standard deviation) from CatPred output for each parameter.
         """
         self.include_sd = include_sd
+        # In-process memoization: repeated CatPred calls are very expensive.
+        # Keyed by (enzyme sequence, reactant set, inhibitor, include_sd).
+        self._memo: Dict[tuple, EstimatedKinetics] = {}
 
     # Paths to CatPred installation and models.
     # Set env vars (CATPRED_DIR, CATPRED_CHECKPOINT_BASE, CATPRED_CONDA_ENV) or
@@ -97,6 +107,10 @@ class CatPredEstimator(BaseKineticsEstimator):
         "/path/to/pretrained/production"
     )
     CONDA_ENV = os.environ.get("CATPRED_CONDA_ENV", "catpred")
+    # Optional: full path to conda binary (needed when multiple conda installs exist)
+    CONDA_BIN = os.environ.get("CATPRED_CONDA_BIN", "conda")
+    # Optional: direct path to python binary in catpred env; if set, bypasses conda run entirely
+    CATPRED_PYTHON = os.environ.get("CATPRED_PYTHON", "")
 
     def estimate(
         self,
@@ -113,13 +127,34 @@ class CatPredEstimator(BaseKineticsEstimator):
         """
         if not reactant_smiles:
             return EstimatedKinetics(source="catpred(no reactants)")
+        
+        memo_key = None
+        try:
+            memo_key = (
+                enzyme_sequence,
+                tuple(
+                    sorted(
+                        (str(name), canonical_smiles(smi) or str(smi))
+                        for name, smi in reactant_smiles.items()
+                        if smi
+                    )
+                ),
+                canonical_smiles(inhibitor_smiles) if inhibitor_smiles else None,
+                bool(self.include_sd),
+            )
+            cached = self._memo.get(memo_key)
+            if cached is not None:
+                return cached
+        except Exception:
+            memo_key = None
 
         if not os.path.isdir(self.CATPRED_DIR):
             raise FileNotFoundError(
                 f"CatPred directory not found: {self.CATPRED_DIR!r}. "
                 "Set CATPRED_DIR to your CatPred clone path. "
                 "Run ./install.sh to install CatPred, or manually: clone CatPred, create the catpred conda env, "
-                "Run ./install.sh to create .env.bees (auto-loaded by BEES), or export CATPRED_DIR=... CATPRED_CHECKPOINT_BASE=... CATPRED_CONDA_ENV=catpred."
+                "download pretrained data. Then run ./install.sh to create .env.bees (auto-loaded by BEES), "
+                "or export CATPRED_DIR=... CATPRED_CHECKPOINT_BASE=... CATPRED_CONDA_ENV=catpred."
             )
 
         # 1. Create a unique ID for this prediction request to avoid file collisions
@@ -143,12 +178,34 @@ class CatPredEstimator(BaseKineticsEstimator):
                 try:
                     os.symlink(src, dst)
                 except Exception as exc:
-                    # Best-effort symlinking: continue if a symlink cannot be created,
-                    # but emit a warning so environment or permission issues are visible.
-                    print(f"Warning: failed to create symlink from {src} to {dst}: {exc}")
+                    # Some environments (including sandboxed execution) can prevent creating
+                    # symlinks to paths outside the workspace. Fall back to copying.
+                    try:
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copy2(src, dst)
+                    except Exception as copy_exc:
+                        # Best-effort: continue, but keep an observable breadcrumb.
+                        logging.getLogger(__name__).warning(
+                            "Failed to stage CatPred item %r "
+                            "(symlink error: %s; copy error: %s)",
+                            item, exc, copy_exc,
+                        )
         
         os.makedirs(os.path.join(catpred_work_dir, "output"), exist_ok=True)
         os.makedirs(os.path.join(catpred_work_dir, "demo"), exist_ok=True)
+        # CatPred's demo_run.py writes a local ./predict.sh script. If we staged a
+        # symlinked predict.sh from the CatPred repo, it will be read-only and the
+        # run will fail with PermissionError. Ensure it's absent so demo_run.py can
+        # create it.
+        staged_predict_sh = os.path.join(catpred_work_dir, "predict.sh")
+        try:
+            if os.path.exists(staged_predict_sh):
+                os.remove(staged_predict_sh)
+        except Exception:
+            pass
 
         results = {}
 
@@ -168,18 +225,23 @@ class CatPredEstimator(BaseKineticsEstimator):
 
             param = "kcat"
             checkpoint_dir = os.path.join(self.CHECKPOINT_BASE, param)
-            cmd = [
-                "conda", "run", "-n", self.CONDA_ENV,
-                "python", "demo_run.py",
-                "--parameter", param,
-                "--input_file", kcat_csv,
-                "--checkpoint_dir", checkpoint_dir
-            ]
+            if self.CATPRED_PYTHON:
+                cmd = [self.CATPRED_PYTHON, "demo_run.py", "--parameter", param,
+                       "--input_file", kcat_csv, "--checkpoint_dir", checkpoint_dir]
+            else:
+                cmd = [self.CONDA_BIN, "run", "-n", self.CONDA_ENV,
+                       "python", "demo_run.py", "--parameter", param,
+                       "--input_file", kcat_csv, "--checkpoint_dir", checkpoint_dir]
             try:
                 env = os.environ.copy()
                 env["TMPDIR"] = local_tmp
                 env["TEMP"] = local_tmp
                 env["TMP"] = local_tmp
+                # When using a direct python path, prepend its directory to PATH so that
+                # predict.sh (written by demo_run.py) also picks up the correct python.
+                if self.CATPRED_PYTHON:
+                    catpred_bin = os.path.dirname(self.CATPRED_PYTHON)
+                    env["PATH"] = catpred_bin + os.pathsep + env.get("PATH", "")
                 subprocess.run(cmd, cwd=catpred_work_dir, check=True, capture_output=True, text=True, env=env)
                 kcat_basename = os.path.splitext(os.path.basename(kcat_csv))[0]
                 output_path = os.path.join(catpred_work_dir, "output", kcat_basename, f"{kcat_basename}_{param}_output.csv")
@@ -195,7 +257,9 @@ class CatPredEstimator(BaseKineticsEstimator):
                             if pred_val is not None and pred_val > 0 and sd_log10 > 0:
                                 results["kcat_sd"] = log10_sd_to_linear_sd(pred_val, sd_log10)
             except subprocess.CalledProcessError as e:
-                results["kcat_error"] = e.stderr.strip() if e.stderr else str(e)
+                stderr = e.stderr.strip() if e.stderr else ""
+                results["kcat_error"] = stderr or str(e)
+                logging.getLogger(__name__).debug("CatPred kcat stderr:\n%s", stderr)
             except Exception as e:
                 results["kcat_error"] = str(e)
 
@@ -217,18 +281,21 @@ class CatPredEstimator(BaseKineticsEstimator):
             else:
                 param = "km"
                 checkpoint_dir = os.path.join(self.CHECKPOINT_BASE, param)
-                cmd = [
-                    "conda", "run", "-n", self.CONDA_ENV,
-                    "python", "demo_run.py",
-                    "--parameter", param,
-                    "--input_file", km_csv,
-                    "--checkpoint_dir", checkpoint_dir
-                ]
+                if self.CATPRED_PYTHON:
+                    cmd = [self.CATPRED_PYTHON, "demo_run.py", "--parameter", param,
+                           "--input_file", km_csv, "--checkpoint_dir", checkpoint_dir]
+                else:
+                    cmd = [self.CONDA_BIN, "run", "-n", self.CONDA_ENV,
+                           "python", "demo_run.py", "--parameter", param,
+                           "--input_file", km_csv, "--checkpoint_dir", checkpoint_dir]
                 try:
                     env = os.environ.copy()
                     env["TMPDIR"] = local_tmp
                     env["TEMP"] = local_tmp
                     env["TMP"] = local_tmp
+                    if self.CATPRED_PYTHON:
+                        catpred_bin = os.path.dirname(self.CATPRED_PYTHON)
+                        env["PATH"] = catpred_bin + os.pathsep + env.get("PATH", "")
                     subprocess.run(cmd, cwd=catpred_work_dir, check=True, capture_output=True, text=True, env=env)
                     km_basename = os.path.splitext(os.path.basename(km_csv))[0]
                     output_path = os.path.join(catpred_work_dir, "output", km_basename, f"{km_basename}_{param}_output.csv")
@@ -256,17 +323,23 @@ class CatPredEstimator(BaseKineticsEstimator):
                                 if km_sd_per_substrate:
                                     results["km_sd"] = next(iter(km_sd_per_substrate.values()))
                 except subprocess.CalledProcessError as e:
-                    results["km_error"] = e.stderr.strip() if e.stderr else str(e)
+                    stderr = e.stderr.strip() if e.stderr else ""
+                    results["km_error"] = stderr or str(e)
+                    logging.getLogger(__name__).debug("CatPred km stderr:\n%s", stderr)
                 except Exception as e:
                     results["km_error"] = str(e)
 
-        # 3. Cleanup
-        import shutil
-        if os.path.exists(catpred_work_dir):
+        # 3. Cleanup storage (keep workdir on error for debugging)
+        had_error = any(k in results for k in ("kcat_error", "km_error"))
+        if had_error:
+            logging.getLogger(__name__).warning(
+                "CatPred run had errors; keeping work directory for inspection: %s",
+                catpred_work_dir,
+            )
+        elif os.path.exists(catpred_work_dir):
             try:
                 shutil.rmtree(catpred_work_dir)
             except Exception as exc:
-                # Best-effort cleanup: ignore failure but log for diagnostics.
                 logging.getLogger(__name__).warning(
                     "Failed to remove CatPred work directory %s: %s",
                     catpred_work_dir,
@@ -278,7 +351,7 @@ class CatPredEstimator(BaseKineticsEstimator):
         if errors:
             source = f"catpred(errors: {'; '.join(e for e in errors if e)})"[:255]
 
-        return EstimatedKinetics(
+        out = EstimatedKinetics(
             km=results.get("km"),
             km_per_substrate=results.get("km_per_substrate"),
             km_sd=results.get("km_sd"),
@@ -289,6 +362,12 @@ class CatPredEstimator(BaseKineticsEstimator):
             ki_sd=results.get("ki_sd"),
             source=source
         )
+        if memo_key is not None:
+            try:
+                self._memo[memo_key] = out
+            except Exception:
+                pass
+        return out
 
 
 def build_estimator(
@@ -300,7 +379,7 @@ def build_estimator(
 
     Args:
         name: Estimator backend name (e.g. 'catpred')
-        include_sd: If True, estimator will include SD (standard deviation) from predictions when available.
+        include_sd: If True, estimator will include standard deviation
     """
     if not name:
         return None

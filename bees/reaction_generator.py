@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 
 """
-Model Generator Module
+Reaction Generator Module
 ----------------------
-Coordinates reaction template generation with kinetic database queries
-to produce complete biochemical reaction models.
+This is the module that actually builds biochemical reactions.
+Given the input species and enzymes, it will generate the complete reaction network.
 
-This module orchestrates:
-1. Loading kinetic parameters from database
-2. Generating reaction templates from EC numbers
-3. Inferring products when not in database
-4. Creating complete reaction objects with kinetics
+
+Two usage modes:
+
+1) Batch discovery (`generate_reactions`)
+   - Start from user-provided reactive, non-solvent substrates (excluding general cofactors).
+   - Iteratively expand: products become new candidate substrates (skipping cofactors and coenzyme-like carriers).
+   - For each (enzyme × substrate), build reactions via `_generate_reactions` and deduplicate by signature.
+
+2) Iterative enlargement (`IterativeEnlarger`)
+   - Generate reactions only for newly promoted core species (avoids full upfront discovery).
+
+Reaction construction (`_generate_reactions`):
+- Query DB by EC (including aliases), build EC-based templates, validate reactants (cofactors/ontology/substitutions),
+  optionally estimate missing kinetics, select a rate law, and return `GeneratedReaction` objects.
+
+
 """
 
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 import os
 from types import SimpleNamespace
-import time
 
 from bees.reaction_template import (
     create_reaction_from_database,
@@ -25,10 +35,11 @@ from bees.reaction_template import (
 )
 from db.reaction_database import ReactionDatabase, KineticData
 from bees.common import (
-    BEES_PATH,
     GENERAL_COFACTORS,
     get_ontology_equivalents,
     get_coenzyme_like_flags,
+    canonical_smiles,
+    heavy_atom_count,
 )
 from bees.reaction_utils import (
     get_ec_aliases,
@@ -64,7 +75,6 @@ class GeneratedReaction:
     
     def __repr__(self):
         return f"Reaction: {' + '.join(self.reactant_labels)} → {' + '.join(self.product_labels)}"
-
 
 class ModelGenerator:
     """
@@ -102,6 +112,19 @@ class ModelGenerator:
         self.kinetic_db = None
         self.reactions: List[GeneratedReaction] = []
         self.kinetics_estimator = None
+        # Species canonicalization registry:
+        # - alias_lc -> canonical display label
+        # - canonical_smiles -> canonical display label
+        self._species_alias_to_canonical_label: Dict[str, str] = {}
+        self._species_smiles_to_canonical_label: Dict[str, str] = {}
+
+        # Seed registry from user-provided species so their names become preferred.
+        for sp in getattr(self.bees_object, "species", []) or []:
+            label = getattr(sp, "label", None)
+            if not label:
+                continue
+            smiles = getattr(sp, "smiles", None)
+            self._register_species_label(label=label, smiles=smiles)
     
     def load_kinetic_database(self, db_path: str, ontology: Optional[Dict[str, List[str]]] = None) -> int:
         """
@@ -132,7 +155,31 @@ class ModelGenerator:
         self.logger.debug(f"  - Reactions with ΔG: {summary['reactions_with_delta_g']}")
         
         return num_reactions
-    
+
+    def ensure_estimator_initialized(self) -> None:
+        """
+        Build the kinetics estimator if estimation is enabled and not yet done.
+        Called by IterativeEnlarger before generating reactions.
+        """
+        if self.kinetics_estimator is not None:
+            return
+        try:
+            if hasattr(self.bees_object, "settings") and getattr(self.bees_object.settings, "estimate_kinetics", False):
+                include_sd = getattr(self.bees_object.settings, "kinetics_include_sd", False)
+                self.kinetics_estimator = build_estimator(
+                    getattr(self.bees_object.settings, "kinetics_estimator", None),
+                    include_sd=include_sd,
+                )
+                if self.kinetics_estimator:
+                    self.logger.info(f"Kinetics estimation enabled: {self.kinetics_estimator.name}")
+                else:
+                    self.logger.info("Kinetics estimation enabled, but no estimator selected.")
+            else:
+                self.kinetics_estimator = None
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize kinetics estimator: {e}")
+            self.kinetics_estimator = None
+
     def generate_reactions(self) -> List[GeneratedReaction]:
         """
         Generate all reactions from enzyme-substrate combinations using iterative discovery.
@@ -148,15 +195,28 @@ class ModelGenerator:
         self.logger.info("=" * 60)
         
         def reaction_signature(reaction: GeneratedReaction) -> tuple:
-            stoich_tuple = tuple(sorted(reaction.stoichiometry.items()))
-            reactants_tuple = tuple(sorted(reaction.reactant_labels))
-            products_tuple = tuple(sorted(reaction.product_labels))
+            """
+            Canonical signature for deduplication in batch discovery.
+
+            Uses lowercased, stripped species labels so that reactions which
+            only differ by capitalization or trivial formatting of names are
+            treated as identical.
+            """
+            stoich_tuple = tuple(
+                sorted(
+                    (str(name).lower().strip(), coeff)
+                    for name, coeff in (reaction.stoichiometry or {}).items()
+                )
+            )
+            reactants_tuple = tuple(sorted(str(r).lower().strip() for r in reaction.reactant_labels))
+            products_tuple = tuple(sorted(str(p).lower().strip() for p in reaction.product_labels))
             return (reactants_tuple, products_tuple, stoich_tuple)
 
         # Get candidate substrates:
         # - reactive species
         # - exclude solvents
         # - exclude general cofactors as "triggers" (they can still be used as reactants via DB stoichiometry)
+        
         initial_substrates = [
             s
             for s in self.bees_object.species
@@ -184,22 +244,8 @@ class ModelGenerator:
                 f"General cofactors (available but not triggers): {', '.join(excluded_general_cofactors)}"
             )
         self.logger.info("")
-        
-        # Build kinetics estimator once (if enabled/configured)
-        try:
-            if hasattr(self.bees_object, "settings") and getattr(self.bees_object.settings, "estimate_kinetics", False):
-                include_sd = getattr(self.bees_object.settings, "kinetics_include_sd", False)
-                self.kinetics_estimator = build_estimator(
-                    getattr(self.bees_object.settings, "kinetics_estimator", None),
-                    include_sd=include_sd,
-                )
-                if self.kinetics_estimator:
-                    self.logger.info(f"Kinetics estimation enabled: {self.kinetics_estimator.name}")
-                else:
-                    self.logger.info("Kinetics estimation enabled, but no estimator selected.")
-        except Exception as e:
-            self.logger.warning(f"Failed to initialize kinetics estimator: {e}")
-            self.kinetics_estimator = None
+
+        self.ensure_estimator_initialized()
 
         # Initialize available species from input (including ontology equivalents)
         available_species_labels_lc = set()
@@ -215,41 +261,41 @@ class ModelGenerator:
         iteration = 0
         max_iterations = 10  # Safety limit to prevent infinite loops
         reaction_count = len(self.reactions)
-        
         while iteration < max_iterations:
             iteration += 1
             new_reactions_this_iteration = 0
             substrates_this_iteration = initial_substrates.copy()
             new_products_added = 0
+            substrates_this_iteration_lc = {
+                s.label.lower().strip()
+                for s in substrates_this_iteration
+                if getattr(s, "label", None)
+            }
             
             # Add products from previous reactions as potential substrates
             for reaction in self.reactions:
                 for product_label in reaction.product_labels:
                     # Check if this product is already a substrate we're tracking
                     product_lc = product_label.lower().strip()
-                    if product_lc not in provided_species_labels_lc:
-                        # Create a virtual substrate object for products that aren't in input
-                        # We'll use it for reaction generation but won't add to actual species list
-                        virtual_substrate = SimpleNamespace(
-                            label=product_label,
-                            reactive=True,
-                            solvent=False,
-                            smiles=None
-                        )
-                        # Only add if it's not a general cofactor or coenzyme-like carrier
-                        added_to_substrates = False
+                    if product_lc not in substrates_this_iteration_lc:
                         coenzyme_flags = get_coenzyme_like_flags(product_label)
                         is_coenzyme_like = coenzyme_flags["is_coenzyme_like"]
                         if product_lc not in GENERAL_COFACTORS and not is_coenzyme_like:
+                            # Create a virtual substrate object for products that aren't in input
+                            # We'll use it for reaction generation but won't add to actual species list
+                            virtual_substrate = SimpleNamespace(
+                                label=product_label,
+                                reactive=True,
+                                solvent=False,
+                                smiles=None
+                            )
                             substrates_this_iteration.append(virtual_substrate)
+                            substrates_this_iteration_lc.add(product_lc)
                             new_products_added += 1
-                            added_to_substrates = True
                         
                         provided_species_labels_lc.add(product_lc)
                         available_species_labels_lc.update(get_ontology_equivalents(product_label))
-                        
-                        if coenzyme_flags["is_debug_target"]:
-                            pass  # Debug target handling
+              
             
             self.logger.info(f"Iteration {iteration}: Checking {len(substrates_this_iteration)} potential substrate(s) x {len(enzymes)} enzyme(s)...")
             
@@ -345,7 +391,128 @@ class ModelGenerator:
                 if str(name).lower().strip() in equivalents_lc:
                     return smiles
         return None
+
+    def _register_species_label(
+        self,
+        label: str,
+        smiles: Optional[str] = None,
+    ) -> str:
+        """
+        Register a species label in the canonicalization registry.
+
+        Returns the canonical display label for this species. If a canonical
+        label already exists for the same SMILES or ontology-equivalent alias,
+        that existing label is reused.
+        """
+        label_clean = str(label).strip()
+        label_lc = label_clean.lower()
+        if not label_clean:
+            return label_clean
+
+        # Already known alias -> return the existing canonical label.
+        existing = self._species_alias_to_canonical_label.get(label_lc)
+        if existing is not None:
+            return existing
+
+        # Prefer SMILES-based unification when available.
+        can_smi = canonical_smiles(smiles) if smiles else None
+        if can_smi:
+            existing_from_smiles = self._species_smiles_to_canonical_label.get(can_smi)
+            if existing_from_smiles is not None:
+                self._species_alias_to_canonical_label[label_lc] = existing_from_smiles
+                for eq in get_ontology_equivalents(label_clean):
+                    self._species_alias_to_canonical_label[str(eq).lower().strip()] = existing_from_smiles
+                return existing_from_smiles
+
+        # Fallback: ontology-based unification to an already-seen canonical label.
+        # Skip when the existing canonical has SMILES: ontology categories can group
+        # structurally different compounds (e.g. acetate and acetyl-CoA in "a short-chain
+        # fatty acid"), and merging them produces invalid stoichiometry (e.g. H2O -> CoA).
+        # Only merge when we can verify structural identity (both have SMILES and match)
+        # or when the target has no SMILES (name-only alias, e.g. "oleate" = "oleic acid").
+        for eq in get_ontology_equivalents(label_clean):
+            eq_lc = str(eq).lower().strip()
+            existing_from_alias = self._species_alias_to_canonical_label.get(eq_lc)
+            if existing_from_alias is not None:
+                existing_smiles = self._species_smiles_to_canonical_label
+                existing_can_smi = next(
+                    (s for s, lbl in existing_smiles.items() if lbl == existing_from_alias),
+                    None,
+                )
+                if existing_can_smi is not None:
+                    if can_smi is None or can_smi != existing_can_smi:
+                        continue
+                self._species_alias_to_canonical_label[label_lc] = existing_from_alias
+                return existing_from_alias
+
+        # New canonical label.
+        canonical_label = label_clean
+        self._species_alias_to_canonical_label[label_lc] = canonical_label
+        for eq in get_ontology_equivalents(label_clean):
+            self._species_alias_to_canonical_label[str(eq).lower().strip()] = canonical_label
+        if can_smi:
+            self._species_smiles_to_canonical_label[can_smi] = canonical_label
+        return canonical_label
+
+    def _canonicalize_species_label(
+        self,
+        label: str,
+        kinetic_data: Optional[KineticData],
+        substrate_label: str,
+    ) -> str:
+        """
+        Canonicalize a species label using (in order):
+        1) existing alias registry
+        2) SMILES-based identity
+        3) ontology-equivalent alias reuse
+        """
+        smiles = self._resolve_smiles_for_compound(
+            compound_label=label,
+            kinetic_data=kinetic_data,
+            substrate_label=substrate_label,
+        )
+        return self._register_species_label(label=label, smiles=smiles)
     
+    def _check_heavy_atom_balance(
+        self,
+        stoichiometry: Dict[str, int],
+        kinetic_data,
+        substrate_label: str,
+    ) -> Optional[bool]:
+        """
+        Check whether a reaction conserves heavy atoms.
+
+        Returns True if balanced, False if unbalanced, or None when the check
+        cannot be performed (at least one species lacks a resolvable SMILES).
+        """
+        # Skip for ACP-tethered intermediates: PPant proxy SMILES are not atomically exact.
+        for species in stoichiometry.keys():
+            if isinstance(species, str) and ("[ACP]" in species or "[acp]" in species):
+                return None
+
+        left = 0.0
+        right = 0.0
+        for species, coeff in stoichiometry.items():
+            try:
+                c = float(coeff)
+            except (TypeError, ValueError):
+                return None
+            if c == 0:
+                continue
+            smiles = self._resolve_smiles_for_compound(
+                compound_label=species,
+                kinetic_data=kinetic_data,
+                substrate_label=substrate_label,
+            )
+            count = heavy_atom_count(smiles)
+            if count is None:
+                return None
+            if c < 0:
+                left += (-c) * count
+            else:
+                right += c * count
+        return abs(left - right) < 1e-9
+
     def _generate_reactions(
         self, 
         enzyme, 
@@ -378,13 +545,25 @@ class ModelGenerator:
         enzyme_label = enzyme.label
         substrate_label = substrate.label
         ec_number = enzyme.ecnumber
-        
+
+        # Normalise to a list so multi-EC enzymes are handled uniformly.
+        if isinstance(ec_number, list):
+            ec_numbers_declared = ec_number
+        elif ec_number is not None:
+            ec_numbers_declared = [ec_number]
+        else:
+            ec_numbers_declared = [None]
+
         self.logger.debug(f"Generating reactions for: {substrate_label} + {enzyme_label} ({ec_number})")
-        
+
         # Step 1: Query database for *reaction existence* and kinetic parameters.
         # Support EC number aliasing: try alternative EC numbers if primary fails
-        ec_numbers_to_try = get_ec_aliases(ec_number)
-        
+        all_ec_to_try = []
+        for ec in ec_numbers_declared:
+            for alias in get_ec_aliases(ec):
+                if alias not in all_ec_to_try:
+                    all_ec_to_try.append(alias)
+
         all_kinetic_data = []
         if self.kinetic_db:
             # Prepare temperature and pH ranges for filtering
@@ -402,8 +581,12 @@ class ModelGenerator:
                 ph_val = self.bees_object.environment.pH
                 ph_range = (max(0, ph_val - 0.5), min(14, ph_val + 0.5))
             
-            # Try primary EC number and aliases, returning all matches
-            for ec_to_try in ec_numbers_to_try:
+            # Resolve substrate SMILES for structure-based DB matching (species.smiles or ontology/DB)
+            substrate_smiles = getattr(substrate, "smiles", None) or self._resolve_smiles_for_compound(
+                substrate_label, None, substrate_label
+            )
+            # Try all declared EC numbers and their aliases, returning all matches
+            for ec_to_try in all_ec_to_try:
                 matches = self.kinetic_db.query_by_enzyme_substrate(
                     ec_number=ec_to_try,
                     substrate_label=substrate_label,
@@ -411,7 +594,8 @@ class ModelGenerator:
                     temperature_range=temp_range,
                     ph_range=ph_range,
                     available_species_labels_lc=provided_species_labels_lc,
-                    return_all=True
+                    return_all=True,
+                    substrate_smiles=substrate_smiles,
                 )
                 if matches:
                     all_kinetic_data.extend(matches)
@@ -480,34 +664,82 @@ class ModelGenerator:
                 except Exception as e:
                     self.logger.warning(f"  Kinetics estimation failed: {e}")
 
+            # Fallback: if no kcat or Km from DB or estimator, assign a default kcat so
+            # the simulator can produce non-zero flux and the enlargement loop can proceed.
+            _DEFAULT_KCAT = 10.0  # s⁻¹ (median-ish bacterial enzyme)
+            has_km = (kinetic_data.km is not None or bool(getattr(kinetic_data, "km_per_substrate", None)))
+            if kinetic_data.kcat is None and not has_km:
+                kinetic_data.kcat = _DEFAULT_KCAT
+                kinetic_data.km = 0.1  # mM, a permissive default
+                self.logger.debug(f"  Using default kinetics: kcat={_DEFAULT_KCAT} s⁻¹, Km=0.1 mM for {substrate_label}/{enzyme_label}")
+
             try:
+                # Use the specific EC number from the DB match (handles multi-EC enzymes).
+                matched_ec = getattr(kinetic_data, "ec_number", None) or ec_numbers_declared[0]
                 # Build a template
                 template = create_reaction_from_database(
                     substrate=substrate_label,
                     enzyme_label=enzyme_label,
-                    ec_number=ec_number,
+                    ec_number=matched_ec,
                     cofactor=None,
                     database_products=None,
                 )
                 
                 # Override topology from database stoichiometry
                 if kinetic_data.stoichiometry:
-                    template.stoichiometry = dict(kinetic_data.stoichiometry)
-                    template.reactants = [s for s, coeff in template.stoichiometry.items() if coeff < 0]
-                    template.products = [s for s, coeff in template.stoichiometry.items() if coeff > 0]
+                    # Canonicalize species labels so naming variants that
+                    # represent the same molecule (via SMILES/ontology) share
+                    # one model label.
+                    canonical_stoich: Dict[str, int] = {}
+                    for raw_name, coeff in kinetic_data.stoichiometry.items():
+                        canonical_name = self._canonicalize_species_label(
+                            label=raw_name,
+                            kinetic_data=kinetic_data,
+                            substrate_label=substrate_label,
+                        )
+                        canonical_stoich[canonical_name] = (
+                            canonical_stoich.get(canonical_name, 0) + coeff
+                        )
+                    # Remove any terms canceled by alias merging.
+                    canonical_stoich = {
+                        name: coeff for name, coeff in canonical_stoich.items() if coeff != 0
+                    }
+
+                    template.stoichiometry = canonical_stoich
+                    template.reactants = [s for s, coeff in canonical_stoich.items() if coeff < 0]
+                    template.products = [s for s, coeff in canonical_stoich.items() if coeff > 0]
                     template.cofactors = [
                         s for s in template.reactants if s.lower().strip() in GENERAL_COFACTORS
                     ]
+
+                    # Reject reactions with unbalanced heavy atoms (catches
+                    # ontology over-merging artifacts and broken SMILES entries).
+                    balanced = self._check_heavy_atom_balance(
+                        stoichiometry=canonical_stoich,
+                        kinetic_data=kinetic_data,
+                        substrate_label=substrate_label,
+                    )
+                    if balanced is False:
+                        rxn_desc = " + ".join(template.reactants) + " -> " + " + ".join(template.products)
+                        self.logger.debug(
+                            f"  Skipping heavy-atom-unbalanced reaction: {rxn_desc}"
+                        )
+                        continue
+                    if balanced is None:
+                        self.logger.debug(
+                            f"  Atom-balance check skipped (missing SMILES) for "
+                            f"{substrate_label} / {enzyme_label}"
+                        )
 
                 # Admission rule: only include the reaction if *all* reactants are available.
                 all_available, missing_reactants = validate_reaction_reactants(
                     reactants=template.reactants,
                     available_species_labels_lc=available_species_labels_lc,
                     enzyme_label=enzyme_label,
-                    ec_number=ec_number
                 )
                 
                 if not all_available:
+                    self.logger.debug(f"  Skipping {substrate_label}/{enzyme_label}: missing reactants {missing_reactants}")
                     continue
                 
                 # Build complete reaction
@@ -516,7 +748,7 @@ class ModelGenerator:
                 reaction = GeneratedReaction(
                     enzyme_label=enzyme_label,
                     substrate_label=substrate_label,
-                    ec_number=ec_number,
+                    ec_number=matched_ec,
                     template=template,
                     kinetics=kinetic_data,
                     reactant_labels=template.reactants,
@@ -550,34 +782,47 @@ class ModelGenerator:
         Returns:
             str or None: Rate law type if kinetics available, None otherwise
         """
-        # Assign rate law if we have kinetics (DB or estimated)
-        has_km = kinetics.km is not None or (getattr(kinetics, "km_per_substrate", None) and kinetics.km_per_substrate)
-        if kinetics and (has_km or kinetics.kcat is not None):
-            if template.reversible:
-                return "Reversible-MM"
+  
+        if not kinetics:
+            return None
+
+        has_km = (
+            kinetics.km is not None
+            or bool(getattr(kinetics, "km_per_substrate", None))
+        )
+        if has_km or kinetics.kcat is not None:
             return "Michaelis-Menten"
-        
-        # No rate law if not in database
+
+       
         return None
     
-    def export_reactions_summary(self, filename="reactions_summary.txt") -> str:
+    def export_reactions_summary(
+        self, filename="reactions_summary.txt", n_core: Optional[int] = None
+    ) -> str:
         """
         Export human-readable summary of generated reactions.
-        
+
         Args:
             filename (str): Output filename
-            
+            n_core (int, optional): If set (e.g. in iterative mode), number of core
+                reactions; remaining are edge. Summary line shows "N (n_core core, M edge)".
+
         Returns:
             str: Path to output file
         """
         output_path = os.path.join(self.output_directory, filename)
-        
+        n = len(self.reactions)
+        if n_core is not None and n_core >= 0:
+            n_edge = max(0, n - n_core)
+            total_line = f"Total Reactions: {n} ({n_core} core, {n_edge} edge)\n"
+        else:
+            total_line = f"Total Reactions: {n}\n"
+
         with open(output_path, 'w') as f:
             f.write("=" * 80 + "\n")
             f.write("BEES GENERATED REACTIONS SUMMARY\n")
             f.write("=" * 80 + "\n\n")
-            
-            f.write(f"Total Reactions: {len(self.reactions)}\n")
+            f.write(total_line)
             f.write(f"Project: {self.bees_object.project}\n")
             f.write(f"Database: {self.bees_object.database.name}\n")
             f.write(f"Temperature: {self.bees_object.environment.temperature} K\n")
