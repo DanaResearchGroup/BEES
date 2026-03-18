@@ -19,7 +19,7 @@ import json
 from typing import Dict, List, Optional, Any, Tuple, Set, Union
 from dataclasses import dataclass
 from bees.logger import Logger
-from bees.common import GENERAL_COFACTORS, get_ontology_equivalents
+from bees.common import GENERAL_COFACTORS, get_ontology_equivalents, canonical_smiles
 
 @dataclass
 class KineticData:
@@ -363,11 +363,14 @@ class ReactionDatabase:
         temperature_range: Optional[Tuple[float, float]] = None,
         ph_range: Optional[Tuple[float, float]] = None,
         available_species_labels_lc: Optional[Set[str]] = None,
-        return_all: bool = False
+        return_all: bool = False,
+        substrate_smiles: Optional[str] = None,
     ) -> Union[Optional[KineticData], List[KineticData]]:
         """
         Query database for reactions by enzyme and substrate.
-        
+        Matching: SMILES first (if substrate_smiles given), then name + ontology.
+        Results are deduplicated by (EC, canonical substrate SMILES).
+
         Args:
             ec_number (str): Enzyme EC number (e.g., "EC 2.7.1.1")
             substrate_label (str): Substrate name/label
@@ -377,58 +380,99 @@ class ReactionDatabase:
                                                  temperature falls within this range.
             ph_range (tuple, optional): (min_ph, max_ph). Only return if database pH falls within
                                         this range.
-            available_species_labels_lc (set, optional): Set of species labels (lowercase) that are 
+            available_species_labels_lc (set, optional): Set of species labels (lowercase) that are
                                                          actually available in the system. Used to
                                                          prioritize reactions.
             return_all (bool): If True, return all matches sorted by priority. If False, return top.
-            
+            substrate_smiles (str, optional): SMILES of the substrate for structure-based matching.
+
         Returns:
             KineticData, List[KineticData] or None: Matching reaction data or list of matches
         """
         self.logger.debug(f"Querying database: EC={ec_number}, Substrate={substrate_label}, "
                          f"Cofactor={cofactor}, TempRange={temperature_range}, pHRange={ph_range}")
+
         
         # Normalize inputs
+        if not ec_number:
+            return [] if return_all else None
         ec_number = ec_number.strip()
         substrate_label = substrate_label.strip()
-        
-        # Get all equivalents for this substrate (including chemical class categories and siblings)
+        substrate_canonical_smi = canonical_smiles(substrate_smiles) if substrate_smiles else None
+
+        # Get all equivalents for this substrate (name + ontology fallback)
         substrate_equivalents = get_ontology_equivalents(substrate_label)
         self.logger.debug(f"Substrate '{substrate_label}' equivalents: {substrate_equivalents}")
         
         # Collect all matching reactions and prioritize them
-        # When multiple matches exist, prefer:
-        # 1. Reactions where more reactants are in available_species_labels_lc
-        # 2. Reactions with more complete stoichiometry (more species)
-        # 3. Normal direction over reversed
-        # 4. Reactions with kinetic parameters
+        # Match by SMILES first (structural identity), then by name + ontology
         matches = []
         for reaction in self.reactions:
-            # First, filter by EC number
             if reaction.ec_number != ec_number:
                 continue
 
-            # Primary matching: check if substrate is a reactant (normal case)
-            # Also check if substrate is a product (reversed database entry case)
-            # We do NOT allow general cofactors to be the only trigger.
             is_match = False
             needs_reversal = False
-            if reaction.stoichiometry:
+
+            # 1) SMILES-based match (primary)
+            if substrate_canonical_smi and reaction.stoichiometry and getattr(reaction, "compound_smiles", None):
                 stoich_lc = {str(k).lower().strip(): v for k, v in reaction.stoichiometry.items()}
-                for equiv in substrate_equivalents:
-                    e_lc = str(equiv).lower().strip()
-                    if e_lc in stoich_lc:
-                        if stoich_lc[e_lc] < 0:  # Substrate is a reactant (normal case)
-                            if e_lc in GENERAL_COFACTORS:
-                                continue
+                for name, smi in reaction.compound_smiles.items():
+                    if not smi:
+                        continue
+                    name_lc = str(name).lower().strip()
+                    if name_lc in GENERAL_COFACTORS:
+                        continue
+                    coeff = stoich_lc.get(name_lc)
+                    if coeff is None:
+                        continue
+                    can_smi = canonical_smiles(smi)
+                    if can_smi and can_smi == substrate_canonical_smi:
+                        if coeff < 0:
                             is_match = True
                             break
-                        elif stoich_lc[e_lc] > 0:  # Substrate is a product (reversed DB entry)
-                            if e_lc in GENERAL_COFACTORS:
-                                continue
+                        if coeff > 0:
                             is_match = True
                             needs_reversal = True
                             break
+                if is_match:
+                    pass  # use this match
+                else:
+                    # 2) Name + ontology match (fallback)
+                    if reaction.stoichiometry:
+                        stoich_lc = {str(k).lower().strip(): v for k, v in reaction.stoichiometry.items()}
+                        for equiv in substrate_equivalents:
+                            e_lc = str(equiv).lower().strip()
+                            if e_lc in stoich_lc:
+                                if stoich_lc[e_lc] < 0:
+                                    if e_lc in GENERAL_COFACTORS:
+                                        continue
+                                    is_match = True
+                                    break
+                                elif stoich_lc[e_lc] > 0:
+                                    if e_lc in GENERAL_COFACTORS:
+                                        continue
+                                    is_match = True
+                                    needs_reversal = True
+                                    break
+            else:
+                # No substrate SMILES or no compound_smiles: use name + ontology only
+                if reaction.stoichiometry:
+                    stoich_lc = {str(k).lower().strip(): v for k, v in reaction.stoichiometry.items()}
+                    for equiv in substrate_equivalents:
+                        e_lc = str(equiv).lower().strip()
+                        if e_lc in stoich_lc:
+                            if stoich_lc[e_lc] < 0:
+                                if e_lc in GENERAL_COFACTORS:
+                                    continue
+                                is_match = True
+                                break
+                            elif stoich_lc[e_lc] > 0:
+                                if e_lc in GENERAL_COFACTORS:
+                                    continue
+                                is_match = True
+                                needs_reversal = True
+                                break
             
             if is_match:
                 # Check temperature range if specified
@@ -483,13 +527,30 @@ class ReactionDatabase:
                     priority_score += 5
                 
                 matches.append((reaction, needs_reversal, priority_score))
-        
-        # If we have matches, sort by priority (highest first)
+
+        # If we have matches, sort by priority (highest first) then deduplicate by (EC, substrate identity)
         if matches:
             matches.sort(key=lambda x: -x[2])  # Sort by priority_score descending
-            
+
+            def _dedup_key(rxn: KineticData, needs_rev: bool) -> Tuple:
+                stoich = rxn.stoichiometry or {}
+                cs = getattr(rxn, "compound_smiles", None) or {}
+                items = []
+                for name, coeff in sorted(stoich.items(), key=lambda x: x[0].lower()):
+                    c = -coeff if needs_rev else coeff
+                    smi = cs.get(name)
+                    can = canonical_smiles(smi) if smi else None
+                    items.append((can or name.lower().strip(), c))
+                return (rxn.ec_number, tuple(items))
+
+            seen_keys: Set[Tuple[str, Tuple[str, ...]]] = set()
             result_list = []
             for match_rxn, needs_reversal, score in matches:
+                dkey = _dedup_key(match_rxn, needs_reversal)
+                if dkey in seen_keys:
+                    continue
+                seen_keys.add(dkey)
+
                 # Process match
                 final_rxn = match_rxn
                 if needs_reversal:
