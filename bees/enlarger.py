@@ -1,43 +1,32 @@
 #!/usr/bin/env python3
 
 """
-Iterative Enlarger Module (RMG-style)
+Iterative Enlarger Module 
 --------------------------------------
 Orchestrates rate-based iterative model enlargement for biochemical
-reaction networks. This model discover and simulation are interleaved so that
-reactions are generated only for species whose flux exceeds the promotion threshold.
-
+reaction networks. 
 Algorithm overview:
     1. Initialise core species from user input.
     2. Generate reactions for the initial core species only (single pass).
-    3. Run ODE simulation of the current model (core + edge).
+    3. Run ODE simulation of the current model (core + edge). stops when the termination conditions are met.
     4. Evaluate edge species flux.
     5. Promote edge species whose |R_i| >= epsilon * R_char to the core.
     6. Generate new reactions for the newly promoted species.
     7. Repeat from step 3 until convergence or a termination criterion.
-
 """
 
 import os
-import csv
-import re
-import shutil
-import subprocess
-import hashlib
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from bees.common import GENERAL_COFACTORS, get_ontology_equivalents
 from bees.core_edge_model import CoreEdgeModel, SpeciesData
+from bees.exporter import EnlargerExporter, reaction_signature
 from bees.flux_calculator import (
-    calculate_characteristic_rate,
-    identify_insignificant_species,
-    identify_significant_species,
+    identify_insignificant_species_from_peak_ratios,
+    identify_significant_species_at_interrupt,
 )
-from bees.model_generator import GeneratedReaction, ModelGenerator
+from bees.reaction_generator import GeneratedReaction, ModelGenerator
 from bees.simulator import ODESimulator, SimulationResult
 
 
@@ -49,12 +38,21 @@ class EnlargerResult:
     Attributes:
         iterations: Number of enlargement iterations performed.
         converged: Whether convergence was achieved.
-        convergence_reason: Human-readable reason for stopping.
+        convergence_reason: Reason for stopping.
         final_core_species: Number of core species at finish.
         final_edge_species: Number of edge species at finish.
         final_core_reactions: Number of core reactions at finish.
         simulation_profiles: List of SimulationResult from each iteration.
         model: The final CoreEdgeModel.
+
+    Return:
+    - Convergence: the model has reached the desired size or the termination conditions are met.
+    - Termination: the model has reached the desired size or the termination conditions are met.
+    - Error: the model has reached the desired size or the termination conditions are met.
+    - Timeout: the model has reached the desired size or the termination conditions are met.
+    - Max iterations: the model has reached the desired size or the termination conditions are met.
+    - Max wall time: the model has reached the desired size or the termination conditions are met.
+    - Max wall time: the model has reached the desired size or the termination conditions are met.
     """
     iterations: int = 0
     converged: bool = False
@@ -72,14 +70,10 @@ class EnlargerResult:
 
 class IterativeEnlarger:
     """
-    rate-based iterative model enlargement engine.
-
-    Discovery and simulation are interleaved: reactions are generated
-    only for the initial input species and then for each batch of
-    newly promoted species.  This avoids the expensive upfront batch
-    enumeration of all reachable reactions, focusing kinetics
-    estimation (CatPred) on the flux-active part of the network.
-
+    enlargement engine.Discovery and simulation are interleaved: 
+    reactions are generated only for the initial input species and then for each 
+    batch of newly promoted species.  
+   
     Args:
         bees_object: Validated InputBase from schema.
         model_generator: An already-initialised ModelGenerator with a
@@ -106,16 +100,47 @@ class IterativeEnlarger:
         self.time_step: Optional[float] = settings.time_step
         self.tol_move_to_core: float = settings.toleranceMoveToCore
         self.tol_keep_in_edge: float = settings.toleranceKeepInEdge
+        self.tol_interrupt_simulation: float = getattr(
+            settings, "toleranceInterruptSimulation", None
+        )
+        if self.tol_interrupt_simulation is None:
+            self.tol_interrupt_simulation = self.tol_move_to_core
+        # RMG-style reaction-level criterion (dlnaccum). None disables it.
+        _tol_rxn = getattr(settings, "toleranceMoveEdgeReactionToCore", None)
+        self.tol_move_edge_reaction_to_core: Optional[float] = (
+            float(_tol_rxn) if _tol_rxn is not None else None
+        )
+        self.min_edge_iterations_for_prune: int = int(
+            getattr(settings, "minEdgeIterationsForPrune", 2) or 0
+        )
+        self.min_core_species_for_prune: int = int(
+            getattr(settings, "minCoreSpeciesForPrune", 0) or 0
+        )
         self.max_iterations: int = settings.max_iterations
         self.max_edge_species: Optional[int] = settings.max_edge_species
+        self.max_num_objects_per_iter: int = int(
+            getattr(settings, "max_num_objects_per_iter", 10)
+        )
+        self.abs_flux_floor: float = float(
+            getattr(settings, "abs_flux_floor", 1e-12)
+        )
+        self.ode_method: str = getattr(settings, "ode_method", None) or "BDF"
+        _ode_rtol = getattr(settings, "ode_rtol", None)
+        _ode_atol = getattr(settings, "ode_atol", None)
+        self.ode_rtol: float = float(_ode_rtol) if _ode_rtol is not None else 1e-8
+        self.ode_atol: float = float(_ode_atol) if _ode_atol is not None else 1e-10
+        _mwt = getattr(settings, "max_wall_time_per_iteration", None)
+        self.max_wall_time_per_iteration: Optional[float] = (
+            float(_mwt) if _mwt is not None else None
+        )
+        self.stepwise_heartbeat_interval: Optional[float] = getattr(
+            settings, "stepwise_heartbeat_interval", None
+        )
         self.termination_conversion: Optional[Dict[str, float]] = settings.termination_conversion
         self.termination_rate_ratio: Optional[float] = settings.termination_rate_ratio
-        self.save_profiles: bool = settings.save_simulation_profiles
-        self.save_edge: bool = settings.saveEdgeSpecies
         self.save_ode_equations: bool = getattr(
             settings, "save_ode_equations", False
         )
-        self.filter_reactions: bool = settings.filter_reactions
         self.save_reaction_tree_plots: bool = getattr(
             settings, "save_reaction_tree_plots", False
         )
@@ -144,6 +169,8 @@ class IterativeEnlarger:
         # Internal state
         self.model = CoreEdgeModel()
         self._profiles: List[SimulationResult] = []
+        self._edge_species_created_iter: Dict[str, int] = {}
+        self._ingest_iteration: int = 0
         # Track which core species labels have already appeared in previous
         self._core_seen_labels: Set[str] = set()
         
@@ -158,6 +185,12 @@ class IterativeEnlarger:
         # Each entry: {"iteration": int, "core_species": int, "edge_species": int, "core_reactions": int, "edge_reactions": int}
         self._iteration_summaries: List[Dict[str, int]] = []
 
+        # Caches / backoff to avoid repeated slow no-hit searches.
+        # Keys are normalized (ec_number, substrate_label_lc).
+        self._rxn_nohit_cache: Set = set()
+        self._enzyme_nohit_counts: Dict = {}
+        self._skip_enzyme_ec_numbers: Set = set()
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -165,11 +198,7 @@ class IterativeEnlarger:
     def run(self) -> EnlargerResult:
         """
         Execute the iterative rate-based enlargement loop.
-
-        Discovery and simulation are interleaved: reactions are generated
-        only for the initial core species and then for each batch of
-        newly promoted species, avoiding a full upfront enumeration.
-
+      
         Returns:
             EnlargerResult summarising the outcome.
         """
@@ -193,7 +222,10 @@ class IterativeEnlarger:
             sp.label for sp in self.bees_object.species
             if sp.reactive and not getattr(sp, "solvent", False)
         ]
-        initial_reactions = self._generate_reactions_for_species(initial_species)
+        initial_reactions = self._generate_reactions_for_species(
+            initial_species
+        )
+        self._ingest_iteration = 0
         self._ingest_reactions(initial_reactions)
         self._sync_reaction_tracking(iteration=0)
         self.logger.info(
@@ -217,18 +249,27 @@ class IterativeEnlarger:
         result = EnlargerResult(model=self.model)
 
         for iteration in range(1, self.max_iterations + 1):
-            self.logger.info("-" * 40)
-            self.logger.info(f"Enlargement iteration {iteration}")
-            # Track current iteration early so summary is correct even if we break.
+            self.logger.info(f"--- Enlargement iteration {iteration} ---")
             result.iterations = iteration
 
-            # 1. Run ODE simulation
+            # Every pass starts from t=0 with initial concentrations.
+            self.model.reset_concentrations_to_initial()
+
             simulator = ODESimulator(self.model, logger=self.logger)
             sim_result = simulator.simulate(
                 end_time=self.end_time,
                 time_step=self.time_step,
+                method=self.ode_method,
+                rtol=self.ode_rtol,
+                atol=self.ode_atol,
+                interrupt_simulation_tol=self.tol_interrupt_simulation,
+                tol_move_edge_reaction_to_core=self.tol_move_edge_reaction_to_core,
+                max_wall_time_s=self.max_wall_time_per_iteration,
+                stepwise_heartbeat_interval_s=self.stepwise_heartbeat_interval,
             )
             self._profiles.append(sim_result)
+
+            promoted_labels_combined: List[str] = []
 
             if self.save_ode_equations and sim_result.success:
                 ode_path = os.path.join(
@@ -242,87 +283,175 @@ class IterativeEnlarger:
                 )
 
             if not sim_result.success:
-                self.logger.warning(
-                    f"ODE simulation failed: {sim_result.message}"
-                )
+                self.logger.warning(f"ODE simulation failed: {sim_result.message}")
                 result.convergence_reason = f"ODE failure: {sim_result.message}"
                 break
 
-            # 2. Evaluate core and edge rates
-            core_rates = simulator.evaluate_core_rates(sim_result)
-            edge_rates = simulator.evaluate_edge_rates(sim_result)
-            r_char = calculate_characteristic_rate(core_rates)
+            # Identify edge reactions whose lifetime-max dlnaccum exceeded the
+            # reaction-level tolerance (RMG-style chain-branching criterion).
+            # We promote *species* that participate in those reactions; a single
+            # promotion may activate multiple edge reactions via reclassify.
+            rxn_promote_species: List[str] = []
+            if (
+                self.tol_move_edge_reaction_to_core is not None
+                and self.tol_move_edge_reaction_to_core > 0
+                and sim_result.max_edge_reaction_dlnaccum
+            ):
+                # Sort edge reactions by dlnaccum descending; take violators.
+                violators = [
+                    (sig, dln)
+                    for sig, dln in sim_result.max_edge_reaction_dlnaccum.items()
+                    if dln > self.tol_move_edge_reaction_to_core
+                ]
+                violators.sort(key=lambda kv: kv[1], reverse=True)
+                edge_label_set = {sp.label for sp in self.model.edge_species}
+                for sig, dln in violators[: self.max_num_objects_per_iter]:
+                    rxn_obj = self._reaction_obj_by_sig.get(sig)
+                    if rxn_obj is None:
+                        continue
+                    # Promote each edge-side species participating in the reaction.
+                    for sp_label in list(rxn_obj.reactant_labels) + list(rxn_obj.product_labels):
+                        if sp_label in edge_label_set and sp_label not in rxn_promote_species:
+                            rxn_promote_species.append(sp_label)
+                if rxn_promote_species and self.logger:
+                    self.logger.info(
+                        f"  Reaction-level (dlnaccum) promotion: {len(violators)} edge reaction(s) "
+                        f"above tol={self.tol_move_edge_reaction_to_core}; "
+                        f"promoting {len(rxn_promote_species)} associated species."
+                    )
 
-            self.logger.info(f"  R_char = {r_char:.6e} mM/s")
-
-            # 3. Check termination -- conversion
-            if self._check_conversion_termination(sim_result):
-                result.converged = True
-                result.convergence_reason = "Termination conversion target reached."
-                self.logger.info(result.convergence_reason)
-                break
-
-            # 4. Check termination -- rate ratio
-            if self._check_rate_ratio_termination(core_rates, edge_rates, r_char):
-                result.converged = True
-                result.convergence_reason = "Termination rate ratio reached."
-                self.logger.info(result.convergence_reason)
-                break
-
-            # 5. Identify significant edge species
-            significant = identify_significant_species(
-                edge_rates, r_char, self.tol_move_to_core
-            )
-
-            if not significant:
-                result.converged = True
-                result.convergence_reason = (
-                    "No edge species exceeded toleranceMoveToCore."
+            # Interrupted pass: promote, enlarge, and continue to next iteration.
+            if sim_result.simulation_interrupted:
+                significant_sub = identify_significant_species_at_interrupt(
+                    sim_result.interrupt_edge_rates,
+                    sim_result.interrupt_char_rate,
+                    self.tol_move_to_core,
+                    max_objects=self.max_num_objects_per_iter,
+                    abs_flux_floor=self.abs_flux_floor,
                 )
-                self.logger.info(result.convergence_reason)
-                break
+                if not significant_sub and not rxn_promote_species:
+                    max_edge_abs = max(
+                        (abs(r) for r in sim_result.interrupt_edge_rates.values()),
+                        default=0.0,
+                    )
+                    result.convergence_reason = (
+                        "ODE interrupted but no edge species exceeded "
+                        f"threshold (R_char={sim_result.interrupt_char_rate:.4e}, "
+                        f"max |R_edge|={max_edge_abs:.4e}, "
+                        f"tol={self.tol_move_to_core})."
+                    )
+                    self.logger.warning(f"  {result.convergence_reason}")
+                    break
 
-            self.logger.info(
-                f"  {len(significant)} edge species exceed threshold:"
-            )
-            for sf in significant:
+                t_int = float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0
+                labels_csv = ", ".join(sf.label for sf in significant_sub[:3])
+                if len(significant_sub) > 3:
+                    labels_csv += f", ... (+{len(significant_sub) - 3} more)"
                 self.logger.info(
-                    f"    {sf.label}: |rate|={abs(sf.rate):.4e} mM/s "
-                    f"(norm={sf.normalized_rate:.4e})"
+                    f"  Interrupt at t={t_int:.6e} s: "
+                    f"R_char={sim_result.interrupt_char_rate:.6e}, "
+                    f"promoting {len(significant_sub)}: [{labels_csv}]"
+                )
+                for sf in significant_sub:
+                    rr_s = (
+                        f"{sf.normalized_rate:.4e}"
+                        if sf.normalized_rate != float("inf")
+                        else "inf"
+                    )
+                    self.logger.debug(
+                        f"    {sf.label}: rr={rr_s}, |rate|={abs(sf.rate):.4e} mM/s"
+                    )
+
+                batch_promoted: List[str] = []
+                for sf in significant_sub:
+                    sp = self.model.promote_species_to_core(sf.label)
+                    if sp is not None:
+                        batch_promoted.append(sp.label)
+                        promoted_labels_combined.append(sp.label)
+                # Also promote species flagged by the reaction-level criterion.
+                for sp_label in rxn_promote_species:
+                    sp = self.model.promote_species_to_core(sp_label)
+                    if sp is not None and sp.label not in batch_promoted:
+                        batch_promoted.append(sp.label)
+                        promoted_labels_combined.append(sp.label)
+                if not batch_promoted:
+                    result.convergence_reason = (
+                        "Interrupt: significant flux reported but no edge species "
+                        "could be promoted."
+                    )
+                    self.logger.warning(f"  {result.convergence_reason}")
+                    break
+
+                n_reclassed = self.model.reclassify_reactions()
+                self.logger.info(
+                    f"  Promoted {len(batch_promoted)} species to core, "
+                    f"{n_reclassed} reactions moved edge->core."
                 )
 
-            # 6. Promote significant species to core
-            promoted_labels = []
-            for sf in significant:
-                sp = self.model.promote_species_to_core(sf.label)
-                if sp is not None:
-                    promoted_labels.append(sp.label)
-
-            # 7. Reclassify reactions (edge -> core if all participants now core)
-            n_promoted_rxn = self.model.reclassify_reactions()
-            self.logger.info(
-                f"  Promoted {len(promoted_labels)} species, "
-                f"{n_promoted_rxn} reactions moved to core."
-            )
-
-            # 8. Generate new reactions for promoted species
-            new_reactions = self._generate_reactions_for_species(promoted_labels)
-            self._ingest_reactions(new_reactions)
-            self._sync_reaction_tracking(iteration=iteration)
-            self.logger.info(
-                f"  Generated {len(new_reactions)} new reaction(s)."
-            )
-
-            # 9. Optional: prune insignificant edge species
-            if self.tol_keep_in_edge > 0:
-                to_prune = identify_insignificant_species(
-                    edge_rates, r_char, self.tol_keep_in_edge
+                new_rxns_sub = self._generate_reactions_for_species(
+                    batch_promoted
                 )
-                n_pruned = self.model.prune_edge(to_prune)
-                if n_pruned:
-                    self.logger.info(f"  Pruned {n_pruned} edge species.")
+                self._ingest_iteration = iteration
+                self._ingest_reactions(new_rxns_sub)
+                self._sync_reaction_tracking(iteration=iteration)
+                self.logger.info(
+                    f"  Generated {len(new_rxns_sub)} new reaction(s); restarting ODE from t=0."
+                )
 
-            # 10. Check max edge species
+            else:
+                # Non-interrupted pass: reached end_time. Apply termination checks
+                # and declare convergence.
+                r_char_final = sim_result.final_char_rate
+                r_char_max = sim_result.max_char_rate
+                self.logger.info(
+                    f"  R_char at t_end = {r_char_final:.6e} mM/s  |  "
+                    f"R_char peak (this run) = {r_char_max:.6e} mM/s"
+                )
+
+                if self._check_conversion_termination(sim_result):
+                    result.converged = True
+                    result.convergence_reason = "Termination conversion target reached."
+                    self.logger.info(result.convergence_reason)
+                elif self._check_rate_ratio_termination(sim_result):
+                    result.converged = True
+                    result.convergence_reason = "Termination rate ratio reached."
+                    self.logger.info(result.convergence_reason)
+                else:
+                    result.converged = True
+                    result.convergence_reason = (
+                        "Simulation reached end_time without exceeding "
+                        "toleranceInterruptSimulation."
+                    )
+                    self.logger.info(result.convergence_reason)
+
+                # Optional pruning (only meaningful on a full trajectory).
+                if self.tol_keep_in_edge > 0:
+                    n_core = len(self.model.core_species)
+                    if n_core < self.min_core_species_for_prune:
+                        self.logger.info(
+                            "  Skipping edge prune: core species count "
+                            f"{n_core} < minCoreSpeciesForPrune "
+                            f"({self.min_core_species_for_prune})."
+                        )
+                    else:
+                        ineligible_prune: Set[str] = set()
+                        for sp in self.model.edge_species:
+                            lc = sp.label.lower().strip()
+                            birth = self._edge_species_created_iter.get(lc, 0)
+                            if iteration - birth < self.min_edge_iterations_for_prune:
+                                ineligible_prune.add(lc)
+                        to_prune = identify_insignificant_species_from_peak_ratios(
+                            sim_result.max_edge_rate_ratio,
+                            sim_result.max_char_rate,
+                            self.tol_keep_in_edge,
+                            ineligible_for_prune=ineligible_prune,
+                        )
+                        n_pruned = self.model.prune_edge(to_prune)
+                        if n_pruned:
+                            self.logger.info(f"  Pruned {n_pruned} edge species.")
+
+            promoted_labels_combined = list(dict.fromkeys(promoted_labels_combined))
+
             if (
                 self.max_edge_species is not None
                 and len(self.model.edge_species) > self.max_edge_species
@@ -331,11 +460,35 @@ class IterativeEnlarger:
                     f"Exceeded max_edge_species ({self.max_edge_species})."
                 )
                 self.logger.info(result.convergence_reason)
-                self._export_reaction_tree(iteration, promoted_labels)
+                if self.save_reaction_tree_plots:
+                    exporter = EnlargerExporter(
+                        model=self.model,
+                        profiles=self._profiles,
+                        output_directory=self.output_directory,
+                        logger=self.logger,
+                        reaction_id_by_sig=self._reaction_id_by_sig,
+                        reaction_first_seen_iter=self._reaction_first_seen_iter,
+                        reaction_core_enter_iter=self._reaction_core_enter_iter,
+                        reaction_obj_by_sig=self._reaction_obj_by_sig,
+                        iteration_summaries=self._iteration_summaries,
+                        save_reaction_tree_plots=self.save_reaction_tree_plots,
+                        save_simulation_plots=self.save_simulation_plots,
+                        plot_max_species=self.plot_max_species,
+                        plot_exclude_enzymes=self.plot_exclude_enzymes,
+                        plot_exclude_cofactors=self.plot_exclude_cofactors,
+                        reaction_tree_layout=self.reaction_tree_layout,
+                        reaction_tree_rankdir=self.reaction_tree_rankdir,
+                        reaction_tree_fontsize=self.reaction_tree_fontsize,
+                        core_seen_labels=self._core_seen_labels,
+                        bees_object=self.bees_object,
+                    )
+                    exporter.export_reaction_tree(
+                        iteration=iteration,
+                        promoted_labels=promoted_labels_combined,
+                    )
                 break
 
-            self.logger.info(f"  Model size: {self.model.summary()}")
-            # Record end-of-iteration snapshot.
+            self.logger.info(f"  Model status: {self.model.summary()}")
             s_it = self.model.summary()
             self._iteration_summaries.append({
                 "iteration": iteration,
@@ -344,7 +497,35 @@ class IterativeEnlarger:
                 "core_reactions": s_it["core_reactions"],
                 "edge_reactions": s_it["edge_reactions"],
             })
-            self._export_reaction_tree(iteration, promoted_labels)
+            if self.save_reaction_tree_plots:
+                exporter = EnlargerExporter(
+                    model=self.model,
+                    profiles=self._profiles,
+                    output_directory=self.output_directory,
+                    logger=self.logger,
+                    reaction_id_by_sig=self._reaction_id_by_sig,
+                    reaction_first_seen_iter=self._reaction_first_seen_iter,
+                    reaction_core_enter_iter=self._reaction_core_enter_iter,
+                    reaction_obj_by_sig=self._reaction_obj_by_sig,
+                    iteration_summaries=self._iteration_summaries,
+                    save_reaction_tree_plots=self.save_reaction_tree_plots,
+                    save_simulation_plots=self.save_simulation_plots,
+                    plot_max_species=self.plot_max_species,
+                    plot_exclude_enzymes=self.plot_exclude_enzymes,
+                    plot_exclude_cofactors=self.plot_exclude_cofactors,
+                    reaction_tree_layout=self.reaction_tree_layout,
+                    reaction_tree_rankdir=self.reaction_tree_rankdir,
+                    reaction_tree_fontsize=self.reaction_tree_fontsize,
+                    core_seen_labels=self._core_seen_labels,
+                    bees_object=self.bees_object,
+                )
+                exporter.export_reaction_tree(
+                    iteration=iteration,
+                    promoted_labels=promoted_labels_combined,
+                )
+
+            if result.converged:
+                break
 
         else:
             # Loop exhausted without break
@@ -378,16 +559,17 @@ class IterativeEnlarger:
         return result
 
 
-      # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Generate reactions for species
     # ------------------------------------------------------------------
 
     
     def _generate_reactions_for_species(
-        self, species_labels: List[str]
+        self,
+        species_labels: List[str],
     ) -> List[GeneratedReaction]:
         """
-        Use the ModelGenerator to find new reactions involving the given
+        Use the ModelGenerator mudule to find new reactions involving the given
         species as substrates (crossed with all reactive enzymes).
         """
         from types import SimpleNamespace
@@ -413,13 +595,39 @@ class IterativeEnlarger:
                 smiles=None,
             )
             for enzyme in enzymes:
+                _ecval = getattr(enzyme, "ecnumber", None) or ""
+                if isinstance(_ecval, list):
+                    ec = tuple(e.strip() for e in _ecval)
+                else:
+                    ec = _ecval.strip()
+                if ec and ec in self._skip_enzyme_ec_numbers:
+                    continue
+                key = (ec, label.lower().strip())
+                if ec and key in self._rxn_nohit_cache:
+                    continue
+
+                t0 = time.time()
                 rxns = self.model_generator._generate_reactions(
                     enzyme,
                     substrate,
                     available_species_labels_lc=full_available,
                     provided_species_labels_lc=provided_lc,
                 )
+                dt = time.time() - t0
                 new_reactions.extend(rxns)
+
+                # If we got no reactions, remember it to avoid repeating expensive queries.
+                if ec and not rxns:
+                    self._rxn_nohit_cache.add(key)
+                    self._enzyme_nohit_counts[ec] = self._enzyme_nohit_counts.get(ec, 0) + 1
+
+                    # Backoff policy for extremely slow, consistently-unproductive enzymes.
+                    # FabA (EC 4.2.1.60) is observed to be very expensive in fatty-acid projects.
+                    if ec == "EC 4.2.1.60" and self._enzyme_nohit_counts[ec] >= 1 and dt > 30.0:
+                        self._skip_enzyme_ec_numbers.add(ec)
+                        self.logger.info(
+                            f"Skipping further reaction-generation calls for {ec} (repeated no-hits; last call {dt:.1f}s)."
+                        )
 
         return new_reactions
 
@@ -465,697 +673,29 @@ class IterativeEnlarger:
 
     def _check_rate_ratio_termination(
         self,
-        core_rates: Dict[str, float],
-        edge_rates: Dict[str, float],
-        r_char: float,
+        sim_result: SimulationResult,
     ) -> bool:
         """
-        Check if the maximum edge-to-core rate ratio is below the
-        termination_rate_ratio threshold.
+        RMG-style TerminationRateRatio: stop when R_char at t_end has fallen
+        below a fraction of R_char peak over this simulation (system has
+        slowed relative to peak activity).
         """
-        if self.termination_rate_ratio is None or r_char <= 0:
+        if self.termination_rate_ratio is None:
             return False
 
-        if not edge_rates:
-            return True  # no edge flux at all
+        max_cr = sim_result.max_char_rate
+        final_cr = sim_result.final_char_rate
+        if max_cr <= 0.0:
+            return False
 
-        max_edge_rate = max(abs(r) for r in edge_rates.values()) if edge_rates else 0.0
-        ratio = max_edge_rate / r_char
+        ratio = final_cr / max_cr
         if ratio < self.termination_rate_ratio:
             self.logger.info(
-                f"  Max edge/core rate ratio: {ratio:.6e} "
+                f"  Char rate ratio (R_char at t_end / peak): {ratio:.6e} "
                 f"< {self.termination_rate_ratio}"
             )
             return True
         return False
-
-
-    # ------------------------------------------------------------------
-    # Export helpers function - flux analysis
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _is_general_cofactor_label(label: str) -> bool:
-        """
-        Return True if label appears to be a general cofactor/carrier species.
-        """
-        normalized = " ".join(
-            str(label).lower().strip().replace("_", " ").replace("-", " ").split()
-        )
-        compact = normalized.replace(" ", "")
-        if normalized in GENERAL_COFACTORS or compact in GENERAL_COFACTORS:
-            return True
-
-        # Use ontology aliases to catch naming variants (e.g., alpha/beta synonyms).
-        equivalents = get_ontology_equivalents(normalized)
-        for eq in equivalents:
-            eq_norm = " ".join(str(eq).lower().strip().split())
-            if eq_norm in GENERAL_COFACTORS or eq_norm.replace(" ", "") in GENERAL_COFACTORS:
-                return True
-        return False
-
-    def export_flux_analysis(
-        self, filename: str = "flux_analysis.csv"
-    ) -> Optional[str]:
-        """
-        Write per-iteration flux data (species rates, R_char, promotion decisions).
-        """
-       
-        output_path = os.path.join(self.output_directory, filename)
-        with open(output_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "iteration", "core_species", "edge_species",
-                "core_reactions", "edge_reactions",
-            ])
-
-            # Prefer recorded history (like RMG: show core/edge growth over time).
-            if self._iteration_summaries:
-                for row in self._iteration_summaries:
-                    writer.writerow([
-                        row["iteration"],
-                        row["core_species"],
-                        row["edge_species"],
-                        row["core_reactions"],
-                        row["edge_reactions"],
-                    ])
-            else:
-                # Fallback: final snapshot only.
-                s = self.model.summary()
-                writer.writerow([
-                    len(self._profiles),
-                    s["core_species"], s["edge_species"],
-                    s["core_reactions"], s["edge_reactions"],
-                ])
-
-        self.logger.info(f"Exported flux analysis to {output_path}")
-
-        # Detailed per-reaction summary (core/edge membership and iteration history).
-        details_path = os.path.join(self.output_directory, "flux_analysis_reactions.csv")
-        core_sigs = {
-            self._reaction_signature(rxn) for rxn in self.model.core_reactions
-        }
-        edge_sigs = {
-            self._reaction_signature(rxn) for rxn in self.model.edge_reactions
-        }
-        all_sigs = sorted(
-            set(core_sigs) | set(edge_sigs),
-            key=lambda sig: self._reaction_id_by_sig.get(sig, 10**9),
-        )
-        with open(details_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "reaction_id",
-                "classification",
-                "first_seen_iteration",
-                "core_enter_iteration",
-            ])
-            for sig in all_sigs:
-                rxn = self._reaction_obj_by_sig.get(sig)
-                if rxn is None:
-                    continue
-                reaction_id = f"R{self._reaction_id_by_sig.get(sig, 0)}"
-                classification = (
-                    "core" if sig in core_sigs else "edge"
-                )
-                first_seen = self._reaction_first_seen_iter.get(sig, "")
-                core_enter = self._reaction_core_enter_iter.get(sig, "")
-                writer.writerow([
-                    reaction_id,
-                    classification,
-                    first_seen,
-                    core_enter if core_enter is not None else "",
-                ])
-        self.logger.info(f"Exported reaction flux summary to {details_path}")
-        return output_path
-
-# ------------------------------------------------------------------
-# Export helpers function - simulation profiles
-# ------------------------------------------------------------------
-    def export_simulation_profiles(
-        self, filename: str = "simulation_profiles.csv"
-    ) -> Optional[str]:
-        """
-        Write concentration time-series to CSV.
-
-        Concatenates profiles from every iteration into a single file.
-        Returns the output path, or None if there are no profiles.
-        """
-        if not self._profiles:
-            return None
-
-        output_path = os.path.join(self.output_directory, filename)
-        # Gather the union of species labels across iterations
-        all_labels: List[str] = []
-        seen: Set[str] = set()
-        for prof in self._profiles:
-            for lab in prof.species_labels:
-                if lab not in seen:
-                    all_labels.append(lab)
-                    seen.add(lab)
-
-        with open(output_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["iteration", "time"] + all_labels)
-            for it_idx, prof in enumerate(self._profiles, 1):
-                label_to_row = {
-                    lab: i for i, lab in enumerate(prof.species_labels)
-                }
-                for t_idx in range(prof.t.shape[0]):
-                    row = [it_idx, prof.t[t_idx]]
-                    for lab in all_labels:
-                        ridx = label_to_row.get(lab)
-                        if ridx is not None:
-                            row.append(prof.y[ridx, t_idx])
-                        else:
-                            row.append("")
-                    writer.writerow(row)
-
-        self.logger.info(f"Exported simulation profiles to {output_path}")
-        return output_path
-
-    # ------------------------------------------------------------------
-    # Export helpers function - visualisation tools
-    # ------------------------------------------------------------------
-
-    def _export_reaction_tree(
-        self,
-        iteration: int,
-        promoted_labels: Optional[List[str]] = None,
-    ) -> None:
-        """
-        Export a reaction tree plot for this iteration.
-
-        The tree:
-        - Includes **only core species**.
-        - Excludes enzymes and general cofactors.
-        - Colours newly promoted core species in this iteration differently
-          from species that were already in the core.
-        """
-        if not self.save_reaction_tree_plots or not self.model:
-            return
-
-        # Build the set of candidate nodes: core species that are not enzymes
-        # and are not general cofactors.
-        core_nodes: List[SpeciesData] = []
-        for sd in self.model.core_species:
-            if sd.is_enzyme:
-                continue
-            if self._is_general_cofactor_label(sd.label):
-                continue
-            core_nodes.append(sd)
-
-        if not core_nodes:
-            return
-
-        labels = [sd.label for sd in core_nodes]
-        label_set = set(labels)
-
-        # Determine which nodes are "new" in this iteration.
-        promoted_set = set(promoted_labels or [])
-        new_nodes: Set[str] = set()
-        for lab in labels:
-            if lab in promoted_set and lab not in self._core_seen_labels:
-                new_nodes.add(lab)
-
-        # Update the cumulative core history.
-        self._core_seen_labels.update(labels)
-
-        # Build directed edges between species based on core reactions:
-        # reactants -> products, filtered to core, non-enzyme, non-cofactor species.
-        edges: List[tuple] = []
-        edge_reaction_labels: Dict[tuple, Set[str]] = {}
-        for rxn in self.model.core_reactions:
-            sig = self._reaction_signature(rxn)
-            reaction_id = self._reaction_id_by_sig.get(sig)
-            reaction_tag = f"R{reaction_id}" if reaction_id is not None else ""
-            for reactant in rxn.reactant_labels:
-                if reactant not in label_set:
-                    continue
-                for product in rxn.product_labels:
-                    if product not in label_set:
-                        continue
-                    if reactant == product:
-                        continue
-                    edge = (reactant, product)
-                    edges.append(edge)
-                    if reaction_tag:
-                        edge_reaction_labels.setdefault(edge, set()).add(reaction_tag)
-
-        # Draw each species-to-species edge once.
-        edges = sorted(set(edges))
-
-        if not edges:
-            return
-
-        # Assign coordinates. Prefer Graphviz (structure-aware); fall back to
-        # the simple 2-row layout if Graphviz is unavailable.
-        xs: Dict[str, float] = {}
-        ys: Dict[str, float] = {}
-
-        def _simple_layout() -> None:
-            old_labels = [lab for lab in labels if lab not in new_nodes]
-            new_labels_ordered = [lab for lab in labels if lab in new_nodes]
-
-            def _assign_row(row_labels: List[str], y_val: float) -> None:
-                n = len(row_labels)
-                if n == 0:
-                    return
-                if n == 1:
-                    xs[row_labels[0]] = 0.5
-                    ys[row_labels[0]] = y_val
-                    return
-                for i, lab in enumerate(row_labels):
-                    xs[lab] = i / (n - 1)
-                    ys[lab] = y_val
-
-            _assign_row(old_labels, y_val=0.0)
-            _assign_row(new_labels_ordered, y_val=-1.0)
-
-        def _graphviz_layout() -> bool:
-            dot_exe = shutil.which("dot")
-            if not dot_exe:
-                return False
-
-            rankdir = str(self.reaction_tree_rankdir or "TB").upper()
-            if rankdir not in {"TB", "BT", "LR", "RL"}:
-                rankdir = "TB"
-
-            # Build a DOT graph with safe node IDs (Graphviz IDs cannot contain
-            # arbitrary punctuation reliably). Keep mapping for coordinates.
-            node_id: Dict[str, str] = {}
-            for i, lab in enumerate(labels):
-                node_id[lab] = f"n{i}"
-
-            dot_lines: List[str] = [
-                "digraph ReactionTree {",
-                f'  rankdir="{rankdir}";',
-                "  splines=true;",
-                "  overlap=false;",
-                "  nodesep=0.35;",
-                "  ranksep=0.6;",
-                "  node [shape=circle];",
-            ]
-            for lab in labels:
-                dot_lines.append(f'  {node_id[lab]} [label="{node_id[lab]}"];')
-            for src, dst in edges:
-                dot_lines.append(f"  {node_id[src]} -> {node_id[dst]};")
-            dot_lines.append("}")
-            dot = "\n".join(dot_lines)
-
-            try:
-                proc = subprocess.run(
-                    [dot_exe, "-Tplain"],
-                    input=dot.encode("utf-8"),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=True,
-                )
-            except Exception:
-                return False
-
-            # Parse Graphviz plain output.
-            # We care about: `node <name> <x> <y> <w> <h> ...`
-            positions_raw: Dict[str, tuple[float, float]] = {}
-            for line in proc.stdout.decode("utf-8", errors="replace").splitlines():
-                if not line.startswith("node "):
-                    continue
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                name = parts[1]
-                try:
-                    x = float(parts[2])
-                    y = float(parts[3])
-                except ValueError:
-                    continue
-                positions_raw[name] = (x, y)
-
-            if not positions_raw:
-                return False
-
-            xs_vals = [p[0] for p in positions_raw.values()]
-            ys_vals = [p[1] for p in positions_raw.values()]
-            min_x, max_x = min(xs_vals), max(xs_vals)
-            min_y, max_y = min(ys_vals), max(ys_vals)
-            span_x = max(1e-9, max_x - min_x)
-            span_y = max(1e-9, max_y - min_y)
-
-            inv_node_id = {v: k for k, v in node_id.items()}
-            for nid, (x, y) in positions_raw.items():
-                lab = inv_node_id.get(nid)
-                if not lab:
-                    continue
-                xs[lab] = (x - min_x) / span_x
-                ys[lab] = (y - min_y) / span_y
-            return len(xs) > 0 and len(ys) > 0
-
-        used_graphviz = (
-            str(self.reaction_tree_layout or "graphviz").lower() == "graphviz"
-            and _graphviz_layout()
-        )
-        if not used_graphviz:
-            _simple_layout()
-
-        # Create the plot.
-        fig, ax = plt.subplots(figsize=(16, 12), facecolor="white")
-        ax.set_facecolor("white")
-
-        # Draw edges.
-        for src, dst in edges:
-            ax.annotate(
-                "",
-                xy=(xs[dst], ys[dst]),
-                xytext=(xs[src], ys[src]),
-                arrowprops=dict(
-                    arrowstyle="->",
-                    color="#555555",
-                    linewidth=1.0,
-                    alpha=0.8,
-                ),
-            )
-            # Show reaction IDs on edges (e.g., R2, R43). Aggregate all
-            # reactions that map to the same species-to-species connection.
-            rid_set = edge_reaction_labels.get((src, dst), set())
-            if rid_set:
-                rid_text = ",".join(
-                    sorted(
-                        rid_set,
-                        key=lambda s: int(s[1:]) if s.startswith("R") and s[1:].isdigit() else 10**9,
-                    )
-                )
-                mid_x = (xs[src] + xs[dst]) / 2.0
-                mid_y = (ys[src] + ys[dst]) / 2.0
-                # Place label slightly above the edge so the line doesn't cross the text.
-                ax.annotate(
-                    rid_text,
-                    xy=(mid_x, mid_y),
-                    xycoords="data",
-                    xytext=(0, 7),  # pixels/points offset upward
-                    textcoords="offset points",
-                    ha="center",
-                    va="bottom",
-                    fontsize=10,
-                    color="#222222",
-                    zorder=5,
-                    bbox=dict(
-                        boxstyle="round,pad=0.18",
-                        facecolor="white",
-                        edgecolor="none",
-                        alpha=0.85,
-                    ),
-                )
-
-        # Draw nodes: old vs new in different colours.
-        old_color = "#A6CEE3"  # blue
-        new_color = "#FB9A99"  # red
-
-        # Short labels for readability (full mapping exported alongside PNG).
-        def _shorten_label(label: str) -> str:
-            s = str(label).strip()
-            s = re.sub(r"\s+", " ", s)
-            # Keep common small molecules readable as-is.
-            if len(s) <= 10 and " " not in s:
-                return s
-            # Use a token-based abbreviation.
-            tokens = re.split(r"[\s\-_]+", s)
-            keep = []
-            for t in tokens:
-                if not t:
-                    continue
-                # Keep numbers and short chemical fragments.
-                if t.isdigit() or re.fullmatch(r"\d+[A-Za-z]*", t or ""):
-                    keep.append(t)
-                else:
-                    keep.append(t[0].upper())
-            base = "".join(keep) or s[:6].upper()
-            # If still too long, truncate.
-            if len(base) > 12:
-                base = base[:12]
-            return base
-
-        # Build or update a single cumulative mapping:
-        # full_label -> (short_label, first_seen_iteration)
-        cumulative_mapping_path = os.path.join(
-            self.output_directory,
-            "reaction_tree_labels.csv",
-        )
-        full_to_short: Dict[str, str] = {}
-        first_seen_by_full: Dict[str, int] = {}
-        used_short_labels: Set[str] = set()
-
-        # Load existing cumulative mapping if present.
-        if os.path.exists(cumulative_mapping_path):
-            try:
-                with open(cumulative_mapping_path, "r", newline="") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        full = str(row.get("full_label", "")).strip()
-                        short = str(row.get("short_label", "")).strip()
-                        first_seen_raw = str(row.get("first_seen_iteration", "")).strip()
-                        if not full or not short:
-                            continue
-                        try:
-                            first_seen = int(first_seen_raw)
-                        except ValueError:
-                            first_seen = iteration
-                        # Keep first occurrence if duplicate rows exist.
-                        if full not in full_to_short:
-                            full_to_short[full] = short
-                            first_seen_by_full[full] = first_seen
-                            used_short_labels.add(short)
-            except Exception:
-                # Continue with a fresh mapping if the file is malformed.
-                full_to_short = {}
-                first_seen_by_full = {}
-                used_short_labels = set()
-
-        # Assign short labels for current iteration nodes.
-        for lab in labels:
-            if lab in full_to_short:
-                continue
-            base = _shorten_label(lab)
-            candidate = base
-            # Ensure uniqueness against all previously assigned short labels.
-            if candidate in used_short_labels:
-                digest = hashlib.blake2s(str(lab).encode("utf-8"), digest_size=2).hexdigest()
-                suffix = digest.upper()
-                candidate = f"{base}-{suffix}"
-            if candidate in used_short_labels:
-                i = 2
-                while f"{candidate}{i}" in used_short_labels:
-                    i += 1
-                candidate = f"{candidate}{i}"
-            full_to_short[lab] = candidate
-            first_seen_by_full[lab] = iteration
-            used_short_labels.add(candidate)
-
-        # Persist cumulative mapping.
-        try:
-            with open(cumulative_mapping_path, "w", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["short_label", "full_label", "first_seen_iteration"])
-                for full in sorted(
-                    full_to_short.keys(),
-                    key=lambda x: (first_seen_by_full.get(x, iteration), x.lower()),
-                ):
-                    w.writerow([
-                        full_to_short[full],
-                        full,
-                        first_seen_by_full.get(full, iteration),
-                    ])
-        except Exception:
-            # Plot should still export even if mapping write fails.
-            pass
-
-        for lab in labels:
-            display_label = str(full_to_short.get(lab, lab))
-            color = new_color if lab in new_nodes else old_color
-            # Adaptive node size: scale marker area by wrapped label size so
-            # text fits inside the circle more often (simple heuristic).
-            lines = display_label.splitlines() if display_label else [""]
-            n_lines = max(1, len(lines))
-            max_line_len = max((len(line) for line in lines), default=0)
-            # Matplotlib scatter uses marker area in points^2.
-            s = 400 + 45 * (max_line_len ** 1.15) + 220 * n_lines
-            # Guardrails for readability.
-            s = max(700, min(s, 8000))
-            ax.scatter(
-                xs[lab],
-                ys[lab],
-                s=s,
-                c=color,
-                edgecolors="#333333",
-                linewidths=1.0,
-                zorder=3,
-            )
-            ax.text(
-                xs[lab],
-                ys[lab],
-                display_label,
-                ha="center",
-                va="center",
-                fontsize=max(8, int(self.reaction_tree_fontsize)),
-                color="black",
-                zorder=4,
-                wrap=True,
-            )
-
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_xlim(-0.1, 1.1)
-        # Add a little vertical padding.
-        min_y = min(ys.values())
-        max_y = max(ys.values())
-        ax.set_ylim(min_y - 0.5, max_y + 0.5)
-
-        ax.set_title(f"Reaction tree – iteration {iteration}", fontsize=14)
-
-        # Legend explaining colours.
-        from matplotlib.patches import Patch
-
-        legend_handles = [
-            Patch(facecolor=old_color, edgecolor="#333333", label="Existing core species"),
-            Patch(facecolor=new_color, edgecolor="#333333", label="New in this iteration"),
-        ]
-        ax.legend(
-            handles=legend_handles,
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
-            borderaxespad=0.0,
-            frameon=False,
-            fontsize=9,
-        )
-
-        fig.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
-
-        out_path = os.path.join(
-            self.output_directory,
-            f"reaction_tree_iter{iteration}.png",
-        )
-        fig.savefig(
-            out_path,
-            dpi=250,
-            bbox_inches="tight",
-            pad_inches=0.25,
-            facecolor="white",
-            edgecolor="none",
-        )
-        plt.close(fig)
-
-        self.logger.info(
-            f"Exported reaction tree plot for iteration {iteration} to {out_path}"
-        )
-
-
-    def export_simulation_plots(
-        self,
-        filename_pattern: str = "simulation_plot_iter{}.png",
-    ) -> Optional[List[str]]:
-        """
-        Plot concentration vs time for each iteration and save to PNG.
-
-        Respects plot_exclude_enzymes, plot_exclude_cofactors, and plot_max_species.
-        Returns list of written file paths, or None if no profiles.
-        """
-        if not self._profiles:
-            return None
-
-        enzyme_labels: Set[str] = set()
-        if self.plot_exclude_enzymes and self.model:
-            for sd in self.model.core_species + self.model.edge_species:
-                if sd.is_enzyme:
-                    enzyme_labels.add(sd.label)
-
-        cofactor_labels: Set[str] = set()
-        if self.plot_exclude_cofactors and self.bees_object:
-            for sp in getattr(self.bees_object, "species", []) or []:
-                if getattr(sp, "reactive", True) is False:
-                    cofactor_labels.add(getattr(sp, "label", ""))
-
-        # Keep plots readable by default even when plot_max_species is unset.
-        # Users can still override this via plot_max_species in settings.
-        max_species = self.plot_max_species if self.plot_max_species is not None else 12
-
-        exclude = enzyme_labels | cofactor_labels
-        paths: List[str] = []
-
-        for it_idx, prof in enumerate(self._profiles, 1):
-            candidates = []
-            for i, lab in enumerate(prof.species_labels):
-                if lab in exclude:
-                    continue
-                if self.plot_exclude_cofactors and self._is_general_cofactor_label(lab):
-                    continue
-
-                y = prof.y[i, :]
-                # Drop practically flat series to avoid legend clutter.
-                span = float(y.max() - y.min())
-                if span <= 1e-9:
-                    continue
-                candidates.append((i, lab, span))
-
-            if not candidates:
-                continue
-
-            # Prioritize species with the largest dynamic span.
-            candidates.sort(key=lambda item: item[2], reverse=True)
-            if len(candidates) > max_species:
-                candidates = candidates[:max_species]
-
-            # Publication-ready style: clean white background, large fonts, µM axis
-            fig, ax = plt.subplots(figsize=(10, 6), facecolor="white")
-            ax.set_facecolor("white")
-
-            # Colorblind-friendly palette (Paul Tol / matplotlib tab10–style)
-            colors = [
-                "#0173B2", "#DE8F05", "#029E73", "#CC78BC", "#CA9161",
-                "#FBAFE4", "#949494", "#ECE133", "#56B4E9", "#D55E00",
-            ]
-            ax.set_prop_cycle(color=colors)
-
-            # Concentration in µM for cleaner tick labels (data are in mM)
-            mM_to_uM = 1000.0
-            t = prof.t
-            for i, lab, _ in candidates:
-                ax.plot(t, prof.y[i, :] * mM_to_uM, label=lab)
-
-            ax.set_xlabel("Time (s)", fontsize=14, fontweight="medium")
-            ax.set_ylabel(r"Concentration ($\mu$M)", fontsize=14, fontweight="medium")
-            ax.set_title(f"Iteration {it_idx}", fontsize=16, fontweight="medium")
-            ax.tick_params(axis="both", which="major", labelsize=12)
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:g}"))
-            ax.grid(True, alpha=0.35, linestyle="-", linewidth=0.6)
-            ax.set_axisbelow(True)
-            ax.legend(
-                loc="upper left",
-                bbox_to_anchor=(1.02, 1.0),
-                borderaxespad=0.0,
-                frameon=False,
-                fontsize=11,
-            )
-
-            # Clean layout: legend outside, no black border, minimal padding
-            fig.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
-            out_path = os.path.join(
-                self.output_directory,
-                filename_pattern.format(it_idx),
-            )
-            fig.savefig(
-                out_path,
-                dpi=150,
-                bbox_inches="tight",
-                pad_inches=0.25,
-                facecolor="white",
-                edgecolor="none",
-            )
-            plt.close(fig)
-            paths.append(out_path)
-
-        if paths:
-            self.logger.info(
-                f"Exported {len(paths)} simulation plot(s) to {self.output_directory}"
-            )
-        return paths if paths else None
 
 
     # ------------------------------------------------------------------
@@ -1215,23 +755,8 @@ class IterativeEnlarger:
                         concentration=0.0,
                         initial_concentration=0.0,
                     ))
+                    self._edge_species_created_iter[label] = self._ingest_iteration
             self.model.add_reaction(rxn)
-
-    @staticmethod
-    def _reaction_signature(
-        reaction: GeneratedReaction,
-    ) -> Tuple[str, Tuple[str, ...], Tuple[str, ...]]:
-        """
-        Canonical reaction signature for stable reaction ID tracking.
-        """
-        enzyme = str(reaction.enzyme_label).lower().strip()
-        reactants = tuple(
-            sorted(str(r).lower().strip() for r in reaction.reactant_labels)
-        )
-        products = tuple(
-            sorted(str(p).lower().strip() for p in reaction.product_labels)
-        )
-        return (enzyme, reactants, products)
 
     def _sync_reaction_tracking(self, iteration: int) -> None:
         """
@@ -1240,10 +765,10 @@ class IterativeEnlarger:
         """
         all_reactions = list(self.model.core_reactions) + list(self.model.edge_reactions)
         core_sigs = {
-            self._reaction_signature(rxn) for rxn in self.model.core_reactions
+            reaction_signature(rxn) for rxn in self.model.core_reactions
         }
         for rxn in all_reactions:
-            sig = self._reaction_signature(rxn)
+            sig = reaction_signature(rxn)
             if sig not in self._reaction_id_by_sig:
                 self._reaction_id_by_sig[sig] = self._next_reaction_id
                 self._next_reaction_id += 1

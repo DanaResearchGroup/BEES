@@ -4,24 +4,24 @@
 Core/Edge Model Module
 ----------------------
 Implements the core/edge species and reaction model for rate-based algorithm.
-
 """
 
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
-from bees.model_generator import GeneratedReaction
+from bees.reaction_generator import GeneratedReaction
 
 
 @dataclass
 class SpeciesData:
     """
-    Lightweight container for a species in the core/edge model.
+    this class is a lightweight container for a species in the core/edge model.
+    it is used to store the species data and is used to manage the species in the core/edge model.
 
     Attributes:
         label: Species name (case-sensitive display label).
-        concentration: Current concentration in mM.
-        initial_concentration: Concentration at the start of simulation.
+        concentration: in mM.
+        initial_concentration: at the start of the simulation.
         is_enzyme: Whether this species is an enzyme.
         constant: Whether the concentration is held constant (e.g. buffer species).
     """
@@ -34,13 +34,15 @@ class SpeciesData:
 
 class CoreEdgeModel:
     """
-    Maintains core and edge sets of species and reactions for rate-base model enlargement.
+    This class maintains core/edge sets of species and reactions for the model enlargement.
 
     Attributes:
         core_species: Ordered list of core species.
         edge_species: Ordered list of edge species.
         core_reactions: Reactions involving only core species.
         edge_reactions: Reactions involving at least one edge species.
+    
+        
     """
 
     def __init__(self):
@@ -54,6 +56,7 @@ class CoreEdgeModel:
         self._edge_species_index: Dict[str, int] = {}
         self._core_species_labels_lc: Set[str] = set()
         self._edge_species_labels_lc: Set[str] = set()
+        self._known_reaction_signatures: Set[tuple] = set()
 
     # ------------------------------------------------------------------
     # Species management
@@ -61,11 +64,11 @@ class CoreEdgeModel:
 
     def add_core_species(self, species: SpeciesData) -> None:
         """Add a species directly to the core."""
-        lc = species.label.lower().strip()
+        lc = species.label.lower().strip() #  
         if lc in self._core_species_labels_lc:
             return  # already present
         idx = len(self.core_species)
-        self.core_species.append(species)
+        self.core_species.append(species) 
         self._core_species_index[lc] = idx
         self._core_species_labels_lc.add(lc)
         # Remove from edge if it was there
@@ -84,9 +87,13 @@ class CoreEdgeModel:
 
     def promote_species_to_core(self, label: str) -> Optional[SpeciesData]:
         """
-        Move a species from the edge to the core.
+        This function moves a species from the edge to the core.
 
-        Returns the promoted SpeciesData, or None if the label was not in the edge.
+        Args:
+            label: # The label of the species to promote.
+
+        Returns:
+            The promoted SpeciesData, or None if the label was not in the edge.
         """
         lc = label.lower().strip()
         if lc not in self._edge_species_labels_lc:
@@ -98,7 +105,11 @@ class CoreEdgeModel:
         return species
 
     def _remove_edge_species(self, label_lc: str) -> None:
-        """Remove a species from the edge (internal helper)."""
+        """
+        Remove a species from the edge.
+        
+        
+        """
         if label_lc not in self._edge_species_index:
             return
         idx = self._edge_species_index.pop(label_lc)
@@ -135,7 +146,6 @@ class CoreEdgeModel:
 
     def _reaction_signature(self, reaction: GeneratedReaction) -> tuple:
         """Canonical signature for deduplication.
-
         Uses lowercased, stripped species and enzyme labels so that reactions
         differing only by capitalization or trivial formatting are treated as
         identical.
@@ -149,12 +159,14 @@ class CoreEdgeModel:
         """
         Add a reaction, placing it in core_reactions if all participants
         are core species, otherwise in edge_reactions.
-        Skips if an identical reaction (same enzyme, reactants, products) already exists.
+        Skips if an identical reaction (same enzyme, reactants/products) already exists.
         """
         sig = self._reaction_signature(reaction)
-        for rxn in self.core_reactions + self.edge_reactions:
-            if self._reaction_signature(rxn) == sig:
-                return  # duplicate
+        if sig in self._known_reaction_signatures:
+            return  # duplicate
+        
+        self._known_reaction_signatures.add(sig)
+        
         if self._reaction_is_core(reaction):
             self.core_reactions.append(reaction)
         else:
@@ -182,6 +194,23 @@ class CoreEdgeModel:
             if not self.is_core_species(label):
                 return False
         return True
+    
+    def prune_edge(self, labels_to_remove: Set[str]) -> int:
+        """
+        Remove species from the edge that have negligible flux.
+
+        Args:
+            labels_to_remove: Set of lowercase labels to prune.
+
+        Returns:
+            Number of species removed.
+        """
+        removed = 0
+        for lc in list(labels_to_remove):
+            if lc in self._edge_species_labels_lc:
+                self._remove_edge_species(lc)
+                removed += 1
+        return removed
 
     # ------------------------------------------------------------------
     # Concentration vector helpers
@@ -229,26 +258,23 @@ class CoreEdgeModel:
             if i < len(self.edge_species):
                 self.edge_species[i].concentration = val
 
+    def reset_concentrations_to_initial(self) -> None:
+        """
+        Reset all species concentrations to their stored initial values.
+
+        Used when restarting an ODE from t=0 after a simulation interrupt
+        (model structure may have changed; concentrations must match a fresh run).
+        """
+        for s in self.core_species:
+            if not s.constant:
+                s.concentration = s.initial_concentration
+        for s in self.edge_species:
+            s.concentration = s.initial_concentration
+
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
 
-    def prune_edge(self, labels_to_remove: Set[str]) -> int:
-        """
-        Remove species from the edge that have negligible flux.
-
-        Args:
-            labels_to_remove: Set of lowercase labels to prune.
-
-        Returns:
-            Number of species removed.
-        """
-        removed = 0
-        for lc in list(labels_to_remove):
-            if lc in self._edge_species_labels_lc:
-                self._remove_edge_species(lc)
-                removed += 1
-        return removed
 
     def summary(self) -> Dict[str, int]:
         return {

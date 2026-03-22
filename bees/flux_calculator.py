@@ -1,23 +1,14 @@
 #!/usr/bin/env python3
 
 """
-Flux Calculator Module
-----------------------
-Calculates species production/consumption rates for the rate-based
-model enlargement algorithm.
-
-Computes the characteristic rate R_char of the core model and
-identifies edge species whose flux exceeds the user-specified
-tolerance, marking them for promotion to the core.
-
-
+this module is used to calculate the flux of a species in a reaction network and the characteristic rate of the core mode
 """
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
-from bees.model_generator import GeneratedReaction
+from bees.reaction_generator import GeneratedReaction
 
 
 @dataclass
@@ -74,14 +65,25 @@ def compute_mm_rate(
         s_conc = concentrations.get(reactant_lc, 0.0)
         s_conc = max(s_conc, 0.0)  # guard against negative from ODE
 
-        # Find the appropriate Km (case-insensitive fallback for DB key mismatch)
-        km_val = km_per.get(reactant)
-        if km_val is None:
-            km_val = next(
-                (v for k, v in km_per.items() if k.lower().strip() == reactant_lc),
-                None,
-            )
-        if km_val is None:
+        # Find the appropriate Km.
+        #
+        # IMPORTANT: when `km_per_substrate` exists, only apply saturation terms
+        # for substrates that are explicitly present in it. Do NOT fall back to a
+        # global/single Km for other reactants (e.g., H+), because that can
+        # incorrectly suppress flux by treating buffered/auxiliary reactants as
+        # kinetic substrates.
+        km_val = None
+        if km_per:
+            km_val = km_per.get(reactant)
+            if km_val is None:
+                km_val = next(
+                    (v for k, v in km_per.items() if k.lower().strip() == reactant_lc),
+                    None,
+                )
+            if km_val is None:
+                # No per-substrate Km for this reactant -> assume saturated (factor=1).
+                continue
+        else:
             km_val = km_single
         if km_val is None or km_val <= 0:
             # Without Km, assume saturated (saturation factor = 1)
@@ -142,67 +144,89 @@ def calculate_characteristic_rate(core_species_rates: Dict[str, float]) -> float
     return math.sqrt(sum(r * r for r in core_species_rates.values()))
 
 
-def identify_significant_species(
-    edge_species_rates: Dict[str, float],
-    r_char: float,
+def identify_significant_species_at_interrupt(
+    edge_rates: Dict[str, float],
+    char_rate: float,
     tol_move_to_core: float,
+    max_objects: int = 10,
+    abs_flux_floor: float = 1e-12,
 ) -> List[SpeciesFlux]:
     """
-    Return edge species whose absolute rate exceeds epsilon * R_char.
+     At the exact moment the solver is interrupted (``t_interrupt``), compute
+    ``rr_i = |R_i| / R_char`` for each edge species *i*.  Species whose
+    ``rr_i >= toleranceMoveToCore`` are candidates.  The list is sorted by
+    ``rr_i`` descending and truncated to ``max_objects``.
+
+    Flat-core safeguard (``char_rate <= 0`` but edge flux exists): ratio-based
+    promotion is meaningless because any tiny ``|R_i|`` would produce an
+    infinite ratio.  Instead, promote edge species whose ``|R_i|`` exceeds the
+    absolute flux floor ``abs_flux_floor``, sorted by ``|R_i|`` descending and
+    capped to ``max_objects``.  This avoids spurious promotions from numerical
+    noise while still catching species with real flux.
 
     Args:
-        edge_species_rates: label_lc -> dC/dt for edge species.
-        r_char: Characteristic rate of the core model (mM/s).
-        tol_move_to_core: Tolerance epsilon.
+        edge_rates: label_lc -> instantaneous dC/dt (mM/s) at interrupt time.
+        char_rate: Instantaneous R_char at interrupt time.
+        tol_move_to_core: Tolerance epsilon (toleranceMoveToCore).
+        max_objects: Maximum number of species to return per interrupt.
+        abs_flux_floor: Absolute |rate| threshold used when R_char is zero.
 
     Returns:
-        Sorted list (descending by |rate|) of SpeciesFlux objects that
-        exceed the threshold.
+        Sorted list (descending by rr_i or |rate|) of SpeciesFlux candidates,
+        truncated to *max_objects*.
     """
-    if r_char <= 0.0 or not edge_species_rates:
+    if not edge_rates:
         return []
 
-    threshold = tol_move_to_core * r_char
-    significant: List[SpeciesFlux] = []
+    if char_rate <= 0.0:
+        candidates: List[SpeciesFlux] = []
+        for label, rate in edge_rates.items():
+            if abs(rate) > abs_flux_floor:
+                candidates.append(
+                    SpeciesFlux(
+                        label=label,
+                        rate=rate,
+                        normalized_rate=float("inf"),
+                    )
+                )
+        candidates.sort(key=lambda sf: abs(sf.rate), reverse=True)
+        return candidates[:max_objects]
 
-    for label_lc, rate in edge_species_rates.items():
-        abs_rate = abs(rate)
-        if abs_rate >= threshold:
-            significant.append(SpeciesFlux(
-                label=label_lc,
-                rate=rate,
-                normalized_rate=abs_rate / r_char,
-            ))
+    candidates = []
+    for label, rate in edge_rates.items():
+        rr = abs(rate) / char_rate
+        if rr >= tol_move_to_core:
+            candidates.append(
+                SpeciesFlux(label=label, rate=rate, normalized_rate=rr)
+            )
 
-    significant.sort(key=lambda sf: abs(sf.rate), reverse=True)
-    return significant
+    candidates.sort(key=lambda sf: sf.normalized_rate, reverse=True)
+    return candidates[:max_objects]
 
 
-def identify_insignificant_species(
-    edge_species_rates: Dict[str, float],
-    r_char: float,
+def identify_insignificant_species_from_peak_ratios(
+    max_edge_rate_ratio: Dict[str, float],
+    max_char_rate: float,
     tol_keep_in_edge: float,
+    ineligible_for_prune: Optional[Set[str]] = None,
 ) -> Set[str]:
     """
-    Return edge species whose absolute rate is below the keep-in-edge
-    tolerance, suitable for pruning.
+    Prune edge species whose *peak* |R_edge|/R_char falls below tol_keep_in_edge.
 
-    Args:
-        edge_species_rates: label_lc -> dC/dt for edge species.
-        r_char: Characteristic rate of the core model (mM/s).
-        tol_keep_in_edge: Tolerance below which species are pruned.
-
-    Returns:
-        Set of lowercase labels to prune.
+    prunes using aggregated maximum rate ratios over the run, not a
+    single end-time snapshot. Species listed in ineligible_for_prune are
+    skipped (e.g. too young to prune).
     """
-    if r_char <= 0.0:
+    if max_char_rate <= 0.0 or tol_keep_in_edge <= 0.0:
         return set()
 
-    threshold = tol_keep_in_edge * r_char
+    ineligible = ineligible_for_prune or set()
     to_remove: Set[str] = set()
 
-    for label_lc, rate in edge_species_rates.items():
-        if abs(rate) < threshold:
+    for label_lc, rr in max_edge_rate_ratio.items():
+        if label_lc in ineligible:
+            continue
+        if rr < tol_keep_in_edge:
             to_remove.add(label_lc)
 
     return to_remove
