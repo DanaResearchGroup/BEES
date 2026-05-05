@@ -606,8 +606,8 @@ class EnlargerExporter:
                             first_seen_by_full.get(full, iteration),
                         ]
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            self.logger.warning("Failed to write cumulative label mapping to %s: %s", cumulative_mapping_path, exc)
 
         for lab in labels:
             display_label = str(full_to_short.get(lab, lab))

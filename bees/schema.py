@@ -4,7 +4,7 @@ used for input validation
 """
 
 from typing import Dict, List, Optional, Tuple, Union, Literal, Annotated
-from pydantic import BaseModel, conint, confloat, constr, field_validator, ValidationInfo, Field, ConfigDict
+from pydantic import BaseModel, conint, confloat, constr, field_validator, ValidationInfo, Field
 from rdkit import Chem
 
 

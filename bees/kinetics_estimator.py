@@ -204,8 +204,8 @@ class CatPredEstimator(BaseKineticsEstimator):
         try:
             if os.path.exists(staged_predict_sh):
                 os.remove(staged_predict_sh)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("Best-effort cleanup: could not remove %s: %s", staged_predict_sh, exc)
 
         results = {}
 
@@ -365,8 +365,8 @@ class CatPredEstimator(BaseKineticsEstimator):
         if memo_key is not None:
             try:
                 self._memo[memo_key] = out
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger(__name__).debug("Failed to update CatPred memo cache for key %s: %s", memo_key, exc)
         return out
 
 
