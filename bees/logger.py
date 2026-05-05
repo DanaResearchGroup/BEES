@@ -242,6 +242,23 @@ class Logger(object):
             success (bool): True if the execution was successful, False otherwise.
         """
         execution_time = time_lapse(self.t0)
+        try:
+            log_size_bytes = os.path.getsize(self.main_log_file_path)
+            units = ["B", "KiB", "MiB", "GiB", "TiB"]
+            size = float(log_size_bytes)
+            unit = units[0]
+            for u in units[1:]:
+                if size < 1024.0:
+                    break
+                size /= 1024.0
+                unit = u
+            self.always(
+                f"Main log file size: {size:.2f} {unit} "
+                f"({log_size_bytes} bytes)  |  {self.main_log_file_path}"
+            )
+        except Exception:
+            # Avoid hiding real errors during shutdown due to log-size reporting.
+            pass
         self.always(f'\n\n\nTotal BEES execution time: {execution_time}')
         if success:
             self.always('BEES execution completed successfully.')
