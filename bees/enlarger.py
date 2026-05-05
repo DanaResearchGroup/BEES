@@ -330,18 +330,99 @@ class IterativeEnlarger:
                     abs_flux_floor=self.abs_flux_floor,
                 )
                 if not significant_sub and not rxn_promote_species:
-                    max_edge_abs = max(
-                        (abs(r) for r in sim_result.interrupt_edge_rates.values()),
-                        default=0.0,
-                    )
-                    result.convergence_reason = (
-                        "ODE interrupted but no edge species exceeded "
-                        f"threshold (R_char={sim_result.interrupt_char_rate:.4e}, "
-                        f"max |R_edge|={max_edge_abs:.4e}, "
-                        f"tol={self.tol_move_to_core})."
-                    )
-                    self.logger.warning(f"  {result.convergence_reason}")
-                    break
+                    # The interrupt fired but nothing new can be promoted (e.g. a
+                    # reaction whose dlnaccum is high but all participants are already
+                    # core).  Resume the simulation from the interrupt point rather
+                    # than terminating — the interrupt criterion may not fire again
+                    # once the system has evolved past this transient.
+                    t_resume = float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0
+                    if t_resume < self.end_time * 0.99:
+                        max_edge_abs = max(
+                            (abs(r) for r in sim_result.interrupt_edge_rates.values()),
+                            default=0.0,
+                        )
+                        if self.logger:
+                            self.logger.info(
+                                f"  Interrupt at t={t_resume:.3e} s produced no new promotable "
+                                f"species (R_char={sim_result.interrupt_char_rate:.4e}, "
+                                f"max |R_edge|={max_edge_abs:.4e}); resuming simulation."
+                            )
+                        # Re-run from the interrupt point to end_time using current
+                        # model concentrations (already updated by the ODE result).
+                        remaining_time = self.end_time - t_resume
+                        sim_result2 = simulator.simulate(
+                            end_time=remaining_time,
+                            time_step=self.end_time / 100.0,
+                            interrupt_simulation_tol=self.tol_interrupt_simulation,
+                            tol_move_edge_reaction_to_core=self.tol_move_edge_reaction_to_core,
+                        )
+                        if sim_result2.success and not sim_result2.simulation_interrupted:
+                            # Completed without another interrupt — treat as a
+                            # full convergence-check pass (fall through to the
+                            # non-interrupted path below by replacing sim_result).
+                            sim_result = sim_result2
+                        elif sim_result2.simulation_interrupted:
+                            # Another interrupt fired — handle it next iteration.
+                            sim_result = sim_result2
+                        # If ODE failed on resume, fall through to the break below.
+                        if not sim_result.success:
+                            result.convergence_reason = f"ODE failure on resume: {sim_result.message}"
+                            if self.logger:
+                                self.logger.warning(f"  {result.convergence_reason}")
+                            break
+                        # Re-evaluate with the new sim_result.
+                        significant_sub = identify_significant_species_at_interrupt(
+                            sim_result.interrupt_edge_rates,
+                            sim_result.interrupt_char_rate,
+                            self.tol_move_to_core,
+                            max_objects=self.max_num_objects_per_iter,
+                            abs_flux_floor=self.abs_flux_floor,
+                        )
+                        rxn_promote_species = []
+                        if (
+                            self.tol_move_edge_reaction_to_core is not None
+                            and self.tol_move_edge_reaction_to_core > 0
+                            and sim_result.max_edge_reaction_dlnaccum
+                        ):
+                            violators2 = [
+                                (sig, dln)
+                                for sig, dln in sim_result.max_edge_reaction_dlnaccum.items()
+                                if dln > self.tol_move_edge_reaction_to_core
+                            ]
+                            edge_label_set2 = {sp.label for sp in self.model.edge_species}
+                            for sig, _dln in violators2[: self.max_num_objects_per_iter]:
+                                rxn_obj = self._reaction_obj_by_sig.get(sig)
+                                if rxn_obj is None:
+                                    continue
+                                for sp_label in list(rxn_obj.reactant_labels) + list(rxn_obj.product_labels):
+                                    if sp_label in edge_label_set2 and sp_label not in rxn_promote_species:
+                                        rxn_promote_species.append(sp_label)
+                        if not significant_sub and not rxn_promote_species:
+                            max_edge_abs = max(
+                                (abs(r) for r in sim_result.interrupt_edge_rates.values()),
+                                default=0.0,
+                            )
+                            result.convergence_reason = (
+                                "ODE interrupted but no edge species exceeded "
+                                f"threshold (R_char={sim_result.interrupt_char_rate:.4e}, "
+                                f"max |R_edge|={max_edge_abs:.4e}, "
+                                f"tol={self.tol_move_to_core})."
+                            )
+                            self.logger.warning(f"  {result.convergence_reason}")
+                            break
+                    else:
+                        max_edge_abs = max(
+                            (abs(r) for r in sim_result.interrupt_edge_rates.values()),
+                            default=0.0,
+                        )
+                        result.convergence_reason = (
+                            "ODE interrupted but no edge species exceeded "
+                            f"threshold (R_char={sim_result.interrupt_char_rate:.4e}, "
+                            f"max |R_edge|={max_edge_abs:.4e}, "
+                            f"tol={self.tol_move_to_core})."
+                        )
+                        self.logger.warning(f"  {result.convergence_reason}")
+                        break
 
                 t_int = float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0
                 labels_csv = ", ".join(sf.label for sf in significant_sub[:3])
