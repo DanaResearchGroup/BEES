@@ -100,9 +100,9 @@ settings:
   # Iterative mode 
   end_time: 1000.0
   time_step: 2.0
-  toleranceMoveToCore: 0.01
+  toleranceMoveToCore: 1e-5
   toleranceKeepInEdge: 10e-10
-  toleranceInterruptSimulation: 0.01
+  toleranceInterruptSimulation: 1e-5
   max_iterations: 15
   # ODE solver (speed vs accuracy)
   ode_rtol: 1.0e-06

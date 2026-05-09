@@ -171,9 +171,9 @@ database:
 
 settings:
   end_time: 800 # 12.5 min (matches reference experiment)
-  toleranceMoveToCore: 1e-3
+  toleranceMoveToCore: 1e-5
   toleranceKeepInEdge: 1e-7
-  toleranceInterruptSimulation: 1e-3
+  toleranceInterruptSimulation: 1e-5
   max_iterations: 60
   max_num_objects_per_iter: 40
   estimate_kinetics: True

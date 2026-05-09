@@ -233,9 +233,7 @@ settings:
   toleranceMoveToCore: 1e-5
   toleranceKeepInEdge: 1e-7
   toleranceInterruptSimulation: 0.01
-  # RMG-style reaction-level criterion: promote edge reactions whose
-  # dlnaccum_j = Σ_i ln(1 + v_j / R_i) exceeds this. Catches chain-branching
-  # reactions whose individual species rate ratio stays below the species threshold.
+
   toleranceMoveEdgeReactionToCore: 0.01
   max_iterations: 80
   max_num_objects_per_iter: 40
