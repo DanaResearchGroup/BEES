@@ -1,4 +1,4 @@
-project: FattyAcidSynthesisDemo
+project: FattyAcidSynthesis_genral_mammalian
 project_directory: projects/fattyAcidSynthesis/FattyAcidSynthesisDemo
 
 species:
@@ -50,6 +50,9 @@ database:
   name: db
 
 settings:
+  end_time: 1000.0
+  toleranceMoveToCore: 0.1
+  max_iterations: 20
   estimate_kinetics: true
   kinetics_estimator: catpred
   kinetics_include_sd: true

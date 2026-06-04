@@ -5,7 +5,7 @@ Test BEES common module
 This module Test the common module which contains functions which are shared across multiple  modules.
 To run the tests, use pytest and the command line: pytest -v tests/test_common.py
 
-This VERSION based on is the full ARC version, using `semantic versioning <https://semver.org/>`_.
+
 """
 
 
@@ -32,22 +32,11 @@ from bees.common import (
     to_yaml,
     globalize_paths,
     globalize_path,
-    get_ordinal_indicator,
-    get_number_with_ordinal_indicator,
-    extremum_list,
-    get_extremum_index,
-    sum_list_entries,
-    sort_two_lists_by_the_first,
-    check_that_all_entries_are_in_list,
-    key_by_val,
-    is_str_float,
-    is_str_int,
-    clean_text,
     time_lapse,
     dict_to_str,
-    timedelta_from_str,
-    convert_list_index_0_to_1,
     calculate_arrhenius_rate_coefficient,
+    heavy_atom_count,
+    get_ontology_equivalents,
     R, # Gas constant
     EA_UNIT_CONVERSION, # Energy unit conversion dictionary
 )
@@ -138,7 +127,7 @@ def test_read_yaml_file(tmp_path):
     invalid_yaml_path = tmp_path / "invalid.yml"
     with open(invalid_yaml_path, "w") as f:
         f.write("key: - value") # Invalid YAML syntax (sequence entry where mapping key is expected)
-    
+
     # The error message can vary slightly between PyYAML versions,
     # so a more general regex for YAMLError is appropriate.
     with pytest.raises(yaml.YAMLError):
@@ -147,6 +136,14 @@ def test_read_yaml_file(tmp_path):
     # Test invalid path type
     with pytest.raises(InputError, match="path must be a string"):
         read_yaml_file(123)
+
+
+def test_get_ontology_equivalents_acp_thioester_permutations():
+    eq = get_ontology_equivalents("3-oxo-(5Z)-dodecenoyl-[ACP]")
+    assert "(5z)-3-oxododecenoyl-[acp]" in eq
+
+    eq2 = get_ontology_equivalents("(5Z)-3-oxododecenoyl-[ACP]")
+    assert "3-oxo-(5z)-dodecenoyl-[acp]" in eq2
 
 def test_save_yaml_file(tmp_path):
     """Test save_yaml_file function."""
@@ -336,132 +333,10 @@ def test_string_representer():
     assert re.search(r"description:\s*\|-?\s*\n\s*This is a\n\s*multiline\n\s*string\.?", yaml_str_multiline) is not None
 
 
-def test_get_ordinal_indicator():
-    """Test get_ordinal_indicator function."""
-    assert get_ordinal_indicator(1) == 'st'
-    assert get_ordinal_indicator(2) == 'nd'
-    assert get_ordinal_indicator(3) == 'rd'
-    assert get_ordinal_indicator(4) == 'th'
-    assert get_ordinal_indicator(11) == 'th'
-    assert get_ordinal_indicator(13) == 'th'
-    assert get_ordinal_indicator(21) == 'st'
-    assert get_ordinal_indicator(22) == 'nd'
-    assert get_ordinal_indicator(100) == 'th'
-
-def test_get_number_with_ordinal_indicator():
-    """Test get_number_with_ordinal_indicator function."""
-    assert get_number_with_ordinal_indicator(1) == '1st'
-    assert get_number_with_ordinal_indicator(2) == '2nd'
-    assert get_number_with_ordinal_indicator(10) == '10th'
-    assert get_number_with_ordinal_indicator(12) == '12th'
-    assert get_number_with_ordinal_indicator(23) == '23rd'
-
 """
 Bond-length and distance-matrix utilities were removed from `bees.common` since they are not
 used by BEES' core pipeline. The associated tests were intentionally removed.
 """
-
-def test_extremum_list():
-    """Test extremum_list function."""
-    assert extremum_list([1, 2, 3]) == 1
-    assert extremum_list([1, 2, 3], return_min=False) == 3
-    assert extremum_list([5]) == 5
-    assert extremum_list([None, 1, 2, None]) == 1
-    assert extremum_list([None, 1, 2, None], return_min=False) == 2
-    assert extremum_list([]) is None
-    assert extremum_list([None, None]) is None
-
-def test_get_extremum_index():
-    """Test get_extremum_index function."""
-    assert get_extremum_index([1, 2, 0, 3]) == 2
-    assert get_extremum_index([1, 2, 0, 3], return_min=False) == 3
-    assert get_extremum_index([5]) == 0
-    
-    # Test with None values and ensure correct index is returned
-    assert get_extremum_index([None, 1, 0, None, 2]) == 2
-    assert get_extremum_index([None, 1, 0, None, 2], return_min=False) == 4
-    
-    assert get_extremum_index([]) is None
-    assert get_extremum_index([None, None]) is None
-    assert get_extremum_index([10, 20, 0], skip_values=[0]) == 0 # Should skip 0 and find min of [10, 20]
-    assert get_extremum_index([None, None, 5, 2, 8], skip_values=[None]) == 3 # Test with initial None values
-
-def test_sum_list_entries():
-    """Test sum_list_entries function."""
-    assert sum_list_entries([1, 2, 3]) == 6
-    assert sum_list_entries([1.0, 2.5, 3.5]) == 7.0
-    assert sum_list_entries([1, 2, 3], multipliers=[10, 1, 0.1]) == pytest.approx(12.3)
-    assert sum_list_entries([1, None, 3]) is None
-    assert sum_list_entries([]) == 0.0 # Sum of empty list is 0.0
-
-def test_sort_two_lists_by_the_first():
-    """Test sort_two_lists_by_the_first function."""
-    list1 = [3, 1, 2]
-    list2 = ['c', 'a', 'b']
-    sorted1, sorted2 = sort_two_lists_by_the_first(list1, list2)
-    assert sorted1 == [1, 2, 3]
-    assert sorted2 == ['a', 'b', 'c']
-
-    list1_with_none = [3, None, 1, 2]
-    list2_with_none = ['c', 'x', 'a', 'b']
-    sorted1_none, sorted2_none = sort_two_lists_by_the_first(list1_with_none, list2_with_none)
-    assert sorted1_none == [1, 2, 3]
-    assert sorted2_none == ['a', 'b', 'c'] # 'x' should be removed
-
-    with pytest.raises(InputError, match="Arguments must be lists"):
-        sort_two_lists_by_the_first(1, [2])
-
-    with pytest.raises(InputError, match="Entries of list1 must be either floats or integers"):
-        sort_two_lists_by_the_first(['a', 1], [1, 2])
-
-    with pytest.raises(InputError, match="Both lists must be the same length"):
-        sort_two_lists_by_the_first([1, 2], [3])
-
-def test_check_that_all_entries_are_in_list():
-    """Test check_that_all_entries_are_in_list function."""
-    assert check_that_all_entries_are_in_list([1, 2, 3], [3, 1, 2]) is True
-    assert check_that_all_entries_are_in_list([1, 2, 3], [1, 2]) is False # Different length
-    assert check_that_all_entries_are_in_list([1, 2, 3], [1, 2, 4]) is False # Missing entry
-    assert check_that_all_entries_are_in_list([], []) is True
-    assert check_that_all_entries_are_in_list([1], []) is False # Different length
-
-def test_key_by_val():
-    """Test key_by_val function."""
-    test_dict = {"a": 1, "b": 2, "c": "value"}
-    assert key_by_val(test_dict, 1) == "a"
-    assert key_by_val(test_dict, "value") == "c"
-    assert key_by_val(test_dict, 2) == "b" 
-
-    with pytest.raises(ValueError, match="Could not find value"):
-        key_by_val(test_dict, 99)
-
-def test_is_str_float():
-    """Test is_str_float function."""
-    assert is_str_float("1.23") is True
-    assert is_str_float("1") is True
-    assert is_str_float("-0.5") is True
-    assert is_str_float("abc") is False
-    assert is_str_float("1.2.3") is False
-    assert is_str_float(None) is False
-
-def test_is_str_int():
-    """Test is_str_int function."""
-    assert is_str_int("123") is True
-    assert is_str_int("-45") is True
-    assert is_str_int("1.0") is False
-    assert is_str_int("abc") is False
-    assert is_str_int(None) is False
-
-def test_clean_text():
-    """Test clean_text function."""
-    assert clean_text("  hello world  ") == "hello world"
-    assert clean_text("\nhello\nworld\n") == "hello\nworld"
-    assert clean_text('"text"') == "text"
-    assert clean_text('text,') == "text"
-    # This assertion should now pass with the improved clean_text logic
-    assert clean_text('  "\nhello world,\n"  ') == "hello world"
-    assert clean_text("") == ""
-    assert clean_text(' " text " ') == "text" # Test with spaces and quotes
 
 def test_time_lapse():
     """Test time_lapse function."""
@@ -511,26 +386,6 @@ def test_dict_to_str():
     )
     assert dict_to_str(test_dict_level, level=0) == expected_str_level
 
-def test_timedelta_from_str():
-    """Test timedelta_from_str function."""
-    assert timedelta_from_str("1hr") == datetime.timedelta(hours=1)
-    assert timedelta_from_str("30m") == datetime.timedelta(minutes=30)
-    assert timedelta_from_str("15s") == datetime.timedelta(seconds=15)
-    assert timedelta_from_str("1hr30m") == datetime.timedelta(hours=1, minutes=30)
-    assert timedelta_from_str("1hr30m15s") == datetime.timedelta(hours=1, minutes=30, seconds=15)
-    assert timedelta_from_str("24hr") == datetime.timedelta(hours=24)
-    assert timedelta_from_str("") == datetime.timedelta(0)
-    assert timedelta_from_str("invalid") is None
-
-def test_convert_list_index_0_to_1():
-    """Test convert_list_index_0_to_1 function."""
-    assert convert_list_index_0_to_1([0, 1, 2]) == [1, 2, 3]
-    assert convert_list_index_0_to_1([1, 2, 3], direction=-1) == [0, 1, 2]
-    assert convert_list_index_0_to_1((0, 1), direction=1) == (1, 2)
-
-    with pytest.raises(ValueError, match="The resulting list from converting"):
-        convert_list_index_0_to_1([0], direction=-1) # Should result in [-1]
-
 def test_calculate_arrhenius_rate_coefficient():
     """Test calculate_arrhenius_rate_coefficient function."""
     # Test with typical values (example from RMG docs or similar)
@@ -558,4 +413,15 @@ def test_calculate_arrhenius_rate_coefficient():
     # Test unsupported units
     with pytest.raises(ValueError, match="Unsupported Ea units"):
         calculate_arrhenius_rate_coefficient(A, n, Ea, T, Ea_units='invalid_unit')
+
+
+def test_heavy_atom_count_valid_smiles():
+    # ethanol: C-C-O = 3 heavy atoms
+    assert heavy_atom_count("CCO") == 3
+
+
+def test_heavy_atom_count_empty_or_invalid_returns_none():
+    assert heavy_atom_count("") is None
+    assert heavy_atom_count(None) is None
+    assert heavy_atom_count("not_a_smiles") is None
 

@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
 
-"""
-Reaction Utilities Module
--------------------------
-General utility functions for reaction validation, reactant checking, and cofactor handling.
-These functions are pathway-agnostic and can be used across different biochemical pathways.
-"""
-
-from typing import List, Set, Optional 
+from typing import List, Set, Optional
 from bees.common import (
-    GENERAL_COFACTORS,
+    COFACTORS_ALWAYS_AVAILABLE,
     get_ontology_equivalents,
     get_coenzyme_like_flags,
     EC_ALIASES,
-    COFACTOR_SUBSTITUTIONS,
-    ENZYME_DOMAIN_COFACTORS
+    ENZYME_DOMAIN_COFACTORS,
 )
 
 
-def get_ec_aliases(ec_number: str) -> List[str]:
+def get_ec_aliases(ec_number: Optional[str]) -> List[str]:
     """
     Get all EC number aliases for a given EC number.
     
@@ -28,6 +20,9 @@ def get_ec_aliases(ec_number: str) -> List[str]:
     Returns:
         List[str]: List of EC numbers to try, including the primary EC number first
     """
+    if not ec_number:
+        return []
+
     ec_numbers_to_try = [ec_number]
     if ec_number in EC_ALIASES:
         ec_numbers_to_try.extend(EC_ALIASES[ec_number])
@@ -56,82 +51,63 @@ def check_reactant_availability(
     reactant: str,
     available_species_labels_lc: Set[str],
     enzyme_label: Optional[str] = None,
-    ec_number: Optional[str] = None
 ) -> tuple[bool, Optional[str]]:
     """
-    Check if a reactant is available, considering:
-    - General cofactors (implicitly available)
-    - Enzyme domain cofactors (part of enzyme structure)
-    - Cofactor substitutions
-    - Ontology equivalents
+    Check whether a reactant is "available" for reaction generation.
+
+    Checks are applied in this order:
+    1) Always-available cofactors (e.g., H2O, H+, Pi; see COFACTORS_ALWAYS_AVAILABLE)
+    2) Direct match in `available_species_labels_lc`
+    3) Enzyme domain cofactors (if `enzyme_label` given; skipped for acyl-ACP reactants)
+    4) Ontology equivalents
     
     Args:
         reactant (str): Reactant name to check
         available_species_labels_lc (Set[str]): Set of available species (lowercase)
         enzyme_label (str, optional): Enzyme label for domain cofactor checking
-        ec_number (str, optional): EC number for context-specific substitutions
         
     Returns:
         tuple[bool, Optional[str]]: (is_available, reason)
             - is_available: True if reactant is available
-            - reason: Optional explanation (e.g., "general_cofactor", "domain_cofactor", "substitution", "ontology")
+            - reason: One of:
+              "always_available_cofactor", "direct_match", "domain_cofactor",
+              "ontology", or None if unavailable.
     """
     r_lc = str(reactant).lower().strip()
     coenzyme_flags = get_coenzyme_like_flags(reactant)
-    matched_domain_pattern = None
 
-    # Check if it's a general cofactor (implicitly available)
-    if r_lc in GENERAL_COFACTORS:
-        reason = "general_cofactor"
-        is_available = True
+    # Check if it's an always-available cofactor (implicitly available).
+    # NOTE: This uses COFACTORS_ALWAYS_AVAILABLE, which is a restricted subset
+    # of GENERAL_COFACTORS (H2O, H+, Pi, inorganic ions, etc.), so that high‑
+    # energy carriers like ATP / NAD(H)/NADP(H) still need to be provided in
+    # the input species list or produced in the network.
+    if r_lc in COFACTORS_ALWAYS_AVAILABLE:
+        return True, "always_available_cofactor"
     # Check if it's directly available
-    elif r_lc in available_species_labels_lc:
-        reason = "direct_match"
-        is_available = True
+    if r_lc in available_species_labels_lc:
+        return True, "direct_match"
+
     # Check if it's a domain cofactor (part of enzyme structure)
     # Skip for acyl-ACP: acetyl-ACP, hexanoyl-ACP etc. must come from prior reactions, not the domain
-    elif enzyme_label and not coenzyme_flags.get("is_acyl_acp", False):
+    if enzyme_label and not coenzyme_flags.get("is_acyl_acp", False):
         domain_cofactors = get_enzyme_domain_cofactors(enzyme_label)
         # Ensure patterns are lowercase for consistent matching
         domain_cofactors_lc = [pattern.lower() for pattern in domain_cofactors]
-        for pattern in domain_cofactors_lc:
-            if pattern in r_lc:
-                matched_domain_pattern = pattern
-                break
-        if matched_domain_pattern:
-            reason = "domain_cofactor"
-            is_available = True
-        else:
-            reason = None
-            is_available = False
-    # Check for cofactor substitutions
-    elif r_lc in COFACTOR_SUBSTITUTIONS:
-        for substitute in COFACTOR_SUBSTITUTIONS[r_lc]:
-            if substitute in available_species_labels_lc:
-                reason = "substitution"
-                is_available = True
-                break
-        else:
-            reason = None
-            is_available = False
-    # Check ontology equivalents
-    else:
-        equivalents = get_ontology_equivalents(r_lc)
-        if any(eq in available_species_labels_lc for eq in equivalents):
-            reason = "ontology"
-            is_available = True
-        else:
-            reason = None
-            is_available = False
+        if any(pattern in r_lc for pattern in domain_cofactors_lc):
+            return True, "domain_cofactor"
 
-    return is_available, reason
+    # Check ontology equivalents
+    equivalents = get_ontology_equivalents(r_lc)
+    if any(eq in available_species_labels_lc for eq in equivalents):
+        return True, "ontology"
+
+    return False, None
 
 
 def validate_reaction_reactants(
     reactants: List[str],
     available_species_labels_lc: Set[str],
     enzyme_label: Optional[str] = None,
-    ec_number: Optional[str] = None
 ) -> tuple[bool, List[str]]:
     """
     Validate that all reactants for a reaction are available.
@@ -140,7 +116,6 @@ def validate_reaction_reactants(
         reactants (List[str]): List of reactant names
         available_species_labels_lc (Set[str]): Set of available species (lowercase)
         enzyme_label (str, optional): Enzyme label for domain cofactor checking
-        ec_number (str, optional): EC number for context-specific substitutions
         
     Returns:
         tuple[bool, List[str]]: (all_available, missing_reactants)
@@ -154,7 +129,6 @@ def validate_reaction_reactants(
             reactant,
             available_species_labels_lc,
             enzyme_label=enzyme_label,
-            ec_number=ec_number
         )
         
         if not is_available:

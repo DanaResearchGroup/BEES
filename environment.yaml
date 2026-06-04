@@ -17,4 +17,5 @@ dependencies:
   - pydantic
   - pytest
   - rdkit
-  
+  - conda-forge::python-libsbml
+
