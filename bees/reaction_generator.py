@@ -96,7 +96,7 @@ class ReactionGenerator:
                         "calibration rules) for production fitted corrections."
                     )
                     warnings.warn(msg, DeprecationWarning, stacklevel=2)
-                    self.logger.warning("DEPRECATION: %s", msg)
+                    self.logger.warning(f"DEPRECATION: {msg}")
                 self.kinetics_estimator = build_estimator(
                     getattr(self.bees_object.settings, "kinetics_estimator", None),
                     include_sd=include_sd,
