@@ -1,5 +1,4 @@
-# BEES Makefile (mirrors ARC: https://github.com/ReactionMechanismGenerator/ARC)
-# See also: https://reactionmechanismgenerator.github.io/ARC/installation.html
+# BEES Makefile 
 
 DEVTOOLS_DIR := devtools
 
