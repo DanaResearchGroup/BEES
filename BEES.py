@@ -3,8 +3,6 @@ r"""
 Executable wrapper for BEES (Biochemical Engine for Enzymatic kinetic modelS)
 
 
-This simply delegates to main.py so users don’t need to call `python main.py`. 
-
 For linux users:
 Make sure this file is executable: chmod +x BEES.py
 
@@ -13,13 +11,8 @@ To run BEES from anywhere, add to your PATH (in ~/.bashrc or ~/.zshrc):
 
 Then you can run BEES like this:
 cd ~/BEES
-for linux users:
-./BEES.py -i ~/BEES/examples/minimal/input.yml 
-for windows users:
-.\BEES.bat -i examples\\minimal\\input.yml 
+./BEES.py -i ~/BEES/projects/minimal/input.yml 
 
-# Note that some tests are still run good only on linux (for now)
-# More examples can bo fonded on projects folder.
 
 """
 
@@ -28,7 +21,8 @@ import os
 import re
 import argparse
 
-# Load .env.bees from repo root if present (sets CATPRED_DIR, etc.) so users don't need to source it
+# Load .env.bees BEFORE importing bees modules so that class-level env vars
+# (e.g. CATPRED_PYTHON in CatPredEstimator) are resolved at class-definition time.
 _repo_root = os.path.dirname(os.path.abspath(__file__))
 _env_bees = os.path.join(_repo_root, ".env.bees")
 if os.path.isfile(_env_bees):
@@ -46,14 +40,19 @@ if os.path.isfile(_env_bees):
 
 # Import necessary modules from BEES
 import bees.common as common
-
 from bees.main import BEES
+
 
 BEES_PATH = common.BEES_PATH   
 
-if "bees_env" not in sys.executable:
-    print("Please activate the 'bees_env' environment before running BEES.")
-    sys.exit(1)
+def _warn_if_not_bees_env() -> None:
+    """
+    Best-effort UX hint for local users.
+
+    IMPORTANT: do not hard-exit at import time (breaks `import BEES` and tooling).
+    """
+    if "bees_env" not in sys.executable:
+        print("Warning: it looks like you're not running inside the 'bees_env' environment.")
 
 def parse_and_load_input() -> dict:
     parser = argparse.ArgumentParser(description="BEES")
@@ -63,7 +62,7 @@ def parse_and_load_input() -> dict:
     parser.add_argument("-o", "--output_directory", type=str, help="Output directory")
     args = parser.parse_args()
 
-    default_input_path = os.path.join(BEES_PATH, "examples", "minimal", "input.yml")
+    default_input_path = os.path.join(BEES_PATH, "projects", "minimal", "input.yml")
     input_path = args.input_file or default_input_path
 
     input_data = common.read_yaml_file(input_path)
@@ -84,8 +83,8 @@ def parse_and_load_input() -> dict:
 def main():
     """
     the main BEES excutable function
-    Entrypoint without try/except — exceptions bubble up.
     """
+    _warn_if_not_bees_env()
     input_data = parse_and_load_input()
     bees_instance = BEES(input_data=input_data)
     results = bees_instance.execute()
@@ -93,7 +92,7 @@ def main():
     # Print summary of results
     if results and results.get('success'):
         print(f"\n{'='*60}")
-        print(f"✓ BEES Execution Summary:")
+        print("BEES Execution Summary:")
         print(f"  Project: {results['project']}")
         print(f"  Reactions Generated: {results['n_reactions']}")
         print(f"  Execution Time: {results['execution_time']}")
@@ -101,7 +100,7 @@ def main():
             print(f"  Summary: {results['summary_path']}")
         print(f"{'='*60}\n")
     else:
-        print(f"\n⚠ BEES execution completed with warnings or errors.")
+        print("\nBEES execution completed with warnings or errors.")
         if results and results.get('message'):
             print(f"  {results['message']}\n")
     
