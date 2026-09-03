@@ -394,7 +394,7 @@ class EnlargerExporter:
         """Export the network as SBML Level 3 Version 2.
 
         One compartment ``compartment1`` (1 L so mmol = mM). Core-only by default.
-        Kinetic laws: reversible Liebermeister-Klipp when thermo is usable,
+        Kinetic laws: reversible common-modular (CM) when thermo is usable,
         else forward-only MM. ``strict_invariant=True`` raises on production-only
         species (warns by default). See knowledge/functions/EXPORTER.md.
         """

@@ -42,7 +42,7 @@ def explicit_product_km(reaction: GeneratedReaction, label: str) -> Optional[flo
 
 
 def _product_labels_requiring_km(reaction: GeneratedReaction) -> List[str]:
-    """Product labels that must have explicit Kms for Liebermeister / reversible MM.
+    """Product labels that must have explicit Kms for CM / reversible MM.
 
     Buffered cofactors (H2O, H+, CO2, …) are omitted — they stay in stoichiometry
     and Q/Keq but must not gate the rate-law form.
@@ -122,7 +122,7 @@ def compute_mm_rate(
     Compute the irreversible reaction rate.
 
     When all product Kms are explicitly available in km_per_substrate, uses
-    the Liebermeister symmetric denominator with forward-only flux:
+    the common-modular (CM) symmetric denominator with forward-only flux:
 
         numerator   = Vmax * prod_i (S_i/Km_s,i)^νi
         denominator = prod_i (1+S_i/Km_s,i)^νi + prod_j (1+P_j/Km_p,j)^νj - 1
@@ -233,8 +233,9 @@ def compute_reversible_mm_rate(
     enzyme_concentrations: Dict[str, float],
 ) -> float:
     """
-    Reversible Michaelis-Menten rate — multi-reactant convenience kinetics
-    (Liebermeister & Klipp 2006), corrected for stoichiometric coefficients.
+    Reversible Michaelis-Menten rate — common-modular (CM) kinetics
+    (Liebermeister, Uhlendorf & Klipp 2010), with stoichiometric exponents.
+    When all ν = 1 this coincides with convenience kinetics (2006).
 
     Requires reaction.thermo with irreversible=False and a finite Keq.
     Falls back to compute_mm_rate() when thermo is absent/irreversible, or

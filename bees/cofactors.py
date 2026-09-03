@@ -66,7 +66,7 @@ def is_rate_law_exempt_cofactor(label: str) -> bool:
     """True for buffered / always-available cofactors (H2O, H+, CO2, metals, …).
 
     These species participate in stoichiometry and Q/Keq but must not gate the
-    Liebermeister / reversible-MM product-Km completeness check — requiring a
+    common-modular (CM) / reversible-MM product-Km completeness check — requiring a
     CatPred Km for H2O or CO2 silently collapses nearly every FAS reaction onto
     the legacy forward-only rate law. Regulatory cofactors (CoA, NAD, NADP,
     ATP, …) are NOT exempt: they need explicit product Kms for back-pressure.
