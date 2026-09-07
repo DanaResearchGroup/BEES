@@ -2,6 +2,9 @@
 r"""
 Local (one-factor-at-a-time) sensitivity analysis for the E. coli FAS-II model.
 
+Main-text tornado is a 2-panel figure: (A) kcat, (B) Km. ΔG°′ is a
+standalone SI figure. CSVs remain per-parameter.
+
 Run (repo root, bees_env):
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/sensitivity_analysis.py --tornado-only --bare --jobs 16
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/sensitivity_analysis.py --feedback-only
@@ -66,8 +69,8 @@ OUT_KI_STEM = OUT_KI_FABH_STEM
 KCAT_LN_STEP = 0.05          # perturb kcat/Km/Ki by exp(+/- h) in ln-space
 KM_LN_STEP = KCAT_LN_STEP
 KI_LN_STEP = KCAT_LN_STEP
-DG_STEP_KCAL = 0.5           # ΔG°′ perturbation, kcal/mol
-KCAL_PER_KJ = 1.0 / 4.184
+KJ_PER_KCAL = 4.184
+DG_STEP_KJ = 0.5 * KJ_PER_KCAL  # ±2.092 kJ/mol; same physical step as former ±0.5 kcal
 R_KJ = 8.314462618e-3        # kJ / (mol K)
 DYNAMIC_FRAC = 0.5           # t* = time baseline PE reaches this fraction of final
 TOP_N = 10
@@ -303,7 +306,7 @@ def _worker_dg(job):
     thermo.keq = math.exp(-(dg0 - dg_step_kj) / (R_KJ * T))
     pe_m = _pe_at_model(model, t_end, t_star, _W_SIM_KW)
 
-    return rxn_idx, label, _fd_pe(pe_p, pe_m, 2.0 * DG_STEP_KCAL)
+    return rxn_idx, label, _fd_pe(pe_p, pe_m, 2.0 * dg_step_kj)
 
 
 def _run_tornado_jobs(tag, jobs, worker, model, sim_kw, temperature=None, n_jobs=None):
@@ -389,7 +392,7 @@ def dg_sensitivity(enlarger, model, temperature, t_star, n_jobs=None):
     seen = {}
     t_end = _sweep_end_time(enlarger, t_star)
     sim_kw = _sim_kwargs(enlarger)
-    dg_step_kj = DG_STEP_KCAL / KCAL_PER_KJ
+    dg_step_kj = DG_STEP_KJ
     jobs = []
     for idx, rxn in enumerate(model.core_reactions):
         thermo = getattr(rxn, "thermo", None)
@@ -534,15 +537,16 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
         np.minimum(pe_p_i, pe_m_i),
         np.maximum(pe_p_i, pe_m_i),
         color="#2980b9",
-        alpha=0.35,
+        alpha=0.40,
         linewidth=0,
+        edgecolor="none",
         zorder=1,
-        label=rf"Ki × $e^{{\pm {KI_LN_STEP}}}$ ($\approx \pm${rel_pct:.1f}%)",
+        label=rf"Ki $\pm${rel_pct:.0f}%",
     )
     ax.plot(
         t_min, pe_base,
         color="#2c3e50", linewidth=2.0, zorder=3,
-        label=f"Ki = {ki_uM:.1f} µM",
+        label=f"Ki = {ki_uM:.0f} µM",
     )
     ax.plot(
         sim_off.t / 60.0, pe_off,
@@ -554,7 +558,6 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
         color="black", s=28, zorder=5,
         label="Experimental",
     )
-    ax.axvline(t_star / 60.0, color="black", linewidth=0.8, linestyle="-.", alpha=0.6)
     ax.set_xlabel("time (min)")
     ax.set_ylabel("PE (µM)")
     if not BARE:
@@ -596,6 +599,17 @@ def _tornado(ax, rows, xlabel, title, panel_letter=None):
     ax.set_xlabel(xlabel, fontsize=12)
     if not BARE:
         ax.set_title(title, fontsize=12)
+    if panel_letter:
+        ax.text(
+            -0.02,
+            1.04,
+            f"({panel_letter})",
+            transform=ax.transAxes,
+            fontsize=16,
+            fontweight="bold",
+            va="bottom",
+            ha="left",
+        )
     return panel_letter
 
 
@@ -621,40 +635,45 @@ def _load_tornado_csv(stem):
     return rows
 
 
+def _save_tornado_png_pdf(fig, stem):
+    for ext in ("png", "pdf"):
+        path = f"{stem}.{ext}"
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+        print(f"wrote {path}")
+    plt.close(fig)
+
+
 def make_figure(kcat_rows, km_rows, dg_rows, t_star, write_csv=True):
-    """Write three standalone tornado figures (ΔG°′, k_cat, K_m); no panel letters."""
-    panels = [
-        (
-            dg_rows,
-            r"$d\ln(\mathrm{PE})\,/\,d(\Delta G^{\circ\prime})$  [(kcal/mol)$^{-1}$]",
-            f"Thermodynamic sensitivity at fixed t*={t_star:.0f}s",
-            f"{OUT_STEM}_dgr",
-        ),
-        (
-            kcat_rows,
-            r"$d\ln(\mathrm{PE})\,/\,d\ln(k_{\mathrm{cat}})$",
-            f"kcat sensitivity at fixed t*={t_star:.0f}s "
-            f"({int(DYNAMIC_FRAC * 100)}% of baseline final)",
-            f"{OUT_STEM}_kcat",
-        ),
-        (
-            km_rows,
-            r"$d\ln(\mathrm{PE})\,/\,d\ln(K_m)$",
-            f"Km sensitivity at fixed t*={t_star:.0f}s",
-            f"{OUT_STEM}_km",
-        ),
-    ]
-    for rows, xlabel, title, stem in panels:
-        if write_csv:
+    """Main: 2-panel kcat (A) / Km (B). SI: standalone ΔG°′ tornado. CSVs for all three."""
+    csv_panels = (
+        (kcat_rows, f"{OUT_STEM}_kcat"),
+        (km_rows, f"{OUT_STEM}_km"),
+        (dg_rows, f"{OUT_STEM}_dgr"),
+    )
+    if write_csv:
+        for rows, stem in csv_panels:
             _save_tornado_csv(stem, rows)
-        fig, ax = plt.subplots(figsize=(12, 7))
-        _tornado(ax, rows, xlabel, title)
-        fig.subplots_adjust(left=0.48, right=0.98, top=0.92, bottom=0.12)
-        for ext in ("png", "pdf"):
-            path = f"{stem}.{ext}"
-            fig.savefig(path, dpi=200, bbox_inches="tight")
-            print(f"wrote {path}")
-        plt.close(fig)
+
+    xlabel_kcat = r"$d\ln(\mathrm{PE})\,/\,d\ln(k_{\mathrm{cat}})$"
+    xlabel_km = r"$d\ln(\mathrm{PE})\,/\,d\ln(K_m)$"
+    xlabel_dg = r"$d\ln(\mathrm{PE})\,/\,d(\Delta G^{\circ\prime})\ \mathrm{mol}/\mathrm{kJ}$"
+    title_kcat = (
+        f"kcat sensitivity at fixed t*={t_star:.0f}s "
+        f"({int(DYNAMIC_FRAC * 100)}% of baseline final)"
+    )
+    title_km = f"Km sensitivity at fixed t*={t_star:.0f}s"
+    title_dg = f"Thermodynamic sensitivity at fixed t*={t_star:.0f}s"
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 13), sharex=False)
+    _tornado(axes[0], kcat_rows, xlabel_kcat, title_kcat, panel_letter="A")
+    _tornado(axes[1], km_rows, xlabel_km, title_km, panel_letter="B")
+    fig.subplots_adjust(left=0.48, right=0.98, top=0.96, bottom=0.06, hspace=0.28)
+    _save_tornado_png_pdf(fig, f"{OUT_STEM}_kcat_km")
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    _tornado(ax, dg_rows, xlabel_dg, title_dg)
+    fig.subplots_adjust(left=0.48, right=0.98, top=0.92, bottom=0.12)
+    _save_tornado_png_pdf(fig, f"{OUT_STEM}_dgr")
 
 
 def replot_tornado_from_csv(t_star=None):
@@ -705,7 +724,7 @@ def main(feedback_only=False, tornado_only=False):
 
         _print_table("kcat (dln PE / dln kcat)", kcat_rows)
         _print_table("Km (dln PE / dln Km)", km_rows)
-        _print_table("ΔG°′ (dln PE / d ΔG°′, per kcal/mol)", dg_rows)
+        _print_table("ΔG°′ (dln PE / d ΔG°′, mol/kJ)", dg_rows)
         make_figure(kcat_rows, km_rows, dg_rows, t_star)
     else:
         print("Skipping tornado sweeps (--feedback-only).", flush=True)

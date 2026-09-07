@@ -202,7 +202,7 @@ class TestThermoEngineWithMockedCC:
 
     def test_compute_keq_returns_raw_irreversibility_false(self, tmp_path: Path):
         # compute_keq returns raw thermo with irreversible=False.
-        # The |ΔG°'| cutoff has moved to DgrIrreversibility in
+        # The ΔG°' < −cutoff rule has moved to DgrIrreversibility in
         # bees.rules.physics_rules and runs via RULES.apply_all.
         engine = self._engine(tmp_path, dgr_kJmol=-50.0)
         td = engine.compute_keq(**self._kwargs())

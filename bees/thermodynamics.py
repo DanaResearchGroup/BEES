@@ -26,7 +26,7 @@ _DEFAULT_CACHE_DIR = Path(os.environ.get(
     str(Path.home() / ".cache" / "bees" / "equilibrator"),
 ))
 
-_DGR_IRREVERSIBLE_KJMOL = 30.0  # |ΔG°'| above this ⇒ treat as irreversible
+_DGR_IRREVERSIBLE_KJMOL = 30.0  # ΔG°' < −this ⇒ forward-irreversible (rule layer)
 _SIGMA_WARN_KJMOL = 10.0        # σ above this ⇒ Keq uncertain by >50×
 
 logger = logging.getLogger("BEES")

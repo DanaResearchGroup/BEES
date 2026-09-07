@@ -78,7 +78,12 @@ def _has_co2_product(reaction) -> bool:
     return False
 
 class DgrIrreversibility(Rule):
-    """Flag irreversible when |ΔG°'| > cutoff or Keq invalid."""
+    """Flag forward-irreversible when ΔG°' < −cutoff or Keq invalid.
+
+    Strongly endergonic steps (ΔG°' > +cutoff) are left reversible so they
+    are not forced downhill the wrong way. Invalid/non-positive Keq still
+    cannot support a reversible rate law.
+    """
 
     def applies_to(self, reaction) -> bool:
         thermo = getattr(reaction, "thermo", None)
@@ -93,7 +98,7 @@ class DgrIrreversibility(Rule):
         keq = thermo.keq
         cutoff = float(self.params["dgr_kjmol_cutoff"])
         if (
-            (math.isfinite(dgr) and abs(dgr) > cutoff)
+            (math.isfinite(dgr) and dgr < -cutoff)
             or not math.isfinite(keq)
             or keq <= 0.0
         ):
@@ -196,11 +201,23 @@ class HaldaneReverseKcat(Rule):
         else:
             thermo.kcat_rev = kcat_rev
 
-_alberty_2003 = Reference(
-    authors=("Alberty, R. A.",),
-    title="Thermodynamics of Biochemical Reactions",
-    year="2003",
-    journal="Wiley-Interscience",
+_noor_2014 = Reference(
+    authors=(
+        "Noor, E.",
+        "Bar-Even, A.",
+        "Flamholz, A.",
+        "Reznik, E.",
+        "Liebermeister, W.",
+        "Milo, R.",
+    ),
+    title=(
+        "Pathway thermodynamics highlights kinetic obstacles in central metabolism"
+    ),
+    year="2014",
+    journal="PLoS Computational Biology",
+    volume="10",
+    pages="e1003483",
+    doi="10.1371/journal.pcbi.1003483",
 )
 _haldane_1930 = Reference(
     authors=("Haldane, J. B. S.",),
@@ -230,9 +247,11 @@ _tanford_1980 = Reference(
 RULES.register(
     DgrIrreversibility(
         name="dgr_irreversibility",
-        description="Flag irreversible when |ΔG°'| > 30 kJ/mol or Keq invalid.",
-        reference=_alberty_2003,
-        reference_type="textbook",
+        description=(
+            "Flag forward-irreversible when ΔG°' < −30 kJ/mol or Keq invalid."
+        ),
+        reference=_noor_2014,
+        reference_type="theoretical",
         params={"dgr_kjmol_cutoff": DGR_IRREVERSIBLE_KJMOL},
     )
 )

@@ -124,14 +124,21 @@ class TestDgrIrreversibility:
         assert rxn.thermo.irreversible is True
         assert rxn.thermo.kcat_rev is None
 
-    def test_flag_set_for_strongly_positive_dgr(self):
+    def test_flag_not_set_for_strongly_positive_dgr(self):
+        # Endergonic as written must not be forced one-way forward.
         rxn = FakeReaction(thermo=FakeThermo(dgr_prime_kJmol=45.0, keq=1e-6))
         self._rule().apply(rxn)
-        assert rxn.thermo.irreversible is True
+        assert rxn.thermo.irreversible is False
 
     def test_flag_left_alone_for_moderate_dgr(self):
         rxn = FakeReaction(thermo=FakeThermo(dgr_prime_kJmol=-10.0, keq=1.0))
         self._rule().apply(rxn)
+        assert rxn.thermo.irreversible is False
+
+    def test_large_cutoff_does_not_flag_exergonic(self):
+        rule = _rule(DgrIrreversibility, params={"dgr_kjmol_cutoff": 1000.0})
+        rxn = FakeReaction(thermo=FakeThermo(dgr_prime_kJmol=-50.0, keq=1e6))
+        rule.apply(rxn)
         assert rxn.thermo.irreversible is False
 
     def test_flag_set_for_nonfinite_keq(self):

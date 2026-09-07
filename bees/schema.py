@@ -171,7 +171,7 @@ class Settings(BaseModel):
     save_ode_equations: bool = True
 
     thermo_smiles_substitutions: Optional[Dict[str, str]] = None
-    thermo_irreversible_cutoff_kJmol: Annotated[float, Field(gt=0)] = 30.0  # |ΔG°'| kJ/mol
+    thermo_irreversible_cutoff_kJmol: Annotated[float, Field(gt=0)] = 30.0  # ΔG°' < −this kJ/mol
 
     model_config = ConfigDict(extra="forbid")
 

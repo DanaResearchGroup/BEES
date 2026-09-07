@@ -671,7 +671,7 @@ class ReactionGenerator:
         provided_species_labels_lc,
         substitutor=None,
     ) -> None:
-        """Attach raw ΔG°′ / Keq only; no cutoff, Haldane, or kcat_rev ceiling."""
+        """Attach raw ΔG°′ / Keq only; no cutoff or Haldane."""
         kin = reaction.kinetics
         stoich = reaction.stoichiometry
 

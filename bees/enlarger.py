@@ -728,6 +728,10 @@ class IterativeEnlarger:
         rules.configure_calibrations(
             getattr(self.bees_object.settings, "calibrations", None) or []
         )
+        # YAML knob was stored on ThermoEngine but unused; the rule layer owns the cutoff.
+        rules.by_name("dgr_irreversibility").params["dgr_kjmol_cutoff"] = float(
+            getattr(self.bees_object.settings, "thermo_irreversible_cutoff_kJmol", 30.0)
+        )
         all_reactions = list(self.model.core_reactions) + list(self.model.edge_reactions)
         rules.apply_all(all_reactions)
         self._sync_template_reversibility(all_reactions)
