@@ -3,11 +3,11 @@ Biochemical Engine for Enzymatic kinetic modelS
 
 ## What BEES does
 
-- Builds biochemical reaction networks from species + enzymes (EC numbers).
-- Pulls reaction templates and stoichiometry from a local database (37K+ reactions).
-- Estimates missing kinetics via [CatPred](https://github.com/DanaResearchGroup/CatPred) when the database has no match.
-- Computes thermodynamics (ΔG°′, Keq, reverse kcat) via [equilibrator-api](https://gitlab.com/equilibrator/equilibrator-api).
-- Applies a small rules layer after kinetics and thermo: physics corrections always run, system-specific calibrations are optional.
+- Builds biochemical reaction networks from species + enzymes.
+- Pulls reaction templates and stoichiometry from a local databases
+- Estimates missing kinetics via integrated Deep learning estimator CatPred 
+- Computes thermodynamics (ΔG°′, Keq, reverse kcat) via equilibrator-api package.
+- Applies a small prof of conecpt rules layer after kinetics and thermo: physics corrections always run, system-specific calibrations are optional.
 - Grows the network with a core–edge iterative enlargement algorithm driven by ODE simulation.
 - Exports a reaction summary, tables, plots, flux analysis, and an SBML Level 3 `model.xml`.
 
@@ -76,6 +76,8 @@ Set `database.name` to a file in `db/` (without `.csv`):
 - `db` → `db/db.csv` (general BKMS-derived set)
 - `ecoli` → `db/ecoli.csv`
 
+Enable in the input
+
 ```yaml
 database:
   name: db
@@ -112,6 +114,8 @@ Physics corrections (irreversibility cutoffs, Haldane reverse kcat, and similar)
 System-specific calibrations are **off by default**. 
 
 This version inculde only small proof of conecpt calibration and rules.
+
+Enable in the input:
 
 ```yaml
 settings:
