@@ -57,3 +57,39 @@ class TestBaseKineticsEstimator:
                 enzyme_sequence="MKTAY",
                 reactant_smiles={"S": "C"},
             )
+
+
+class TestPersistentCache:
+    """Persistent prediction cache (default ON; CatPred is the slow step)."""
+
+    def test_on_by_default_global_path(self, monkeypatch, tmp_path):
+        from bees.kinetics_estimator import CatPredEstimator
+        monkeypatch.delenv("BEES_CATPRED_CACHE", raising=False)
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        est = CatPredEstimator()
+        assert est._cache_path == str(tmp_path / "bees" / "catpred_predictions.pkl")
+
+    def test_disabled_when_off(self, monkeypatch):
+        from bees.kinetics_estimator import CatPredEstimator
+        for val in ("off", "0", "none", "False"):
+            monkeypatch.setenv("BEES_CATPRED_CACHE", val)
+            est = CatPredEstimator()
+            assert est._cache_path is None, f"{val!r} should disable the cache"
+            est._save_persistent_cache()  # no-op, must not raise
+
+    def test_roundtrip(self, tmp_path, monkeypatch):
+        from bees.kinetics_estimator import CatPredEstimator
+        cache = tmp_path / "catpred.pkl"
+        monkeypatch.setenv("BEES_CATPRED_CACHE", str(cache))
+
+        est = CatPredEstimator(include_sd=True)
+        assert est._cache_path == str(cache)
+        key = ("SEQ", (("S", "C"),), None, True)
+        est._memo[key] = EstimatedKinetics(km=0.05, kcat=3.14, source="catpred")
+        est._save_persistent_cache()
+        assert cache.exists()
+
+        est2 = CatPredEstimator(include_sd=True)
+        assert key in est2._memo
+        assert est2._memo[key].kcat == 3.14
+        assert est2._memo[key].km == 0.05

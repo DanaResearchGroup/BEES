@@ -13,12 +13,9 @@ import pytest
 import os
 
 import time
-import datetime
 import yaml
-import numpy as np
 from unittest.mock import patch
 import re
-import math
 
 
 # Import functions and constants from the common module
@@ -28,18 +25,22 @@ from bees.common import (
     InputError,
     read_yaml_file,
     save_yaml_file,
-    from_yaml,
     to_yaml,
-    globalize_paths,
-    globalize_path,
     time_lapse,
     dict_to_str,
-    calculate_arrhenius_rate_coefficient,
     heavy_atom_count,
     get_ontology_equivalents,
-    R, # Gas constant
-    EA_UNIT_CONVERSION, # Energy unit conversion dictionary
 )
+
+def _reset_ontology_caches():
+    import bees.common as common
+    import bees.reaction_utils as reaction_utils
+    common._CHEMICAL_ONTOLOGY = None
+    common._ONTOLOGY_CATEGORIES_RAW = None
+    common.get_ontology_equivalents.cache_clear()
+    reaction_utils._EC_ALIASES_CACHE = None
+    reaction_utils._ENZYME_DOMAIN_COFACTORS_CACHE = None
+
 
 # Mock BEES_PATH for isolated testing
 @pytest.fixture(autouse=True)
@@ -49,16 +50,28 @@ def mock_bees_paths(tmp_path):
     for isolated testing of file operations.
     Also creates a dummy .git directory for git-related tests.
     """
+    import shutil
+    import bees.common as common
+
+    real_root = common.BEES_PATH
     mock_bees_root = tmp_path / 'BEES_ROOT'
     mock_git_dir = mock_bees_root / '.git'
 
     os.makedirs(mock_bees_root, exist_ok=True)
     mock_git_dir.mkdir(exist_ok=True) # Create dummy .git directory for git tests
 
-    # Patch the constants in the common module
+    # Ontology loaders cache by first hit. Without a copy, this fixture
+    # caches an empty table and later test files see no acyl-CoA categories.
+    db_src = os.path.join(real_root, 'db', 'ontology.yaml')
+    db_dst = mock_bees_root / 'db'
+    db_dst.mkdir(exist_ok=True)
+    if os.path.exists(db_src):
+        shutil.copy(db_src, db_dst / 'ontology.yaml')
+
+    _reset_ontology_caches()
     with patch('bees.common.BEES_PATH', str(mock_bees_root)):
         yield
-        # Cleanup after tests
+    _reset_ontology_caches()
 
 def test_get_git_branch():
     """Test get_git_branch function."""
@@ -166,15 +179,6 @@ def test_save_yaml_file(tmp_path):
     with pytest.raises(InputError, match="path must be a string"):
         save_yaml_file(123, {})
 
-def test_from_yaml():
-    """Test from_yaml function."""
-    yaml_string = """
-    name: Test
-    value: 42
-    """
-    data = from_yaml(yaml_string)
-    assert data == {"name": "Test", "value": 42}
-
 def test_to_yaml():
     """Test to_yaml function."""
     data = {"name": "Test", "value": 42}
@@ -190,132 +194,6 @@ def test_to_yaml():
     # The regex should be flexible for leading spaces and the exact chomping indicator.
     # It should match "description: " followed by optional " |-" and then the multiline content.
     assert re.search(r"description:\s*\|-?\s*\n\s*This is a\n\s*multiline\n\s*string\.?", yaml_string_multiline) is not None
-
-
-def test_globalize_paths(tmp_path):
-    """Test globalize_paths function."""
-    original_content = """
-path_to_calc: /old/path/calcs/Species/mol1.xyz
-project_directory: /old/path/
-another_path: /some/other/file.txt
-    """
-    original_file = tmp_path / "config.yml"
-    original_file.write_text(original_content)
-
-    new_project_dir_path = tmp_path / "new_project_root" # Keep as Path object
-    os.makedirs(new_project_dir_path, exist_ok=True)
-
-    # Simulate the structure expected by globalize_path
-    (new_project_dir_path / "calcs" / "Species").mkdir(parents=True, exist_ok=True)
-
-    # Pass new_project_dir as string to globalize_paths as it expects a string
-    globalized_file_path = globalize_paths(str(original_file), str(new_project_dir_path))
-    
-    assert "globalized" in globalized_file_path
-    
-    with open(globalized_file_path, 'r') as f:
-        content = f.read()
-
-    # Check that paths were correctly rebased
-    # Use os.path.join for robust path construction in assertions
-    expected_calc_path = os.path.join(os.path.normpath(str(new_project_dir_path)), 'alcs', 'Species', 'mol1.xyz')
-    expected_project_dir_line = f"project_directory: {os.path.normpath(str(new_project_dir_path)).rstrip(os.sep) + os.sep}"
-
-    # Assert that the rebased paths are present in the content
-    assert expected_calc_path.replace(os.sep, '/') in content.replace('\\', '/')
-    assert expected_project_dir_line in content
-    assert "another_path: /some/other/file.txt" in content # Should remain unchanged
-
-    # Test case where no changes are needed
-    current_project_root_path = tmp_path / "current_project_root"
-    os.makedirs(current_project_root_path, exist_ok=True)
-    (current_project_root_path / "calcs" / "Species").mkdir(parents=True, exist_ok=True)
-
-    # Construct the content for the "no change" test case to ensure exact match
-    # It's crucial that this matches what globalize_path would return if no change is needed.
-    # Ensure consistent path normalization and trailing slash for the content.
-    normalized_current_project_root_str = os.path.normpath(str(current_project_root_path)).rstrip(os.sep) + os.sep
-    # The content must exactly match what globalize_path would return for no change.
-    # This means preserving leading spaces and ensuring correct newlines.
-    no_change_content = f"""
-path_to_calc: {normalized_current_project_root_str}calcs/Species/mol1.xyz
-project_directory: {normalized_current_project_root_str}
-"""
-    # Split, strip each line, and join with os.linesep to ensure consistent newlines
-    # and remove any leading/trailing blank lines from the f-string itself.
-    lines_for_no_change_file = [line.strip() + os.linesep for line in no_change_content.strip().splitlines()]
-    # Add a final newline if the original template had one after the last line,
-    # or ensure the file ends consistently with how globalize_path would output it.
-    final_no_change_content = "".join(lines_for_no_change_file)
-    if not final_no_change_content.endswith(os.linesep):
-        final_no_change_content += os.linesep
-    
-    no_change_file = tmp_path / "no_change.yml"
-    no_change_file.write_text(final_no_change_content)
-    
-    globalized_no_change_path = globalize_paths(str(no_change_file), str(current_project_root_path))
-    assert globalized_no_change_path == str(no_change_file) # No _globalized file should be created
-
-def test_globalize_path():
-    """Test globalize_path function."""
-    project_dir = os.path.normpath("/new/project/").rstrip(os.sep) + os.sep # Ensure project_dir is normalized for the test
-    
-    # Test with /calcs/Species/
-    path_str = "path_to_calc: /old/path/calcs/Species/mol.xyz\n" # Input string has newline
-    expected = "path_to_calc: /new/project/alcs/Species/mol.xyz\n"
-    assert globalize_path(path_str, project_dir).replace('\\', '/') == expected.replace('\\', '/')
-
-    # Test with /calcs/TSs/
-    path_str = "another_calc: /old/path/calcs/TSs/ts1.log\n"
-    expected = "another_calc: /new/project/calcs/TSs/ts1.log\n"
-    assert globalize_path(path_str, project_dir).replace('\\', '/') == expected.replace('\\', '/')
-
-    # Test with project_directory field
-    path_str = "  project_directory: /old/project/root\n"
-    expected = "  project_directory: /new/project/\n"
-    assert globalize_path(path_str, project_dir).replace('\\', '/') == expected.replace('\\', '/')
-
-    # Test with no relevant path pattern
-    path_str = "just some text\n"
-    assert globalize_path(path_str, project_dir) == path_str
-
-    # Test with project_directory already in path (should not modify)
-    # This string must exactly match what globalize_path would output if no change is made.
-    path_str_already_in_path = f"path_to_calc: {project_dir}calcs/Species/mol.xyz\n"
-    assert globalize_path(path_str_already_in_path, project_dir) == path_str_already_in_path
-
-    # Test with a path that is just the path, no key
-    path_str_only = "/old/path/calcs/Species/mol.xyz\n"
-    expected_only = "/new/project/alcs/Species/mol.xyz\n"
-    assert globalize_path(path_str_only, project_dir) == expected_only
-
-    # Test with a path that is just the project directory, no key
-    path_str_project_dir_only = "/old/project/root/\n"
-    expected_project_dir_only = "/new/project/\n"
-    assert globalize_path(path_str_project_dir_only, project_dir) == expected_project_dir_only
-
-    # Test with a path that is already the project directory, no key, no change expected
-    path_str_already_globalized = "/new/project/\n"
-    assert globalize_path(path_str_already_globalized, project_dir) == path_str_already_globalized
-
-    # Test with no trailing newline in input string
-    path_str_no_newline = "path_to_calc: /old/path/calcs/Species/mol.xyz"
-    expected_no_newline = "path_to_calc: /new/project/alcs/Species/mol.xyz"
-    assert globalize_path(path_str_no_newline, project_dir) == expected_no_newline
-
-    # Test with no trailing newline, already globalized
-    path_str_no_newline_already_globalized = f"path_to_calc: {project_dir}calcs/Species/mol.xyz"
-    assert globalize_path(path_str_no_newline_already_globalized, project_dir) == path_str_no_newline_already_globalized
-
-    # Test with leading spaces and no key prefix
-    path_str_leading_ws = "  /old/path/calcs/Species/mol.xyz\n"
-    expected_leading_ws = "  /new/project/alcs/Species/mol.xyz\n"
-    assert globalize_path(path_str_leading_ws, project_dir) == expected_leading_ws
-
-    # Test with leading spaces and no key prefix, no newline
-    path_str_leading_ws_no_newline = "  /old/path/calcs/Species/mol.xyz"
-    expected_leading_ws_no_newline = "  /new/project/alcs/Species/mol.xyz"
-    assert globalize_path(path_str_leading_ws_no_newline, project_dir) == expected_leading_ws_no_newline
 
 
 def test_string_representer():
@@ -385,35 +263,6 @@ def test_dict_to_str():
         "  inner: val\n"
     )
     assert dict_to_str(test_dict_level, level=0) == expected_str_level
-
-def test_calculate_arrhenius_rate_coefficient():
-    """Test calculate_arrhenius_rate_coefficient function."""
-    # Test with typical values (example from RMG docs or similar)
-    A = 1e8 # cm^3/(mol*s)
-    n = 0.5
-    Ea = 10000 # J/mol
-    T = 300 # K
-    
-    # k = A * T^n * exp(-Ea / (R * T))
-    expected_k = A * (T ** n) * math.exp(-1 * (Ea / (R * T)))
-    assert calculate_arrhenius_rate_coefficient(A, n, Ea, T, Ea_units='J/mol') == pytest.approx(expected_k)
-
-    # Test with kJ/mol
-    Ea_kJ = 10 # kJ/mol
-    Ea_J = Ea_kJ * 1e3 # Convert to J/mol
-    expected_k_kJ = A * (T ** n) * math.exp(-1 * (Ea_J / (R * T)))
-    assert calculate_arrhenius_rate_coefficient(A, n, Ea_kJ, T, Ea_units='kJ/mol') == pytest.approx(expected_k_kJ)
-
-    # Test with kcal/mol
-    Ea_kcal = 2.39 # kcal/mol (approx 10 kJ/mol)
-    Ea_J_kcal = Ea_kcal * EA_UNIT_CONVERSION['kcal/mol']
-    expected_k_kcal = A * (T ** n) * math.exp(-1 * (Ea_J_kcal / (R * T)))
-    assert calculate_arrhenius_rate_coefficient(A, n, Ea_kcal, T, Ea_units='kcal/mol') == pytest.approx(expected_k_kcal)
-
-    # Test unsupported units
-    with pytest.raises(ValueError, match="Unsupported Ea units"):
-        calculate_arrhenius_rate_coefficient(A, n, Ea, T, Ea_units='invalid_unit')
-
 
 def test_heavy_atom_count_valid_smiles():
     # ethanol: C-C-O = 3 heavy atoms

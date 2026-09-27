@@ -46,10 +46,6 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Sphinx documentation
-docs/_build/
-
-
 # Jupyter Notebook
 .ipynb_checkpoints/
 
@@ -74,11 +70,8 @@ venv.bak/
 .spyderproject
 .spyproject
 
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
+#---gstack---
+.gstack/
 
 # mypy
 .mypy_cache/
@@ -94,11 +87,6 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-
-# PyCharm
-.idea/
-
-
 # BEES generated outputs
 /**/output/
 scratch/**/output/
@@ -111,13 +99,49 @@ scratch/**/output/
 # AI IDE files
 .cursor/
 .claude/
+CLAUDE.md
 
 # Temporary files
 .tmp/
-
 .env.bees
 .ruff_cache/
 
-
 # LibreOffice lock files for CSVs
 .~lock.*.csv#
+
+#banchmarking files
+ecmdb.json
+A kinetic rationale for functional redundancy in fatty acid biosynthesis/
+
+# reusable code
+scripts/
+
+#---  in workprojects ---
+projects/In_work/
+
+#experimental data
+projects/Glycolysis/experimental/
+
+# Glycolysis validation outputs (generated)
+projects/Glycolysis/ecoli/output_validate/
+projects/Glycolysis/ecoli/output_validate_mM/
+
+# --- Personal analysis / comparison scripts (not part of the repo) ---
+projects/Glycolysis/ecoli/compare_to_chassagnole.py
+projects/Glycolysis/ecoli/plot_kinetic_params.py
+
+# --- Generated figures ---
+BEES_equations.pdf
+projects/Glycolysis/ecoli/*.pdf
+projects/Glycolysis/ecoli/*.png
+projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/*.pdf
+projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/*.png
+
+# --- Konwledge---
+knowledge
+
+# --- docs ---
+docs
+ 
+# --- on_work (local scratch / future features; not tracked) ---
+on_work

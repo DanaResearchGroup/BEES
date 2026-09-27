@@ -49,16 +49,6 @@ class TestCoreSpecies:
         model.add_core_species(species_a)
         assert len(model.core_species) == 1
 
-    def test_get_core_species_by_label(self, model, species_a):
-        model.add_core_species(species_a)
-        sp = model.get_core_species_by_label("glucose")
-        assert sp is not None
-        assert sp.label == "Glucose"
-
-    def test_get_core_species_by_label_missing(self, model):
-        sp = model.get_core_species_by_label("water")
-        assert sp is None
-
 
 # ---------------------------------------------------------------------------
 # Edge species tests
@@ -117,20 +107,14 @@ class TestConcentrationVector:
         model.add_core_species(species_a)
         model.add_core_species(species_c)
 
-        vec = model.get_core_concentration_vector()
+        vec = model.get_all_concentration_vector()
         assert vec == [5.0, 2.0]
 
-        model.set_core_concentrations([4.0, 1.5])
+        model.set_all_concentrations([4.0, 1.5])
         # species_a is not constant -> updated
         assert model.core_species[0].concentration == 4.0
         # species_c is constant -> NOT updated
         assert model.core_species[1].concentration == 2.0
-
-    def test_get_core_species_labels(self, model, species_a, species_b):
-        model.add_core_species(species_a)
-        model.add_core_species(species_b)
-        labels = model.get_core_species_labels()
-        assert labels == ["Glucose", "Fructose-6P"]
 
     def test_get_all_species_labels_and_concentrations(self, model, species_a, species_b):
         model.add_core_species(species_a)

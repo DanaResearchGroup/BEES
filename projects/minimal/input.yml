@@ -44,6 +44,7 @@ database:
 
 settings:
   end_time: 1000.0
+  simulation_mode: iterative
   time_step: 2.0
   toleranceMoveToCore: 0.01
   toleranceKeepInEdge: 1.0e-09

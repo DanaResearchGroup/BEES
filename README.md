@@ -3,55 +3,125 @@ Biochemical Engine for Enzymatic kinetic modelS
 
 ## What BEES does
 
-- Builds biochemical reaction networks (EC-based stoichiometry).
-- Pulls reaction templates and stoichiometry from a local database (37K+ reactions).
-- Can estimate missing kinetics via [CatPred](https://github.com/DanaResearchGroup/CatPred) when the database has no match.
-- Implements the core–edge iterative enlargement algorithm.
-- Exports models to SBML (Level 3).
+- Builds biochemical reaction networks from species + enzymes using local db.
+- Estimates missing kinetics(Km and Kcat) via integrated Deep learning estimator CatPred.
+- Computes thermodynamics (ΔG°′, Keq,) via equilibrator-api package.
+- Applies a small proof of conecpt rules layer after kinetics and thermo: physics corrections always run, system-specific calibrations are optional.
+- Implements the flux based iterative algorithm
+- Exports results a reaction summary, tables, plots, flux analysis and an SBML Level 3 (`model.xml`).
 
 ## Installation
 
 **Prerequisites:** Python 3.12+, Conda. For CatPred: `git` and `wget` (or `curl`) on PATH.
 
-### Installation
-
 1. **Clone and enter the repo**
+   ```bash
+   git clone https://github.com/DanaResearchGroup/BEES.git
+   cd BEES
+   ```
 
-2. **In your terminal run:**
+2. **Install BEES + CatPred**
    ```bash
    ./install.sh
    ```
-   This creates the `bees_env` conda env, clones CatPred into the **parent** of BEES (`../CatPred`, `../catpred_pipeline`), downloads and extracts the pretrained data (~1 GB), and writes `.env.bees` in the BEES root. If the download or extraction fails, the script exits with a clear error.
+   This creates the `bees_env` conda env, clones CatPred into the **parent** of BEES (`../CatPred`, `../catpred_pipeline`), downloads pretrained data (~1 GB), and writes `.env.bees` in the BEES root. BEES loads `.env.bees` automatically (it is gitignored).
 
-3. **Try to run BEES:**
+   BEES only, no CatPred: `make install-bees`.
+3. **Run**
    ```bash
    conda activate bees_env
-   python BEES.py -i projects/Glycolysis/input.yml
+   python BEES.py -i projects/minimal/input.yml
    ```
 
-4. **Common issue — if the install script reports that it could not find `kcat/` and `km/`:** manually set `CATPRED_CHECKPOINT_BASE` to the directory that contains those folders (often `.../catpred_pipeline/data/pretrained/production`). Put it in `.env.bees` or export it before running; see [Manual CatPred setup](#kinetics-estimation-catpred) below.
+4. **If install cannot find `kcat/` and `km/`:** set `CATPRED_CHECKPOINT_BASE` to the directory that contains those folders (often `.../catpred_pipeline/data/pretrained/production`). Put it in `.env.bees` or export it before running. See [Kinetics estimation (CatPred)](#kinetics-estimation-catpred).
 
+## Quick start
 
-## Projects - Quick Start
+1. Copy an input YAML and edit it: `cp projects/minimal/input.yml my_input.yml`
+2. Set a project name, at least one species and one enzyme (with EC number), `environment` (temperature, pH), `database.name`, and `settings` (at least `end_time` or another termination criterion).
+3. Run: `python BEES.py -i my_input.yml`  
+   Other flags: `-v 10` (log level 10/20/30/40/50), `-o <dir>` (output directory), `-p <name>` (project name).
+4. Output lands in `<project_directory>/output/` (or `settings.output_directory`):
+   - `reactions_summary.txt`, `output.log`
+   - `simulation_profiles.csv`, plots
+   - `flux_analysis.csv`, `core_reactions_species.csv`, `edge_reactions_species.csv`
+   - `model.xml` (SBML Level 3)
 
-1. Copy and edit an input file: `cp projects/minimal/input.yml my_input.yml` — set project name, at least one species and one enzyme (with EC number), environment (temperature, pH), and settings (end_time, time_step).
-2. Run: `python BEES.py --input_file my_input.yml`
-3. Output appears in `output/` in your project folder: `reactions_summary.txt`, logs, simulation plots, and `model.xml`.
+Example configs in `projects/`:
 
-Example configs in `projects/`: `minimal/`, `Glycolysis/`, `fattyAcidSynthesis/`, and more. See `projects/Project_folder_README.md` for descriptions.
+- `minimal/` — first three glycolysis steps using the general db.
+- `fattyAcidSynthesis/fattyAcidSynthesis_ecoli/` — *E. coli* FAS II (uses `database.name: ecoli`)
+- `commented/` — annotated YAML template (every allowed key)
 
+## Input YAML
 
-## SBML Export
+Unknown keys are rejected. Full key list: `projects/commented/input.yml` 
 
-After every iterative enlargement run, BEES automatically generates an SBML Level 3 file (`model.xml`) in the project's output directory ready to run.
+Required top-level blocks: `project`, `species`, `enzymes`, `environment`, `settings`, `database`.
 
+Enzymes that need CatPred must include `amino_acid_sequence` (uppercase).
 
-**Manual CatPred setup (without install.sh):** clone CatPred into a sibling of BEES (e.g. `CatPred` and `catpred_pipeline`), download the pretrained archive into `catpred_pipeline`, extract it, then create the `catpred` conda env. Set `CATPRED_DIR` to the CatPred clone, `CATPRED_CHECKPOINT_BASE` to the directory that contains `kcat/` and `km/` (often `.../catpred_pipeline/data/pretrained/production`), and `CATPRED_CONDA_ENV=catpred`. BEES auto-loads `.env.bees` when present; otherwise export these in your shell before running.
+Two run modes (`settings.simulation_mode`):
+
+- `iterative` — core–edge enlargement + ODE (default when a termination criterion is set and `toleranceMoveToCore > 0`)
+- `batch` — reaction discovery only, no kinetics-driven pruning
+
+At least one of `end_time`, `termination_conversion`, or `termination_rate_ratio` is required in iterative mode.
+
+## Database
+
+Set `database.name` to a file in `db/` (without `.csv`):
+
+- `db` → `db/db.csv` (general BKMS-derived set)
+- `ecoli` → `db/ecoli.csv`
+
+Enable in the input
+
+```yaml
+database:
+  name: db
+```
+
+## Kinetics estimation (CatPred)
+
+Enable in the input:
+
+```yaml
+settings:
+  estimate_kinetics: true
+  kinetics_estimator: catpred
+  kinetics_include_sd: false
+  smiles_mode: auto   # or 'interactive' to prompt for missing SMILES
+```
+
+Predictions able to be cached on disk by default (`~/.cache/bees/catpred_predictions.pkl`), so the first run of a network is slow and later runs skip the ML step. Disable with `BEES_CATPRED_CACHE=off`.
+
+**Manual CatPred setup (without install.sh):** clone CatPred into a sibling of BEES (`CatPred` and `catpred_pipeline`), download the pretrained archive into `catpred_pipeline`, extract it, then create the `catpred` conda env. Set `CATPRED_DIR` to the CatPred clone, `CATPRED_CHECKPOINT_BASE` to the directory that contains `kcat/` and `km/`, and `CATPRED_CONDA_ENV=catpred`.
+
+## Thermodynamics (equilibrator-api)
+
+BEES computes ΔG°′ / Keq at the model's pH, ionic strength, pMg, and temperature. The first run downloads Component-Contribution data (~hundreds of MB) into `~/.cache/equilibrator`.
+
+Set `BEES_DISABLE_THERMO=1` to skip this layer (every reaction is then treated as irreversible).
+
+## Rules and calibrations
+
+Enable in the input:
+
+```yaml
+settings:
+  calibrations:
+    - fabI_enoyl_reductase_measured_kcat
+    - tesa_long_chain_preference
+```
 
 
 ## Development
 
-Run tests: `pytest tests/ -v` (or `make test`).
+```bash
+conda activate bees_env
+pytest tests/ -v    # or: make test
+```
 
 ## License
 

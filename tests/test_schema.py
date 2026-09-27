@@ -18,7 +18,36 @@ from bees.schema import (
     Settings,
     Database,
     InputBase,
+    FeedbackInhibition,
 )
+
+
+def test_feedback_inhibition_spec():
+    """Opt-in feedback inhibition: valid spec, defaults, and validation."""
+    # Valid, with explicit hand-set Ki.
+    spec = FeedbackInhibition(inhibitors=["hexadecanoate", "octadecanoate"], ki=0.005)
+    assert spec.inhibitors == ["hexadecanoate", "octadecanoate"]
+    assert spec.ki == 0.005
+    assert spec.hill == 1.0  # default
+    # ki may be None (Stage-2 "predict via CatPred" sentinel).
+    assert FeedbackInhibition(inhibitors=["x"]).ki is None
+    # Non-empty inhibitor list enforced at the type level.
+    with pytest.raises(ValidationError):
+        FeedbackInhibition(inhibitors=[], ki=0.005)
+    # ki and hill must be positive.
+    with pytest.raises(ValidationError):
+        FeedbackInhibition(inhibitors=["x"], ki=0.0)
+    with pytest.raises(ValidationError):
+        FeedbackInhibition(inhibitors=["x"], hill=0.0)
+    # Unknown keys rejected (extra="forbid").
+    with pytest.raises(ValidationError):
+        FeedbackInhibition(inhibitors=["x"], bogus=1)
+    # Declared on the Enzyme (not settings); default is None (off).
+    assert Enzyme(label="FabH", concentration=0.001).feedback_inhibition is None
+    enz = Enzyme(label="FabH", concentration=0.001, ecnumber="EC 2.3.1.180",
+                 feedback_inhibition={"inhibitors": ["hexadecanoate"], "ki": 0.005})
+    assert enz.feedback_inhibition.ki == 0.005
+    assert enz.feedback_inhibition.inhibitors == ["hexadecanoate"]
 
 
 def test_Species():

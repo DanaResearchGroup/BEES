@@ -2,10 +2,7 @@
 Main BEES application module for kinetic model generation and refinement.
 
 This module provides the BEES class, which orchestrates the kinetic model generation pipeline.
-It handles input validation, project initialization, logging setup, and execution coordination.
-
-The module processes YAML input files containing species, enzymes, environmental conditions,
-and simulation settings. It validates inputs against Pydantic schemas, initializes project
+The module processes the YAML input files containing, validates inputs against Pydantic schemas, initializes project
 directories and logging, and executes the model generation workflow.
 
 This is probably the most important module in the code.
@@ -21,7 +18,7 @@ from typing import Any, Dict
 import bees.common as common
 from bees.logger import Logger
 from bees.schema import InputBase
-from bees.reaction_generator import ModelGenerator
+from bees.reaction_generator import ReactionGenerator
 from bees.enlarger import IterativeEnlarger
 from bees.exporter import EnlargerExporter
 
@@ -75,11 +72,7 @@ class BEES():
         specified_output_dir = self.input_data.get("settings", {}).get("output_directory")
         if specified_output_dir:
             if os.path.isabs(specified_output_dir):
-                if not specified_output_dir.startswith(self.base_directory):
-                    
-                    self.output_directory = specified_output_dir
-                else:
-                    self.output_directory = specified_output_dir
+                self.output_directory = specified_output_dir
             else:
                 self.output_directory = os.path.join(self.base_directory, specified_output_dir)
         else:
@@ -188,21 +181,34 @@ class BEES():
         db_path = db_path_from_name if os.path.exists(db_path_from_name) else default_db
         if getattr(self.bees_object, "seed_model", None):
             self.logger.info(f"Using seed model: {self.bees_object.seed_model}")
-        model_generator = ModelGenerator(
+        reaction_generator = ReactionGenerator(
             bees_object=self.bees_object,
             logger=self.logger,
             output_directory=self.output_directory
         )
         
         # Load kinetic database with ontology
-        model_generator.load_kinetic_database(db_path, ontology=self.ontology)
+        reaction_generator.load_kinetic_database(db_path, ontology=self.ontology)
 
-        # Decide execution mode: iterative (rate-based) vs batch
+        # Decide execution mode: iterative (rate-based enlargement) vs batch (discovery only)
         settings = self.bees_object.settings
-        use_iterative = (
-            settings.end_time is not None
-            and getattr(settings, "toleranceMoveToCore", 0) > 0
-        )
+        _mode = getattr(settings, "simulation_mode", None)
+        if _mode == "iterative":
+            use_iterative = True
+        elif _mode == "batch":
+            use_iterative = False
+        else:
+            # backward-compatible auto-detect: iterative when ANY termination
+            # criterion is set (end_time, conversion target, or rate-ratio).
+            has_termination = (
+                settings.end_time is not None
+                or bool(getattr(settings, "termination_conversion", None))
+                or getattr(settings, "termination_rate_ratio", None) is not None
+            )
+            use_iterative = (
+                has_termination
+                and getattr(settings, "toleranceMoveToCore", 0) > 0
+            )
 
         if use_iterative:
             # ----------------------------------------------------------
@@ -211,21 +217,21 @@ class BEES():
             self.logger.info("Mode: Rate-based iterative enlargement")
             enlarger = IterativeEnlarger(
                 bees_object=self.bees_object,
-                model_generator=model_generator,
+                reaction_generator=reaction_generator,
                 logger=self.logger,
                 output_directory=self.output_directory,
             )
             enlarger_result = enlarger.run()
 
             # Export reactions summary 
-            model_generator.reactions = (
+            reaction_generator.reactions = (
                 list(enlarger_result.model.core_reactions)
                 + list(enlarger_result.model.edge_reactions)
             )
             summary_path = None
-            if model_generator.reactions:
-                n_core = len(enlarger_result.model.core_reactions)
-                summary_path = model_generator.export_reactions_summary(n_core=n_core)
+            if reaction_generator.reactions:
+                core_ids = {id(r) for r in enlarger_result.model.core_reactions}
+                summary_path = reaction_generator.export_reactions_summary(core_rxn_ids=core_ids)
                 self.logger.info(f"Exported reaction summary to: {summary_path}")
 
             # Export simulation profiles if requested
@@ -241,15 +247,10 @@ class BEES():
                     reaction_core_enter_iter=enlarger._reaction_core_enter_iter,
                     reaction_obj_by_sig=enlarger._reaction_obj_by_sig,
                     iteration_summaries=enlarger._iteration_summaries,
-                    save_reaction_tree_plots=getattr(settings, "save_reaction_tree_plots", False),
                     save_simulation_plots=getattr(settings, "save_simulation_plots", False),
                     plot_max_species=getattr(settings, "plot_max_species", None),
                     plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
                     plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
-                    reaction_tree_layout=getattr(settings, "reaction_tree_layout", "graphviz"),
-                    reaction_tree_rankdir=getattr(settings, "reaction_tree_rankdir", "TB"),
-                    reaction_tree_fontsize=int(getattr(settings, "reaction_tree_fontsize", 8) or 8),
-                    core_seen_labels=getattr(enlarger, "_core_seen_labels", set()),
                     bees_object=self.bees_object,
                 )
                 profiles_path = exporter.export_simulation_profiles()
@@ -267,15 +268,10 @@ class BEES():
                         reaction_core_enter_iter=enlarger._reaction_core_enter_iter,
                         reaction_obj_by_sig=enlarger._reaction_obj_by_sig,
                         iteration_summaries=enlarger._iteration_summaries,
-                        save_reaction_tree_plots=getattr(settings, "save_reaction_tree_plots", False),
                         save_simulation_plots=getattr(settings, "save_simulation_plots", False),
                         plot_max_species=getattr(settings, "plot_max_species", None),
                         plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
                         plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
-                        reaction_tree_layout=getattr(settings, "reaction_tree_layout", "graphviz"),
-                        reaction_tree_rankdir=getattr(settings, "reaction_tree_rankdir", "TB"),
-                        reaction_tree_fontsize=int(getattr(settings, "reaction_tree_fontsize", 8) or 8),
-                        core_seen_labels=getattr(enlarger, "_core_seen_labels", set()),
                         bees_object=self.bees_object,
                     )
                 exporter.export_simulation_plots()
@@ -292,15 +288,10 @@ class BEES():
                     reaction_core_enter_iter=enlarger._reaction_core_enter_iter,
                     reaction_obj_by_sig=enlarger._reaction_obj_by_sig,
                     iteration_summaries=enlarger._iteration_summaries,
-                    save_reaction_tree_plots=getattr(settings, "save_reaction_tree_plots", False),
                     save_simulation_plots=getattr(settings, "save_simulation_plots", False),
                     plot_max_species=getattr(settings, "plot_max_species", None),
                     plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
                     plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
-                    reaction_tree_layout=getattr(settings, "reaction_tree_layout", "graphviz"),
-                    reaction_tree_rankdir=getattr(settings, "reaction_tree_rankdir", "TB"),
-                    reaction_tree_fontsize=int(getattr(settings, "reaction_tree_fontsize", 8) or 8),
-                    core_seen_labels=getattr(enlarger, "_core_seen_labels", set()),
                     bees_object=self.bees_object,
                 )
             flux_path = exporter.export_flux_analysis()
@@ -342,11 +333,11 @@ class BEES():
             # ----------------------------------------------------------
             self.logger.info("Mode: Batch reaction network generation")
 
-            reactions = model_generator.generate_reactions()
+            reactions = reaction_generator.generate_reactions()
 
             summary_path = None
             if reactions:
-                summary_path = model_generator.export_reactions_summary()
+                summary_path = reaction_generator.export_reactions_summary()
                 self.logger.info(f"Exported reaction summary to: {summary_path}")
 
             execution_time = common.time_lapse(self.t0)

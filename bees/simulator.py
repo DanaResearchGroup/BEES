@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 
-"""
-ODE Simulator Module
---------------------
-Integrates the reaction network over time using scipy's ODE solvers.
+"""ODE simulator: scipy solve_ivp with a vectorized RHS.
 
-All concentrations are in mM, time in seconds, rates in mM/s.
+Concentrations mM, time s, rates mM/s.
 """
 
 from dataclasses import dataclass, field
@@ -19,23 +16,17 @@ from scipy.sparse import csc_matrix
 
 from bees.common import get_ontology_equivalents
 from bees.core_edge_model import CoreEdgeModel
-from bees.flux_calculator import compute_mm_rate
-
+from bees.flux_calculator import (
+    compute_mm_rate,
+    compute_reversible_mm_rate,
+    has_complete_explicit_product_kms,
+)
+from bees.conservator import Conservator
+from bees.reaction_generator import reaction_signature
 
 @dataclass
 class SimulationResult:
-    """
-    ODE simulation output.
-
-   
-    - **y shape**: (n_species, n_timepoints). Concentrations are clipped to >= 0 on success.
-
-    Key fields:
-    - `max_char_rate` / `final_char_rate`: peak and final core characteristic rate (R_char).
-    - `max_edge_rate_ratio`: per edge species, max over time of |edge_rate| / R_char (when R_char > 0).
-    - `peak_edge_signed_rate`: signed edge rate at the time of peak |flux|.
-    - `simulation_interrupted` + `interrupt_*`: snapshot of rates at the interrupt time (if used).
-    """
+    """ODE simulation output."""
     t: np.ndarray
     y: np.ndarray
     species_labels: List[str]
@@ -44,41 +35,14 @@ class SimulationResult:
     max_char_rate: float = 0.0
     final_char_rate: float = 0.0
     max_edge_rate_ratio: Dict[str, float] = field(default_factory=dict)
-    peak_edge_signed_rate: Dict[str, float] = field(default_factory=dict)
     simulation_interrupted: bool = False
     interrupt_char_rate: float = 0.0
     interrupt_edge_rates: Dict[str, float] = field(default_factory=dict)
-    # RMG-style reaction-level dynamics metric (dlnaccum) per edge reaction.
-    # Keyed by reaction signature ((reactants_sorted_tuple, products_sorted_tuple)).
-    # max_edge_reaction_dlnaccum is the maximum dlnaccum_j seen during the run.
+    # Signature is reaction_signature (includes enzyme).
     max_edge_reaction_dlnaccum: Dict[Tuple, float] = field(default_factory=dict)
-    # Snapshot of dlnaccum at the moment of interrupt (only set if interrupt fires
-    # via the dlnaccum criterion).
-    interrupt_edge_reaction_dlnaccum: Dict[Tuple, float] = field(default_factory=dict)
-
 
 class _VectorizedRHS:
-    """
-    Pre-compiled, NumPy-vectorized ODE right-hand side for a fixed reaction
-    network.
-
-    Builds all matrices and index arrays once at construction time so that
-    each call to ``__call__(t, y)`` runs without any Python-level loops or
-    dict lookups.
-
-    Parameters
-    ----------
-    species_labels : list of str
-        Ordered list of all species labels (core + edge).
-    reactions : list of GeneratedReaction
-        All reactions (core + edge) to include.
-    alias_to_model_label : dict
-        Mapping from any alias (lc) to the canonical model label (lc).
-    enzyme_conc_map : dict
-        Enzyme label (lc) -> concentration (mM).
-    constant_mask : np.ndarray of bool
-        True for species whose concentration must be held constant (dydt=0).
-    """
+    """NumPy-vectorized ODE RHS compiled once (no per-call Python loops)."""
 
     def __init__(
         self,
@@ -87,14 +51,28 @@ class _VectorizedRHS:
         alias_to_model_label: Dict[str, str],
         enzyme_conc_map: Dict[str, float],
         constant_mask: np.ndarray,
+        n_core_species: Optional[int] = None,
+        n_core_reactions: Optional[int] = None,
     ):
         n_sp = len(species_labels)
         n_rx = len(reactions)
         label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
 
-        # ---- Per-reaction Vmax ----------------------------------------
         vmax = np.zeros(n_rx, dtype=np.float64)
+        reversible_indices: List[int] = []
+        product_inhibited_indices: List[int] = []
         for j, rxn in enumerate(reactions):
+            is_reversible = (
+                getattr(rxn.template, "reversible", False)
+                and getattr(rxn, "thermo", None) is not None
+                and not rxn.thermo.irreversible
+            )
+            if is_reversible:
+                reversible_indices.append(j)
+                continue
+            if has_complete_explicit_product_kms(rxn):
+                product_inhibited_indices.append(j)
+                continue  # leave vmax[j] = 0 so the overlay owns this column
             kin = rxn.kinetics
             if kin is None or rxn.rate_law is None:
                 continue
@@ -105,19 +83,19 @@ class _VectorizedRHS:
             elif kin.vmax is not None:
                 vmax[j] = kin.vmax
 
-        # ---- Saturation substrate lists (ragged -> matrix) -------------
-        # For each reaction we store a list of (species_idx, km_value) pairs.
-        # We pack these into matrices (n_rx, K) where K is max substrates.
         sub_idx_list: List[List[int]] = []
         km_list:      List[List[float]] = []
+        nu_list:      List[List[float]] = []
 
         for rxn in reactions:
             kin = rxn.kinetics
             pairs_idx: List[int] = []
             pairs_km:  List[float] = []
+            pairs_nu:  List[float] = []
             if kin is not None and rxn.rate_law is not None:
                 km_per = getattr(kin, "km_per_substrate", None) or {}
                 km_single = kin.km
+                stoich = rxn.stoichiometry
                 for reactant in rxn.reactant_labels:
                     r_lc = reactant.lower().strip()
                     km_val = None
@@ -142,21 +120,63 @@ class _VectorizedRHS:
                     if idx is not None:
                         pairs_idx.append(idx)
                         pairs_km.append(float(km_val))
+                        pairs_nu.append(float(abs(stoich.get(reactant, 1))))
             sub_idx_list.append(pairs_idx)
             km_list.append(pairs_km)
+            nu_list.append(pairs_nu)
 
-        # Build (n_rx, K) matrices
         K = max((len(idxs) for idxs in sub_idx_list), default=0)
-        # Pad with dummy index pointing to a constant 1.0 concentration
+        # Pad dummy conc 1.0 so (s/(Km+s))**0 = 1.
         self._sub_idx_mat = np.full((n_rx, K), fill_value=n_sp, dtype=np.int32)
         self._km_mat = np.zeros((n_rx, K), dtype=np.float64)
-        for j, (idxs, kms) in enumerate(zip(sub_idx_list, km_list)):
+        self._nu_mat = np.zeros((n_rx, K), dtype=np.float64)
+        for j, (idxs, kms, nus) in enumerate(zip(sub_idx_list, km_list, nu_list)):
             nj = len(idxs)
             if nj > 0:
                 self._sub_idx_mat[j, :nj] = idxs
                 self._km_mat[j, :nj] = kms
+                self._nu_mat[j, :nj] = nus
 
-        # ---- Stoichiometry matrix S  (n_species x n_reactions) ---------
+        fb_idx_list: List[List[int]] = []
+        fb_ki_list:  List[List[float]] = []
+        fb_h_list:   List[List[float]] = []
+        for rxn in reactions:
+            inh = getattr(rxn, "feedback_inhibitors", None)
+            if not isinstance(inh, dict):  # None, or MagicMock in tests
+                inh = {}
+            pi: List[int] = []
+            pk: List[float] = []
+            ph: List[float] = []
+            for label_lc, params in inh.items():
+                try:
+                    ki, hill = float(params[0]), float(params[1])
+                except (TypeError, IndexError, ValueError):
+                    continue
+                if ki <= 0:
+                    continue
+                model_lc = alias_to_model_label.get(label_lc, label_lc)
+                idx = label_to_idx.get(model_lc, label_to_idx.get(label_lc))
+                if idx is not None:
+                    pi.append(idx)
+                    pk.append(ki)
+                    ph.append(hill)
+            fb_idx_list.append(pi)
+            fb_ki_list.append(pk)
+            fb_h_list.append(ph)
+
+        M = max((len(p) for p in fb_idx_list), default=0)
+        self._has_feedback = M > 0 and any(fb_idx_list)
+        # Feedback pad Ki=inf so (1.0/inf)^h = 0 -> factor 1.
+        self._fb_idx_mat = np.full((n_rx, M), fill_value=n_sp, dtype=np.int32)
+        self._fb_ki_mat = np.full((n_rx, M), fill_value=np.inf, dtype=np.float64)
+        self._fb_hill_mat = np.ones((n_rx, M), dtype=np.float64)
+        for j, (idxs, kis, hs) in enumerate(zip(fb_idx_list, fb_ki_list, fb_h_list)):
+            nj = len(idxs)
+            if nj > 0:
+                self._fb_idx_mat[j, :nj] = idxs
+                self._fb_ki_mat[j, :nj] = kis
+                self._fb_hill_mat[j, :nj] = hs
+
         rows, cols, data = [], [], []
         for j, rxn in enumerate(reactions):
             for sp_label, coeff in rxn.stoichiometry.items():
@@ -169,7 +189,6 @@ class _VectorizedRHS:
                     data.append(float(coeff))
         S = csc_matrix((data, (rows, cols)), shape=(n_sp, n_rx), dtype=np.float64)
 
-        # Store as dense if small, sparse otherwise
         if n_rx <= 200:
             self._S = S.toarray()
             self._sparse = False
@@ -177,7 +196,6 @@ class _VectorizedRHS:
             self._S = S
             self._sparse = True
 
-        # Pre-compute production and consumption matrices for metrics
         S_prod = S.copy()
         S_prod.data[S_prod.data < 0] = 0.0
         S_prod.eliminate_zeros()
@@ -200,42 +218,129 @@ class _VectorizedRHS:
         self.label_to_idx = label_to_idx
         self.alias_to_model_label = alias_to_model_label
 
+        # Edge isolation: species rows 0, reaction fluxes zeroed; omit n_core = all core.
+        self._n_core_species = n_sp if n_core_species is None else int(n_core_species)
+        self._n_core_reactions = n_rx if n_core_reactions is None else int(n_core_reactions)
+        self._edge_species_mask = np.zeros(n_sp, dtype=bool)
+        if self._n_core_species < n_sp:
+            self._edge_species_mask[self._n_core_species:] = True
+        self._integration_mask = constant_mask | self._edge_species_mask
+
+        self._reversible_indices = reversible_indices
+        self._reversible_reactions = [reactions[j] for j in reversible_indices]
+        self._product_inhibited_indices = product_inhibited_indices
+        self._product_inhibited_reactions = [reactions[j] for j in product_inhibited_indices]
+        self._species_labels = list(species_labels)
+        self._enzyme_conc_map = dict(enzyme_conc_map)
+
     def __call__(self, t: float, y: np.ndarray) -> np.ndarray:
         """Evaluate dydt = S @ v(y)."""
         return self.compute_dydt(y)
 
     def compute_v(self, y: np.ndarray) -> np.ndarray:
-        """
-        Compute reaction rate vector v(y).
-        Supports y as (n_species,) or (n_species, n_timepoints).
-        """
+        """Compute rate vector v(y). Accepts (n_species,) or (n_species, n_timepoints)."""
         is_mat = (y.ndim > 1)
-        y_nn = np.maximum(y, 0.0)
 
-        # Append dummy 1.0 for padding
+        # NEVER clip y globally (breaks S@v mass balance). Dummy 1.0 is the pad sentinel.
         if is_mat:
             ones = np.ones((1, y.shape[1]), dtype=y.dtype)
-            y_ext = np.vstack([y_nn, ones])
+            y_ext = np.vstack([y, ones])
         else:
-            y_ext = np.append(y_nn, 1.0)
+            y_ext = np.append(y, 1.0)
 
-        # Saturation: s / (Km + s)
-        # s shape: (n_rx, K) if vector, (n_rx, K, n_t) if matrix
+        # Clip only inside saturation so rates stay non-negative.
         s = y_ext[self._sub_idx_mat]
-        
+        s_pos = np.maximum(s, 0.0)
+
         if is_mat:
             km = self._km_mat[:, :, np.newaxis]
-            sat = s / (km + s)
-            # product over K dimension (axis 1)
-            v = self._vmax[:, np.newaxis] * np.prod(sat, axis=1)
+            nu = self._nu_mat[:, :, np.newaxis]
+            sat = s_pos / (km + s_pos)
+            v = self._vmax[:, np.newaxis] * np.prod(sat ** nu, axis=1)
         else:
-            sat = s / (self._km_mat + s)
-            v = self._vmax * np.prod(sat, axis=1)
-        
+            sat = s_pos / (self._km_mat + s_pos)
+            v = self._vmax * np.prod(sat ** self._nu_mat, axis=1)
+
+        # Overlays apply max(c, 0) themselves.
+        _need_overlay = self._reversible_indices or self._product_inhibited_indices
+        if _need_overlay and not is_mat:
+            conc = {
+                lab.lower().strip(): float(y[i])
+                for i, lab in enumerate(self._species_labels)
+            }
+
+        if self._reversible_indices:
+            if is_mat:
+                n_t = y.shape[1]
+                for col, rxn in zip(self._reversible_indices, self._reversible_reactions):
+                    for k in range(n_t):
+                        conc_k = {
+                            lab.lower().strip(): float(y[i, k])
+                            for i, lab in enumerate(self._species_labels)
+                        }
+                        v[col, k] = compute_reversible_mm_rate(
+                            rxn, conc_k, self._enzyme_conc_map
+                        )
+            else:
+                for col, rxn in zip(self._reversible_indices, self._reversible_reactions):
+                    v[col] = compute_reversible_mm_rate(rxn, conc, self._enzyme_conc_map)
+
+        if self._product_inhibited_indices:
+            if is_mat:
+                n_t = y.shape[1]
+                for col, rxn in zip(self._product_inhibited_indices, self._product_inhibited_reactions):
+                    for k in range(n_t):
+                        conc_k = {
+                            lab.lower().strip(): float(y[i, k])
+                            for i, lab in enumerate(self._species_labels)
+                        }
+                        v[col, k] = compute_mm_rate(rxn, conc_k, self._enzyme_conc_map)
+            else:
+                for col, rxn in zip(self._product_inhibited_indices, self._product_inhibited_reactions):
+                    v[col] = compute_mm_rate(rxn, conc, self._enzyme_conc_map)
+
+        if self._has_feedback:
+            if is_mat:
+                c = np.maximum(y_ext[self._fb_idx_mat], 0.0)
+                ki = self._fb_ki_mat[:, :, np.newaxis]
+                hill = self._fb_hill_mat[:, :, np.newaxis]
+                factor = np.prod(1.0 / (1.0 + (c / ki) ** hill), axis=1)
+            else:
+                c = np.maximum(y_ext[self._fb_idx_mat], 0.0)
+                factor = np.prod(
+                    1.0 / (1.0 + (c / self._fb_ki_mat) ** self._fb_hill_mat), axis=1
+                )
+            v = v * factor
+
         return v
 
     def compute_dydt(self, y: np.ndarray) -> np.ndarray:
-        """Compute dydt = S @ v(y). Supports matrix y."""
+        """dydt = S @ v(y) with edge isolation for the integrator."""
+        v = self.compute_v(y)
+        if self._n_core_reactions < self._n_rx:
+            # Zero edge reactions on a COPY so compute_v's result stays intact.
+            v = v.copy()
+            if v.ndim == 1:
+                v[self._n_core_reactions:] = 0.0
+            else:
+                v[self._n_core_reactions:, :] = 0.0
+        if self._sparse:
+            dydt = self._S.dot(v)
+            if hasattr(dydt, "toarray"):
+                dydt = dydt.toarray()
+            if dydt.ndim > 1 and v.ndim == 1:
+                dydt = dydt.ravel()
+        else:
+            dydt = self._S @ v
+
+        if dydt.ndim > 1:
+            dydt[self._integration_mask, :] = 0.0
+        else:
+            dydt[self._integration_mask] = 0.0
+        return dydt
+
+    def compute_dydt_unmasked(self, y: np.ndarray) -> np.ndarray:
+        """dydt = S @ v(y) without edge isolation. Constant-mask still applied."""
         v = self.compute_v(y)
         if self._sparse:
             dydt = self._S.dot(v)
@@ -245,7 +350,7 @@ class _VectorizedRHS:
                 dydt = dydt.ravel()
         else:
             dydt = self._S @ v
-        
+
         if dydt.ndim > 1:
             dydt[self._constant_mask, :] = 0.0
         else:
@@ -271,21 +376,8 @@ class _VectorizedRHS:
             c = self._S_cons @ v
         return p, c
 
-
 class ODESimulator:
-    """
-    Integrate the biochemical reaction network for a CoreEdgeModel.
-
-    Simulates both core and edge species and reactions so that flux can
-    be computed for edge species. Edge species start at zero concentration.
-
-    Parameters
-    ----------
-    model : CoreEdgeModel
-        The core/edge model to simulate.
-    logger : optional
-        Logger instance for diagnostic messages.
-    """
+    """Integrate the biochemical reaction network for a CoreEdgeModel."""
 
     def __init__(self, model: CoreEdgeModel, logger=None):
         self.model = model
@@ -296,10 +388,6 @@ class ODESimulator:
         """Project concentrations (mM) to non-negative values, in-place safe."""
         out = np.asarray(y, dtype=float)
         return np.maximum(out, 0.0)
-
-    # ------------------------------------------------------------------
-     
-
 
     def simulate(
         self,
@@ -313,28 +401,7 @@ class ODESimulator:
         max_wall_time_s: Optional[float] = None,
         stepwise_heartbeat_interval_s: Optional[float] = None,
     ) -> SimulationResult:
-        """
-        Run an ODE simulation of the full model (core + edge species and reactions).
-
-        Args:
-            end_time: Simulation end time in seconds.
-            time_step: If given, store solution at these intervals.
-            method: Integration method for solve_ivp (default BDF,
-                    good for stiff biochemical systems).
-            rtol: Relative tolerance for the solver.
-            atol: Absolute tolerance for the solver.
-            interrupt_simulation_tol: If set, stop integration when any edge species
-                flux ratio |R_edge|/R_char exceeds this value.
-                Iterative enlarger passes ``Settings.toleranceInterruptSimulation``
-                (defaulting to ``toleranceMoveToCore`` when unset).
-            max_wall_time_s: Stepwise mode only. Stop the pass after this many seconds
-                of wall-clock time (``success=False``).
-            stepwise_heartbeat_interval_s: Stepwise mode only. Log INFO progress
-                periodically. None defaults to 30 s. 0 disables.
-
-        Returns:
-            SimulationResult with time series data.
-        """
+        """Run an ODE simulation of the full model (core + edge species and reactions)."""
         species_labels = self.model.get_all_species_labels()
         n_species = len(species_labels)
 
@@ -374,10 +441,6 @@ class ODESimulator:
             atol=atol,
         )
 
-    # ------------------------------------------------------------------
-    # Continuous (non-interrupt) simulation path
-    # ------------------------------------------------------------------
-
     def _simulate_continuous(
         self,
         end_time: float,
@@ -389,7 +452,6 @@ class ODESimulator:
         """Full-span solve_ivp without flux-interrupt events."""
         species_labels = self.model.get_all_species_labels()
         n_species = len(species_labels)
-        label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
         alias_to_model_label = self._build_alias_to_model_label(species_labels)
         enzyme_conc_map = self._build_enzyme_concentration_map()
         constant_mask = np.array(
@@ -413,7 +475,10 @@ class ODESimulator:
             alias_to_model_label=alias_to_model_label,
             enzyme_conc_map=enzyme_conc_map,
             constant_mask=constant_mask,
+            n_core_species=len(self.model.core_species),
+            n_core_reactions=len(self.model.core_reactions),
         )
+        conservator = Conservator(species_labels)
 
         if self.logger:
             self.logger.debug(
@@ -440,7 +505,7 @@ class ODESimulator:
                 if self.logger:
                     self.logger.error(f"ODE state invalid: {extra_msg}")
         y_out = (
-            self._concentrations_nonnegative(y_raw) if y_raw.size else y_raw
+            conservator.clip_2d(y_raw) if y_raw.size else y_raw
         )
 
         result = SimulationResult(
@@ -470,10 +535,6 @@ class ODESimulator:
                 )
         return result
 
-    # ------------------------------------------------------------------
-    # Simulation with flux-ratio interrupt
-    # ------------------------------------------------------------------
-
     def _simulate_stepwise(
         self,
         end_time: float,
@@ -486,12 +547,7 @@ class ODESimulator:
         max_wall_time_s: Optional[float] = None,
         stepwise_heartbeat_interval_s: Optional[float] = None,
     ) -> SimulationResult:
-        """
-        advance by dt, compute R_char and edge rr_i
-        after each step, interrupt via boolean when any rr_i exceeds the
-        tolerance. At least one step is always taken before an interrupt
-        can fire (earliest interrupt at t > 0).
-        """
+        """Advance by dt; interrupt when any edge flux ratio exceeds tolerance (earliest at t > 0)."""
         species_labels = self.model.get_all_species_labels()
         n_species = len(species_labels)
         label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
@@ -506,7 +562,6 @@ class ODESimulator:
             np.array(self.model.get_all_concentration_vector(), dtype=float)
         )
         reactions = self.model.core_reactions + self.model.edge_reactions
-        edge_labels_lc = {sp.label.lower().strip() for sp in self.model.edge_species}
         edge_labels_lc_list = [sp.label.lower().strip() for sp in self.model.edge_species]
         n_core = len(self.model.core_species)
         n_core_rxns = len(self.model.core_reactions)
@@ -517,13 +572,12 @@ class ODESimulator:
             alias_to_model_label=alias_to_model_label,
             enzyme_conc_map=enzyme_conc_map,
             constant_mask=constant_mask,
+            n_core_species=n_core,
+            n_core_reactions=n_core_rxns,
         )
+        conservator = Conservator(species_labels)
 
-        # ---- Edge-reaction setup for dlnaccum (RMG reaction-level criterion).
-        # For each edge reaction j, we need the species indices (reactants and
-        # products separately) to look up consumption/production at each step.
-        # Signature must match `bees.exporter.reaction_signature`:
-        # (enzyme_lc, reactants_sorted_tuple, products_sorted_tuple).
+        # dlnaccum signature is reaction_signature (includes enzyme).
         edge_rxn_sigs: List[Tuple[str, Tuple[str, ...], Tuple[str, ...]]] = []
         edge_rxn_reactant_idx: List[List[int]] = []
         edge_rxn_product_idx: List[List[int]] = []
@@ -540,8 +594,6 @@ class ODESimulator:
                     idx = label_to_idx.get(lc)
                 if idx is None:
                     continue
-                # Stoichiometric multiplicity: emulate RMG, which loops over
-                # reactant/product *index lists* (a coefficient of 2 contributes twice).
                 mult = int(round(abs(float(coeff))))
                 if mult <= 0:
                     mult = 1
@@ -549,18 +601,13 @@ class ODESimulator:
                     r_idx.extend([idx] * mult)
                 elif float(coeff) > 0:
                     p_idx.extend([idx] * mult)
-            sig = (
-                str(getattr(rxn, "enzyme_label", "")).lower().strip(),
-                tuple(sorted(str(r).lower().strip() for r in rxn.reactant_labels)),
-                tuple(sorted(str(p).lower().strip() for p in rxn.product_labels)),
-            )
+            sig = reaction_signature(rxn)
             edge_rxn_sigs.append(sig)
             edge_rxn_reactant_idx.append(r_idx)
             edge_rxn_product_idx.append(p_idx)
             edge_rxn_global_idx.append(j_global)
 
         max_edge_rxn_dlnaccum: Dict[Tuple, float] = {sig: 0.0 for sig in edge_rxn_sigs}
-        interrupt_edge_rxn_dlnaccum: Dict[Tuple, float] = {}
         # Small floor to keep ln(1 + v/R) finite when R ~ 0.
         _RATE_FLOOR = 1e-30
 
@@ -593,9 +640,6 @@ class ODESimulator:
 
         current_t = 0.0
         current_y = y0.copy()
-        # Outer-step size bounds. A floor avoids spending wall time on 1e-12 s
-        # segments when max_rr sits below interrupt_tol (no interrupt possible
-        # yet) but old backoff logic kept shrinking dt.
         dt_max = 5.0
         if end_time > 0.0:
             dt_floor_outer = max(1e-12, min(1e-6, end_time * 1e-8))
@@ -667,33 +711,32 @@ class ODESimulator:
                         f"{invalid_message}"
                     )
                 break
-            current_y = self._concentrations_nonnegative(current_y)
+            # Do NOT clip current_y mid-integration (BDF conservation drift).
 
             t_history.append(current_t)
-            y_history.append(current_y.copy())
+            y_history.append(conservator.clip(current_y).copy())
 
-            dydt_all = rhs.compute_dydt(current_y)
-            char_rate = float(np.linalg.norm(dydt_all[:n_core]))
-            edge_rates = {
-                lab: float(dydt_all[n_core + i])
-                for i, lab in enumerate(edge_labels_lc_list)
-            }
+            # Enlarger uses UNMASKED residual (bootstrap: isolated R_char=0).
+            dydt_unmasked_step = rhs.compute_dydt_unmasked(current_y)
+            char_rate = float(np.linalg.norm(dydt_unmasked_step[:n_core]))
+            if edge_labels_lc_list:
+                edge_rates = {
+                    lab: float(dydt_unmasked_step[n_core + i])
+                    for i, lab in enumerate(edge_labels_lc_list)
+                }
+            else:
+                edge_rates = {}
             max_char_rate = max(max_char_rate, char_rate)
 
             max_rr = 0.0
             if char_rate > 0.0 and edge_rates:
                 max_rr = max((abs(r) / char_rate for r in edge_rates.values()), default=0.0)
 
-            # ---- RMG-style reaction-level dlnaccum (instantaneous).
-            # dlnaccum_j = Σ_i ln(1 + v_j / R_i) over species i touched by edge
-            # reaction j; R_i is consumption (L_i) for reactants, production
-            # (P_i) for products. Tracks per-step max over the run.
             max_rxn_dlnaccum_step = 0.0
             max_rxn_dlnaccum_sig: Optional[Tuple] = None
             if edge_rxn_sigs:
                 v_all = rhs.compute_v(current_y)
                 prod_all, cons_all = rhs.compute_prod_cons(current_y)
-                # prod_all/cons_all are species production/consumption magnitudes.
                 for k, sig in enumerate(edge_rxn_sigs):
                     j_global = edge_rxn_global_idx[k]
                     v_j = float(v_all[j_global])
@@ -739,9 +782,6 @@ class ODESimulator:
                 interrupted = True
                 interrupt_char = char_rate
                 interrupt_edge = edge_rates
-                # Snapshot current dlnaccum at the interrupt — these are
-                # available as candidates for reaction-level promotion too.
-                interrupt_edge_rxn_dlnaccum = dict(max_edge_rxn_dlnaccum)
                 if self.logger:
                     self.logger.info(
                         f"ODE interrupted at t={current_t:.6e} s "
@@ -751,8 +791,6 @@ class ODESimulator:
                     )
                 break
 
-            # Reaction-level interrupt: if any edge reaction's dlnaccum exceeds
-            # the threshold, halt and record candidates for promotion.
             if (
                 not first_step
                 and tol_move_edge_reaction_to_core is not None
@@ -762,7 +800,6 @@ class ODESimulator:
                 interrupted = True
                 interrupt_char = char_rate
                 interrupt_edge = edge_rates
-                interrupt_edge_rxn_dlnaccum = dict(max_edge_rxn_dlnaccum)
                 if self.logger:
                     self.logger.info(
                         f"ODE interrupted (reaction dlnaccum) at t={current_t:.6e} s "
@@ -774,11 +811,7 @@ class ODESimulator:
 
             first_step = False
 
-            # Outer-step adaptation (no shrink while max_rr <= tol):
-            # Interrupt fires only when max_rr > interrupt_simulation_tol. If
-            # max_rr is below tol, shrinking dt cannot create an interrupt; it
-            # only traps the integrator at dt_min. Hold dt in the "near"
-            # band; grow when comfortably below.
+            # Do not shrink dt while max_rr <= tol.
             dt = max(dt, dt_floor_outer)
             if max_rr >= near_frac * interrupt_simulation_tol:
                 pass
@@ -810,15 +843,14 @@ class ODESimulator:
         )
 
         if result.success and y_arr.shape[1] > 0:
-            self.model.set_all_concentrations(y_arr[:, -1].tolist())
-
+            self.model.set_all_concentrations(
+                conservator.clip(current_y).tolist()
+            )
         self._attach_flux_metrics(result, rhs=rhs)
-        # Stepwise path already computes per-step maxima; continuous path computes here.
 
         if interrupted:
             result.interrupt_char_rate = interrupt_char
             result.interrupt_edge_rates = interrupt_edge
-            result.interrupt_edge_reaction_dlnaccum = interrupt_edge_rxn_dlnaccum
         else:
             if self.logger and not wall_time_exceeded and not state_invalid:
                 self.logger.debug(
@@ -826,15 +858,9 @@ class ODESimulator:
                     f"({len(t_history)} time points)"
                 )
 
-        # Always expose the lifetime-max dlnaccum so the enlarger can promote
-        # reactions discovered above tolerance even on a non-interrupted pass.
         result.max_edge_reaction_dlnaccum = max_edge_rxn_dlnaccum
 
         return result
-
-    # ------------------------------------------------------------------
-    # ODE export
-    # ------------------------------------------------------------------
 
     def export_ode_equations(
         self,
@@ -842,19 +868,7 @@ class ODESimulator:
         iteration: int,
         end_time: float,
     ) -> str:
-        """
-        Export the ODE equations solved at this iteration to a text file.
-
-        Writes reaction rate laws (with Km, kcat) and dC/dt for each species.
-
-        Args:
-            output_path: Path for the output file.
-            iteration: Enlargement iteration number.
-            end_time: Simulation end time (seconds).
-
-        Returns:
-            The output path written.
-        """
+        """Export ODE equations solved at this iteration to a text file."""
 
         species_labels = self.model.get_all_species_labels()
         reactions = self.model.core_reactions + self.model.edge_reactions
@@ -862,7 +876,6 @@ class ODESimulator:
         edge_labels_lc = {sp.label.lower().strip() for sp in self.model.edge_species}
         enzyme_map = self._build_enzyme_concentration_map()
 
-        # Build species (lc) -> list of (coeff, rxn_idx) for ODE terms
         species_terms: Dict[str, List[Tuple[int, int]]] = {
             lab.lower().strip(): [] for lab in species_labels
         }
@@ -881,7 +894,6 @@ class ODESimulator:
         )
         lines.append("")
 
-        # --- Reaction rate laws ---
         lines.append("-" * 80)
         lines.append("Reactions (rate laws with parameters)")
         lines.append("-" * 80)
@@ -893,7 +905,10 @@ class ODESimulator:
             products = " + ".join(
                 s for s, c in rxn.stoichiometry.items() if c > 0
             )
-            lines.append(f"R{r_idx}: {reactants} -> {products}")
+            td = getattr(rxn, "thermo", None)
+            _is_rev = td is not None and not td.irreversible
+            arrow = "<=>" if _is_rev else "->"
+            lines.append(f"R{r_idx}: {reactants} {arrow} {products}")
             lines.append(f"    Enzyme: {rxn.enzyme_label}  ({rxn.ec_number or 'N/A'})")
 
             kin = rxn.kinetics
@@ -906,44 +921,75 @@ class ODESimulator:
                 km_per = getattr(kin, "km_per_substrate", None) or {}
                 km_single = kin.km
 
-                if kcat is not None and e_conc > 0:
-                    rate_pre = f"v{r_idx} = kcat * [{rxn.enzyme_label}] * "
-                elif vmax is not None:
-                    rate_pre = f"v{r_idx} = Vmax * "
-                else:
-                    rate_pre = f"v{r_idx} = (missing kcat/Vmax)"
+                # Buffered species omitted (activities in Keq; matches SBML).
+                def _is_buffered(lab: str) -> bool:
+                    return constant_mask.get(lab.lower().strip(), False)
 
-                sat_parts = []
-                for r in rxn.reactant_labels:
-                    # IMPORTANT: when per-substrate Km exists, only apply Km
-                    # saturation terms to those explicitly provided. Do not
-                    # apply a global/single Km fallback to other reactants.
-                    km_val = None
-                    if km_per:
-                        km_val = km_per.get(r)
-                        if km_val is None:
-                            # No per-substrate Km for this reactant -> print as a
-                            # plain concentration factor.
-                            km_val = None
-                    else:
-                        km_val = km_single
-                    if km_val is not None and km_val > 0:
-                        sat_parts.append(f"[{r}]/(Km_{r}+[{r}])")
-                    else:
-                        sat_parts.append(f"[{r}]")
-
-                if sat_parts:
-                    rate_str = rate_pre + " * ".join(sat_parts)
+                if _is_rev:
+                    sub_terms = []
+                    for r in rxn.reactant_labels:
+                        if _is_buffered(r):
+                            continue
+                        km_val = km_per.get(r) if km_per else km_single
+                        if km_val and km_val > 0:
+                            sub_terms.append(f"[{r}]/Km_{r}")
+                        else:
+                            sub_terms.append(f"[{r}]")
+                    prod_num_terms = []
+                    prod_terms = []
+                    for p in rxn.product_labels:
+                        if _is_buffered(p):
+                            continue
+                        km_val = km_per.get(p) if km_per else None
+                        if km_val and km_val > 0:
+                            prod_num_terms.append(f"[{p}]/Km_{p}")
+                            prod_terms.append(f"(1+[{p}]/Km_{p})")
+                        else:
+                            prod_num_terms.append(f"[{p}]")
+                            prod_terms.append(f"(1+[{p}])")
+                    sub_num = " * ".join(sub_terms) if sub_terms else "1"
+                    prod_num = " * ".join(prod_num_terms) if prod_num_terms else "1"
+                    sub_den = " * ".join(
+                        f"(1+[{r}]/Km_{r})" if (km_per.get(r) or km_single) else f"(1+[{r}])"
+                        for r in rxn.reactant_labels
+                        if not _is_buffered(r)
+                    )
+                    prod_den = " * ".join(prod_terms) if prod_terms else "1"
+                    rate_str = (
+                        f"v{r_idx} = (kcat_fwd * [{rxn.enzyme_label}] * ({sub_num})"
+                        f" - kcat_rev * [{rxn.enzyme_label}] * ({prod_num}))"
+                        f" / ({sub_den} + {prod_den} - 1)"
+                    )
                 else:
-                    rate_str = rate_pre.rstrip(" * ")
+                    if kcat is not None and e_conc > 0:
+                        rate_pre = f"v{r_idx} = kcat * [{rxn.enzyme_label}] * "
+                    elif vmax is not None:
+                        rate_pre = f"v{r_idx} = Vmax * "
+                    else:
+                        rate_pre = f"v{r_idx} = (missing kcat/Vmax)"
+                    sat_parts = []
+                    for r in rxn.reactant_labels:
+                        if _is_buffered(r):
+                            continue
+                        km_val = km_per.get(r) if km_per else km_single
+                        if km_val is not None and km_val > 0:
+                            sat_parts.append(f"[{r}]/(Km_{r}+[{r}])")
+                        else:
+                            sat_parts.append(f"[{r}]")
+                    rate_str = rate_pre + " * ".join(sat_parts) if sat_parts else rate_pre.rstrip(" * ")
 
                 lines.append(f"    {rate_str}")
 
                 params = []
                 if kcat is not None:
-                    params.append(f"kcat={kcat:.6g} 1/s")
+                    if _is_rev:
+                        params.append(f"kcat_fwd={kcat:.6g} 1/s")
+                    else:
+                        params.append(f"kcat={kcat:.6g} 1/s")
                     if getattr(kin, "kcat_sd", None) is not None:
                         params.append(f"kcat_sd={kin.kcat_sd:.6g} 1/s")
+                if _is_rev and td is not None and td.kcat_rev is not None:
+                    params.append(f"kcat_rev={td.kcat_rev:.6g} 1/s")
                 if vmax is not None:
                     params.append(f"Vmax={vmax:.6g} mM/s")
                 if km_per:
@@ -959,6 +1005,14 @@ class ODESimulator:
                         params.append(f"Km_sd={kin.km_sd:.6g} mM")
                 if params:
                     lines.append(f"    Parameters: {', '.join(params)}")
+            if td is not None:
+                thermo_parts = []
+                if td.dgr_prime_kJmol is not None:
+                    thermo_parts.append(f"ΔG°'={td.dgr_prime_kJmol:.2f} kJ/mol")
+                    if td.sigma_kJmol is not None and math.isfinite(td.sigma_kJmol):
+                        thermo_parts.append(f"σ={td.sigma_kJmol:.2f} kJ/mol")
+                thermo_parts.append(f"source={td.source}")
+                lines.append(f"    Thermodynamics: {', '.join(thermo_parts)}")
             lines.append("")
 
             for species_label, coeff in rxn.stoichiometry.items():
@@ -966,7 +1020,6 @@ class ODESimulator:
                 if lc in label_to_idx and lc in species_terms:
                     species_terms[lc].append((coeff, r_idx))
 
-        # --- ODEs for each species ---
         lines.append("-" * 80)
         lines.append("ODEs (dC/dt for each species)")
         lines.append("-" * 80)
@@ -1003,265 +1056,44 @@ class ODESimulator:
 
         return output_path
 
-    # ------------------------------------------------------------------
-    # RMG-style flux trajectory metrics
-    # ------------------------------------------------------------------
-
     def _attach_flux_metrics(self, sim_result: SimulationResult, rhs: _VectorizedRHS) -> None:
-        """
-        Populate max_char_rate, final_char_rate, max_edge_rate_ratio, and
-        peak_edge_signed_rate by scanning the stored trajectory using vectorized RHS.
-        """
+        """Populate max_char_rate, final_char_rate, and max_edge_rate_ratio from the trajectory."""
         if not sim_result.success or sim_result.y.size == 0:
             sim_result.max_char_rate = 0.0
             sim_result.final_char_rate = 0.0
             sim_result.max_edge_rate_ratio = {}
-            sim_result.peak_edge_signed_rate = {}
             return
 
         n_core = len(self.model.core_species)
         n_edge = len(self.model.edge_species)
         edge_labels = [sp.label.lower().strip() for sp in self.model.edge_species]
-        
-        # Vectorized calculation over all time points
-        dydt_all_mat = rhs.compute_dydt(sim_result.y)
-        # dydt_all_mat is (n_sp, n_t)
-        
-        dydt_core_mat = dydt_all_mat[:n_core, :]
+
+        # Enlarger uses UNMASKED residual (bootstrap: isolated R_char=0).
+        dydt_unmasked = rhs.compute_dydt_unmasked(sim_result.y)
+        dydt_core_mat = dydt_unmasked[:n_core, :]
         char_rates = np.linalg.norm(dydt_core_mat, axis=0)
-        
+
         sim_result.max_char_rate = float(np.max(char_rates))
         sim_result.final_char_rate = float(char_rates[-1])
-        
+
         if n_edge > 0:
-            dydt_edge_mat = dydt_all_mat[n_core:, :]
+            dydt_edge_mat = dydt_unmasked[n_core:, :]
             abs_edge_mat = np.abs(dydt_edge_mat)
-            
-            # Peak flux metrics
-            peak_indices = np.argmax(abs_edge_mat, axis=1)
-            flux_at_peak = dydt_edge_mat[np.arange(n_edge), peak_indices]
-            sim_result.peak_edge_signed_rate = {
-                edge_labels[i]: float(flux_at_peak[i]) for i in range(n_edge)
-            }
-            
-            # Max ratio metrics
-            # rr_mat = abs_edge_mat / char_rates
-            # avoid divide by zero
             safe_char = char_rates.copy()
-            safe_char[safe_char == 0] = 1e-100 # essentially zero but avoids NaN
+            safe_char[safe_char == 0] = 1e-100
             rr_mat = abs_edge_mat / safe_char
             max_ratios = np.max(rr_mat, axis=1)
             sim_result.max_edge_rate_ratio = {
                 edge_labels[i]: float(max_ratios[i]) for i in range(n_edge)
             }
         else:
-            sim_result.peak_edge_signed_rate = {}
-            sim_result.max_edge_rate_ratio = {}
-
-    def _compute_instantaneous_rates(
-        self,
-        y_vector: np.ndarray,
-        species_labels: List[str],
-        reactions: list,
-        alias_to_model_label: Dict[str, str],
-        enzyme_conc_map: Dict[str, float],
-        core_labels_lc: set,
-        edge_labels_lc: set,
-    ) -> Tuple[float, Dict[str, float]]:
-        """
-        Compute instantaneous R_char and per-edge-species net rates at an
-        arbitrary state vector.
-
-        Returns:
-            (char_rate, edge_rates) where char_rate is the L2 norm of core
-            species net rates (mM/s) and edge_rates maps edge label (lc) to
-            its instantaneous net rate (mM/s).
-        """
-        conc_dict = self._build_conc_dict_with_ontology(species_labels, y_vector)
-
-        instant_core: Dict[str, float] = {}
-        instant_edge: Dict[str, float] = {}
-
-        for rxn in reactions:
-            v = compute_mm_rate(rxn, conc_dict, enzyme_conc_map)
-            if v == 0.0:
-                continue
-            for species_label, coeff in rxn.stoichiometry.items():
-                lc = species_label.lower().strip()
-                model_lc = alias_to_model_label.get(lc, lc)
-                if model_lc in core_labels_lc:
-                    instant_core[model_lc] = (
-                        instant_core.get(model_lc, 0.0) + coeff * v
-                    )
-                elif model_lc in edge_labels_lc:
-                    instant_edge[model_lc] = (
-                        instant_edge.get(model_lc, 0.0) + coeff * v
-                    )
-
-        char_rate = (
-            math.sqrt(sum(r * r for r in instant_core.values()))
-            if instant_core
-            else 0.0
-        )
-        return char_rate, instant_edge
-
-    def _attach_interrupt_rates(
-        self,
-        sim_result: SimulationResult,
-        species_labels: List[str],
-        reactions: list,
-        alias_to_model_label: Dict[str, str],
-        enzyme_conc_map: Dict[str, float],
-        core_labels_lc: set,
-        edge_labels_lc: set,
-    ) -> None:
-        """
-        Compute instantaneous core and edge rates at the interrupt time
-        (last stored time point) and populate ``interrupt_char_rate`` and
-        ``interrupt_edge_rates`` on the result.
-
-        RMG promotes species based on the instantaneous flux ratio at the
-        exact interrupt time, not trajectory peaks.
-        """
-        char_rate, instant_edge = self._compute_instantaneous_rates(
-            sim_result.y[:, -1],
-            species_labels, reactions, alias_to_model_label,
-            enzyme_conc_map, core_labels_lc, edge_labels_lc,
-        )
-        sim_result.interrupt_char_rate = char_rate
-        sim_result.interrupt_edge_rates = instant_edge
-
-    # ------------------------------------------------------------------
-    # Edge species rate evaluation
-    # ------------------------------------------------------------------
-
-    def evaluate_edge_rates(
-        self,
-        sim_result: SimulationResult,
-    ) -> Dict[str, float]:
-        """
-        Evaluate net production rates for *edge* species using peak flux over
-        the whole simulation (RMG-style).
-
-        Uses the maximum |flux| over all time points so that species with
-        significant transient flux are promoted even when near steady state
-        at the end. This matches RMG: "flux at some point" for promotion.
-
-        Returns:
-            Dictionary mapping edge species label (lc) -> signed rate (mM/s)
-            at the time of peak |flux|.
-        """
-        if not sim_result.success or sim_result.y.shape[1] == 0:
-            return {}
-
-        if sim_result.peak_edge_signed_rate:
-            return dict(sim_result.peak_edge_signed_rate)
-
-        species_labels = sim_result.species_labels
-        alias_to_model_label = self._build_alias_to_model_label(species_labels)
-        enzyme_conc_map = self._build_enzyme_concentration_map()
-        edge_labels_lc = {sp.label.lower().strip() for sp in self.model.edge_species}
-        all_reactions = self.model.core_reactions + self.model.edge_reactions
-
-        # Track peak |flux| and signed flux at that time for each edge species
-        peak_abs: Dict[str, float] = {}
-        flux_at_peak: Dict[str, float] = {}
-
-        for t in range(sim_result.y.shape[1]):
-            y_t = sim_result.y[:, t]
-            conc_dict = self._build_conc_dict_with_ontology(species_labels, y_t)
-
-            instant_rates: Dict[str, float] = {}
-            for rxn in all_reactions:
-                v = compute_mm_rate(rxn, conc_dict, enzyme_conc_map)
-                if v == 0.0:
-                    continue
-                for species_label, coeff in rxn.stoichiometry.items():
-                    lc = species_label.lower().strip()
-                    model_lc = alias_to_model_label.get(lc, lc)
-                    if model_lc in edge_labels_lc:
-                        instant_rates[model_lc] = instant_rates.get(model_lc, 0.0) + coeff * v
-
-            for lc, rate in instant_rates.items():
-                abs_r = abs(rate)
-                if abs_r > peak_abs.get(lc, 0.0):
-                    peak_abs[lc] = abs_r
-                    flux_at_peak[lc] = rate
-
-        return flux_at_peak
-
-    def evaluate_core_rates(
-        self,
-        sim_result: SimulationResult,
-    ) -> Dict[str, float]:
-        """
-        Evaluate net production rates for *core* species at the final
-        simulation time point. Uses all reactions (core + edge) since
-        core species can participate in edge reactions.
-
-        Returns:
-            Dictionary mapping core species label (lc) -> net rate (mM/s).
-        """
-        if not sim_result.success or sim_result.y.shape[1] == 0:
-            return {}
-
-        species_labels = sim_result.species_labels
-        final_y = sim_result.y[:, -1]
-        conc_dict = self._build_conc_dict_with_ontology(species_labels, final_y)
-        alias_to_model_label = self._build_alias_to_model_label(species_labels)
-        enzyme_conc_map = self._build_enzyme_concentration_map()
-
-        core_labels_lc = {sp.label.lower().strip() for sp in self.model.core_species}
-        core_rates: Dict[str, float] = {}
-
-        # Use all reactions: core species can be consumed/produced by edge reactions
-        all_reactions = self.model.core_reactions + self.model.edge_reactions
-        for rxn in all_reactions:
-            v = compute_mm_rate(rxn, conc_dict, enzyme_conc_map)
-            if v == 0.0:
-                continue
-            for species_label, coeff in rxn.stoichiometry.items():
-                lc = species_label.lower().strip()
-                model_lc = alias_to_model_label.get(lc, lc)
-                if model_lc in core_labels_lc:
-                    core_rates[model_lc] = core_rates.get(model_lc, 0.0) + coeff * v
-
-        return core_rates
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _build_conc_dict_with_ontology(
-        self,
-        species_labels: List[str],
-        y_vector: np.ndarray,
-    ) -> Dict[str, float]:
-        """
-        Build concentration dict (label_lc -> mM) including ontology equivalents
-        so that reactions using DB names (e.g. D-fructose 1,6-bisphosphate)
-        resolve to the model species concentration (e.g. beta-d-fructofuranose
-        1,6-bisphosphate).
-        """
-        conc_dict: Dict[str, float] = {}
-        for i, lab in enumerate(species_labels):
-            val = max(y_vector[i], 0.0) if i < len(y_vector) else 0.0
-            lc = lab.lower().strip()
-            conc_dict[lc] = max(conc_dict.get(lc, 0.0), val)
-            for equiv in get_ontology_equivalents(lab):
-                eqlc = equiv.lower().strip()
-                conc_dict[eqlc] = max(conc_dict.get(eqlc, 0.0), val)
-        return conc_dict
+            sim_result.max_edge_rate_ratio = {            }
 
     def _build_alias_to_model_label(
         self,
         species_labels: List[str],
     ) -> Dict[str, str]:
-        """
-        Map any ontology alias (lowercase) to the model's species label (lc).
-        Used to apply flux to the correct state variable when reaction
-        stoichiometry uses a different name for the same compound.
-        """
+        """Map ontology aliases to model species labels so stoichiometry lookups resolve correctly."""
         alias_to_model: Dict[str, str] = {}
         for lab in species_labels:
             model_lc = lab.lower().strip()
@@ -1271,10 +1103,7 @@ class ODESimulator:
         return alias_to_model
 
     def _build_enzyme_concentration_map(self) -> Dict[str, float]:
-        """
-        Build a mapping of enzyme label (lowercase) -> concentration (mM)
-        from the core species that are flagged as enzymes.
-        """
+        """Return enzyme label (lc) -> concentration (mM) for all enzyme core species."""
         enzyme_map: Dict[str, float] = {}
         for sp in self.model.core_species:
             if sp.is_enzyme:

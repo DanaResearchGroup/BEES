@@ -87,8 +87,15 @@ database:
 
 ## --- Settings (all current schema attributes) ---
 settings:
-  ## end_time: simulation end time (seconds unless your code interprets otherwise); must be > 0
+  ## end_time: simulation end time (seconds); must be > 0. Optional — see the
+  ## "Termination criteria" block below; at least one termination criterion must
+  ## be set for iterative mode.
   end_time: 1000.0
+  ## simulation_mode: 'iterative' (RMG-style enlargement with ODE) or 'batch' (reaction discovery only).
+  ## null auto-detects: iterative when ANY termination criterion is set
+  ## (end_time, termination_conversion, or termination_rate_ratio) and
+  ## toleranceMoveToCore > 0; batch otherwise.
+  simulation_mode: iterative
   ## time_step: sampling / step size used by stepwise integration; must be > 0 and < end_time
   time_step: 2.0
 
@@ -114,13 +121,21 @@ settings:
   ## minCoreSpeciesForPrune: do not prune until core has at least this many species
   minCoreSpeciesForPrune: 0
 
-  ## termination_conversion: stop condition; mapping label -> required conversion fraction (0..1)
+  ## Termination criteria (RMG-style). At least ONE of end_time,
+  ## termination_conversion, or termination_rate_ratio must be set for
+  ## iterative mode. The simulation stops as soon as any criterion is met.
+  ## If end_time is unset, the enlarger uses a 1e6 s safety-valve per pass
+  ## and relies on conversion / rate-ratio to terminate (bounded by max_iterations).
+
+  ## termination_conversion: mapping label -> required conversion fraction (0..1)
   ## Example:
   ## termination_conversion:
   ##   Glucose: 0.9
   termination_conversion: null
 
-  ## termination_rate_ratio: stop condition; ratio threshold (0..1) used by some workflows
+  ## termination_rate_ratio: stop when (current characteristic flux) / (peak
+  ## characteristic flux observed so far) drops below this threshold (0..1).
+  ## Matches RMG's terminationRateRatio semantics.
   termination_rate_ratio: null
 
   ## max_edge_species: optional cap on edge size (null = no cap)
@@ -142,8 +157,6 @@ settings:
   ode_atol: null
   ## max_wall_time_per_iteration: optional wall-clock cap (seconds) for one enlargement pass; null = no limit
   max_wall_time_per_iteration: null
-  ## stepwise_heartbeat_interval: log heartbeat interval (seconds) for long stepwise integrations; 0 disables
-  stepwise_heartbeat_interval: null
 
   ## verbose: log level (10, 20, 30, 40, 50)
   verbose: 20
@@ -157,14 +170,6 @@ settings:
   ## save_simulation_plots: save time-series plots (if enabled by the pipeline)
   save_simulation_plots: true
 
-  ## save_reaction_tree_plots: save reaction tree visualization(s)
-  save_reaction_tree_plots: false
-  ## reaction_tree_layout: 'graphviz' or 'simple' layout engine
-  reaction_tree_layout: graphviz
-  ## reaction_tree_rankdir: graph direction ('TB', 'BT', 'LR', 'RL')
-  reaction_tree_rankdir: TB
-  ## reaction_tree_fontsize: font size (8..24)
-  reaction_tree_fontsize: 8
 
   ## plot_max_species: optional cap for number of species shown in plots; null = no cap
   plot_max_species: null

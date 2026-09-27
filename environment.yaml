@@ -18,4 +18,5 @@ dependencies:
   - pytest
   - rdkit
   - conda-forge::python-libsbml
+  - equilibrator-api
 

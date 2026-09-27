@@ -5,11 +5,12 @@ parameters (kcat, Km, Ki) using external tools (e.g., CatPred) without coupling
 the core generator to a specific backend.
 
 Current status:
-- Provides an interface integrated with CatPred for kcat and Km estimation.
+- Provides an interface integrated with  the extrnal tool for kcat and Km estimation.
 """
 
 from __future__ import annotations
 import shutil
+import hashlib
 import logging
 import os
 import subprocess
@@ -19,7 +20,6 @@ from typing import Dict, Optional
 
 import pandas as pd
 from bees.common import canonical_smiles, log10_sd_to_linear_sd
-
 
 @dataclass(frozen=True)
 class EstimatedKinetics:
@@ -44,9 +44,8 @@ class EstimatedKinetics:
     ki_sd: Optional[float] = None
     source: str = "estimator"
 
-
 class BaseKineticsEstimator:
-    """Adaptor - base class for integrate with external kinetics estimators."""
+    """Adaptor base class for external kinetics estimators."""
 
     name: str = "base"
 
@@ -56,6 +55,7 @@ class BaseKineticsEstimator:
         enzyme_sequence: str,
         reactant_smiles: Dict[str, str],
         inhibitor_smiles: Optional[str] = None,
+        ec_number: Optional[str] = None,
     ) -> EstimatedKinetics:
         """
         Estimate kinetics from enzyme and reactant SMILES.
@@ -65,11 +65,11 @@ class BaseKineticsEstimator:
             reactant_smiles: Map of compound name -> SMILES for all reactants.
                 Used for: kcat = concatenated SMILES; Km = one per substrate.
             inhibitor_smiles: Optional inhibitor SMILES for Ki
+            ec_number: EC of the reaction, used to look up per-EC kcat scaling.
         """
         raise NotImplementedError(
             "BaseKineticsEstimator is an interface. Use build_estimator('catpred') "
         )
-
 
 class CatPredEstimator(BaseKineticsEstimator):
     """
@@ -88,29 +88,113 @@ class CatPredEstimator(BaseKineticsEstimator):
 
     name = "catpred"
 
-    def __init__(self, include_sd: bool = False):
+    def __init__(
+        self,
+        include_sd: bool = False,
+        ec_kcat_scale: Optional[Dict[str, float]] = None,
+    ):
         """
         Args:
             include_sd: If True, include SD_total (standard deviation) from CatPred output for each parameter.
+            ec_kcat_scale: Optional EC-string -> multiplier dict. Applied to kcat
+                only (not Km, not SD) as a post-hoc calibration. Keys are EC strings
+                as they appear in the reaction DB (e.g. "EC 2.3.1.41").
         """
         self.include_sd = include_sd
-        # In-process memoization: repeated CatPred calls are very expensive.
+        self.ec_kcat_scale: Dict[str, float] = dict(ec_kcat_scale or {})
+        if self.ec_kcat_scale:
+            msg = (
+                f"CatPred kcat calibration active for {len(self.ec_kcat_scale)} EC(s): "
+                + ", ".join(f"{k}x{v}" for k, v in sorted(self.ec_kcat_scale.items()))
+            )
+            logging.getLogger(__name__).info(msg)
+            print(f"[CatPredEstimator] {msg}", flush=True)
+        # In-process memoization: repeated CatPred calls are expensive.
         # Keyed by (enzyme sequence, reactant set, inhibitor, include_sd).
+        # ec_number is NOT in the key — the cached entry is the unscaled CatPred
+    
         self._memo: Dict[tuple, EstimatedKinetics] = {}
+        # BEES_CATPRED_CACHE: unset -> ~/.cache/bees/...; <path> -> that file; off/0/none/false/disable -> off.
+        _cache_env = os.environ.get("BEES_CATPRED_CACHE")
+        if _cache_env is None:
+            _cache_dir = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+                os.path.expanduser("~"), ".cache")
+            self._cache_path: Optional[str] = os.path.join(
+                _cache_dir, "bees", "catpred_predictions.pkl")
+        elif _cache_env.strip().lower() in {
+            "", "0", "off", "none", "false", "disable", "disabled",
+        }:
+            self._cache_path = None
+        else:
+            self._cache_path = _cache_env
+        if self._cache_path and os.path.exists(self._cache_path):
+            try:
+                import pickle
+                with open(self._cache_path, "rb") as fh:
+                    self._memo.update(pickle.load(fh))
+                logging.getLogger(__name__).info(
+                    "Loaded %d CatPred cache entries from %s",
+                    len(self._memo), self._cache_path,
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Could not load CatPred cache %s: %s", self._cache_path, exc
+                )
 
-    # Paths to CatPred installation and models.
-    # Set env vars (CATPRED_DIR, CATPRED_CHECKPOINT_BASE, CATPRED_CONDA_ENV) or
-    # edit these defaults to match your installation.
+    def _save_persistent_cache(self) -> None:
+        """Atomically write the memo to disk (best-effort)."""
+        if not self._cache_path:
+            return
+        try:
+            import pickle
+            import tempfile
+            d = os.path.dirname(self._cache_path) or "."
+            os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+            with os.fdopen(fd, "wb") as fh:
+                pickle.dump(self._memo, fh)
+            os.replace(tmp, self._cache_path)
+        except Exception as exc:
+            logging.getLogger(__name__).debug("CatPred cache save failed: %s", exc)
+
     CATPRED_DIR = os.environ.get("CATPRED_DIR", "/path/to/CatPred")
     CHECKPOINT_BASE = os.environ.get(
         "CATPRED_CHECKPOINT_BASE",
         "/path/to/pretrained/production"
     )
     CONDA_ENV = os.environ.get("CATPRED_CONDA_ENV", "catpred")
-    # Optional: full path to conda binary (needed when multiple conda installs exist)
     CONDA_BIN = os.environ.get("CATPRED_CONDA_BIN", "conda")
-    # Optional: direct path to python binary in catpred env; if set, bypasses conda run entirely
     CATPRED_PYTHON = os.environ.get("CATPRED_PYTHON", "")
+
+    def _apply_kcat_scaling(
+        self,
+        raw: EstimatedKinetics,
+        ec_number: Optional[str],
+    ) -> EstimatedKinetics:
+        """Multiply kcat by the EC-specific factor; kcat_sd is not scaled."""
+        if raw.kcat is None or not ec_number:
+            return raw
+        factor = self.ec_kcat_scale.get(ec_number)
+        if factor is None:
+            return raw
+        scaled = raw.kcat * factor
+        msg = (
+            f"Applied ec_kcat_scale[{ec_number}]={factor:g}: "
+            f"kcat {raw.kcat:.4g} -> {scaled:.4g} s^-1"
+        )
+        logging.getLogger(__name__).info(msg)
+        print(f"[CatPredEstimator] {msg}", flush=True)
+        return EstimatedKinetics(
+            km=raw.km,
+            km_per_substrate=raw.km_per_substrate,
+            km_sd=raw.km_sd,
+            km_sd_per_substrate=raw.km_sd_per_substrate,
+            kcat=scaled,
+            ki=raw.ki,
+            kcat_sd=raw.kcat_sd,
+            ki_sd=raw.ki_sd,
+            source=f"{raw.source} [kcat scaled x{factor} for {ec_number}]",
+        )
 
     def estimate(
         self,
@@ -118,17 +202,28 @@ class CatPredEstimator(BaseKineticsEstimator):
         enzyme_sequence: str,
         reactant_smiles: Dict[str, str],
         inhibitor_smiles: Optional[str] = None,
+        ec_number: Optional[str] = None,
     ) -> EstimatedKinetics:
         """
         Estimate kcat and Km using CatPred.
 
         - kcat: concatenated SMILES of all reactants (one kcat per reaction)
         - Km: one value per substrate (individual substrate SMILES)
+        - ec_number: if matches a key in self.ec_kcat_scale, the returned kcat is
+          multiplied by that factor (Km and SDs unchanged).
         """
+        if self.ec_kcat_scale:
+            logging.getLogger(__name__).debug(
+                "estimate() called with ec_number=%r (scale dict has %d keys)",
+                ec_number, len(self.ec_kcat_scale),
+            )
         if not reactant_smiles:
             return EstimatedKinetics(source="catpred(no reactants)")
-        
+
         memo_key = None
+        _omit_cof = os.environ.get(
+            "BEES_CATPRED_KCAT_OMIT_COFACTORS", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         try:
             memo_key = (
                 enzyme_sequence,
@@ -141,10 +236,12 @@ class CatPredEstimator(BaseKineticsEstimator):
                 ),
                 canonical_smiles(inhibitor_smiles) if inhibitor_smiles else None,
                 bool(self.include_sd),
+                self.CHECKPOINT_BASE,  # model identity: a checkpoint change invalidates
+                bool(_omit_cof),  # kcat SMILES filter mode
             )
             cached = self._memo.get(memo_key)
             if cached is not None:
-                return cached
+                return self._apply_kcat_scaling(cached, ec_number)
         except Exception:
             memo_key = None
 
@@ -187,7 +284,6 @@ class CatPredEstimator(BaseKineticsEstimator):
                             os.makedirs(os.path.dirname(dst), exist_ok=True)
                             shutil.copy2(src, dst)
                     except Exception as copy_exc:
-                        # Best-effort: continue, but keep an observable breadcrumb.
                         logging.getLogger(__name__).warning(
                             "Failed to stage CatPred item %r "
                             "(symlink error: %s; copy error: %s)",
@@ -196,10 +292,7 @@ class CatPredEstimator(BaseKineticsEstimator):
         
         os.makedirs(os.path.join(catpred_work_dir, "output"), exist_ok=True)
         os.makedirs(os.path.join(catpred_work_dir, "demo"), exist_ok=True)
-        # CatPred's demo_run.py writes a local ./predict.sh script. If we staged a
-        # symlinked predict.sh from the CatPred repo, it will be read-only and the
-        # run will fail with PermissionError. Ensure it's absent so demo_run.py can
-        # create it.
+        # CatPred demo_run.py writes ./predict.sh; a read-only symlink from the repo raises PermissionError.
         staged_predict_sh = os.path.join(catpred_work_dir, "predict.sh")
         try:
             if os.path.exists(staged_predict_sh):
@@ -209,14 +302,30 @@ class CatPredEstimator(BaseKineticsEstimator):
 
         results = {}
 
-        # --- kcat: one row with concatenated SMILES of all reactants ---
-        concatenated_smiles = ".".join(s for s in reactant_smiles.values() if s)
+        # ESM embedding cache is keyed by pdbpath; key by sequence so enzymes don't collide.
+        pdb_id = "bees_" + hashlib.md5(enzyme_sequence.encode("utf-8")).hexdigest()[:16]
+
+        # BEES_CATPRED_KCAT_OMIT_COFACTORS=1 drops GENERAL_COFACTORS from kcat SMILES only (Km unchanged).
+        if _omit_cof:
+            from bees.cofactors import GENERAL_COFACTORS as _GEN_COF
+
+            _kcat_smiles = [
+                s
+                for name, s in reactant_smiles.items()
+                if s and str(name).lower().strip() not in _GEN_COF
+            ]
+            # Fall back to all reactants if filtering emptied the list.
+            if not _kcat_smiles:
+                _kcat_smiles = [s for s in reactant_smiles.values() if s]
+        else:
+            _kcat_smiles = [s for s in reactant_smiles.values() if s]
+        concatenated_smiles = ".".join(_kcat_smiles)
         if concatenated_smiles:
             kcat_csv = os.path.join(catpred_work_dir, f"{run_id}_kcat.csv")
             df_kcat = pd.DataFrame([{
                 "SMILES": concatenated_smiles,
                 "sequence": enzyme_sequence,
-                "pdbpath": "bees_query"
+                "pdbpath": pdb_id
             }])
             try:
                 df_kcat.to_csv(kcat_csv, index=False)
@@ -269,7 +378,7 @@ class CatPredEstimator(BaseKineticsEstimator):
         if any(reactant_smiles_list):
             km_csv = os.path.join(catpred_work_dir, f"{run_id}_km.csv")
             df_km = pd.DataFrame([
-                {"SMILES": smi, "sequence": enzyme_sequence, "pdbpath": "bees_query"}
+                {"SMILES": smi, "sequence": enzyme_sequence, "pdbpath": pdb_id}
                 for smi in reactant_smiles_list if smi
             ])
             # Track which reactant name corresponds to each row (only rows with SMILES)
@@ -316,7 +425,7 @@ class CatPredEstimator(BaseKineticsEstimator):
                             results["km_per_substrate"] = km_per_substrate
                             if km_sd_per_substrate:
                                 results["km_sd_per_substrate"] = km_sd_per_substrate
-                            # Backward compat: single km = first substrate
+                            # Backward compat: single km = first substrate.
                             if km_per_substrate:
                                 first = next(iter(km_per_substrate.values()))
                                 results["km"] = first
@@ -351,7 +460,7 @@ class CatPredEstimator(BaseKineticsEstimator):
         if errors:
             source = f"catpred(errors: {'; '.join(e for e in errors if e)})"[:255]
 
-        out = EstimatedKinetics(
+        raw = EstimatedKinetics(
             km=results.get("km"),
             km_per_substrate=results.get("km_per_substrate"),
             km_sd=results.get("km_sd"),
@@ -364,26 +473,21 @@ class CatPredEstimator(BaseKineticsEstimator):
         )
         if memo_key is not None:
             try:
-                self._memo[memo_key] = out
+                self._memo[memo_key] = raw
+                self._save_persistent_cache()
             except Exception as exc:
                 logging.getLogger(__name__).debug("Failed to update CatPred memo cache for key %s: %s", memo_key, exc)
-        return out
+        return self._apply_kcat_scaling(raw, ec_number)
 
 
 def build_estimator(
     name: Optional[str],
     include_sd: bool = False,
+    ec_kcat_scale: Optional[Dict[str, float]] = None,
 ) -> Optional[BaseKineticsEstimator]:
-    """
-    Return the appropriate kinetics estimator based on the name.
-
-    Args:
-        name: Estimator backend name (e.g. 'catpred')
-        include_sd: If True, estimator will include standard deviation
-    """
+    """Return a kinetics estimator (`catpred`), or None."""
     if not name:
         return None
     if name == "catpred":
-        return CatPredEstimator(include_sd=include_sd)
+        return CatPredEstimator(include_sd=include_sd, ec_kcat_scale=ec_kcat_scale)
     raise ValueError(f"Unknown kinetics_estimator: {name}")
-

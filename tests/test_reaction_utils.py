@@ -4,8 +4,6 @@ Tests for the reaction_utils module.
 To run: pytest -v tests/test_reaction_utils.py
 """
 
-import pytest
-
 from bees.reaction_utils import (
     get_ec_aliases,
     get_enzyme_domain_cofactors,
@@ -78,6 +76,38 @@ class TestCheckReactantAvailability:
         avail, reason = check_reactant_availability("  GLUCOSE  ", {"glucose"})
         assert avail is True
         assert reason == "direct_match"
+
+    def test_sibling_acyl_coa_not_available_via_shared_category(self):
+        # Mimic enlarger expansion: Acetyl-CoA puts parent categories into available.
+        from bees.common import get_ontology_equivalents
+
+        available = set(get_ontology_equivalents("Acetyl-CoA"))
+        assert "an acyl-coa" in {a.lower() for a in available} or "an acyl-CoA" in available
+
+        avail, reason = check_reactant_availability(
+            "propanoyl-CoA",
+            available,
+            enzyme_label="FabH",
+        )
+        assert avail is False
+        assert reason is None
+
+        avail_acetyl, reason_acetyl = check_reactant_availability(
+            "Acetyl-CoA",
+            available,
+            enzyme_label="FabH",
+        )
+        assert avail_acetyl is True
+        assert reason_acetyl in {"direct_match", "ontology"}
+
+    def test_category_reactant_available_when_member_present(self):
+        avail, reason = check_reactant_availability(
+            "an acyl-CoA",
+            {"acetyl-coa"},
+            enzyme_label="FabH",
+        )
+        assert avail is True
+        assert reason == "ontology"
 
 
 class TestValidateReactionReactants:

@@ -88,8 +88,8 @@ def mock_bees_object():
 
 
 @pytest.fixture
-def mock_model_generator():
-    """ModelGenerator that returns a canned reaction on generate_reactions()."""
+def mock_reaction_generator():
+    """ReactionGenerator that returns a canned reaction on generate_reactions()."""
     mg = MagicMock()
     mg.generate_reactions.return_value = [
         _make_reaction(
@@ -125,13 +125,13 @@ class TestEnlargerResult:
 
 
 class TestIterativeEnlarger:
-    def test_rate_ratio_termination_rmg_style(self, mock_bees_object, mock_model_generator, output_dir):
+    def test_rate_ratio_termination_rmg_style(self, mock_bees_object, mock_reaction_generator, output_dir):
         """termination_rate_ratio compares final_char_rate / max_char_rate."""
         mock_bees_object.settings.termination_rate_ratio = 0.5
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -155,11 +155,11 @@ class TestIterativeEnlarger:
         )
         assert enlarger._check_rate_ratio_termination(sr2) is False
 
-    def test_initialise_model(self, mock_bees_object, mock_model_generator, output_dir):
+    def test_initialise_model(self, mock_bees_object, mock_reaction_generator, output_dir):
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -169,11 +169,11 @@ class TestIterativeEnlarger:
         assert enlarger.model.is_core_species("Enzyme")
         assert len(enlarger.model.core_species) == 2
 
-    def test_ingest_reactions(self, mock_bees_object, mock_model_generator, output_dir):
+    def test_ingest_reactions(self, mock_bees_object, mock_reaction_generator, output_dir):
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -187,12 +187,12 @@ class TestIterativeEnlarger:
         # S should still be in core
         assert enlarger.model.is_core_species("S")
 
-    def test_run_converges(self, mock_bees_object, mock_model_generator, output_dir):
+    def test_run_converges(self, mock_bees_object, mock_reaction_generator, output_dir):
         """The enlarger should run and converge (no new significant species)."""
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -202,7 +202,7 @@ class TestIterativeEnlarger:
         assert result.final_core_species >= 1
 
     def test_iterations_count_simulation_passes(
-        self, mock_bees_object, mock_model_generator, output_dir
+        self, mock_bees_object, mock_reaction_generator, output_dir
     ):
         """
         Iteration count should reflect simulation passes (interrupt cycles),
@@ -211,7 +211,7 @@ class TestIterativeEnlarger:
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -274,13 +274,13 @@ class TestIterativeEnlarger:
         # Iteration summaries include iteration 0 + one row per pass.
         assert len(enlarger._iteration_summaries) == 1 + 3
 
-    def test_max_iterations_termination(self, mock_bees_object, mock_model_generator, output_dir):
+    def test_max_iterations_termination(self, mock_bees_object, mock_reaction_generator, output_dir):
         """If we set max_iterations=1, it should stop after 1 iteration."""
         mock_bees_object.settings.max_iterations = 1
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -292,14 +292,14 @@ class TestIterativeEnlarger:
         self,
         ode_cls,
         mock_bees_object,
-        mock_model_generator,
+        mock_reaction_generator,
         output_dir,
     ):
         """Interrupt at toleranceInterruptSimulation triggers promote+reset; second run completes."""
         from bees.core_edge_model import SpeciesData
 
-        mock_model_generator.ensure_estimator_initialized = MagicMock()
-        mock_model_generator._generate_reactions.return_value = []
+        mock_reaction_generator.ensure_estimator_initialized = MagicMock()
+        mock_reaction_generator._generate_reactions.return_value = []
 
         interrupted = SimulationResult(
             t=np.array([0.0, 0.5]),
@@ -312,7 +312,6 @@ class TestIterativeEnlarger:
             max_char_rate=1.0,
             final_char_rate=0.5,
             max_edge_rate_ratio={"prodx": 0.5},
-            peak_edge_signed_rate={"prodx": 0.1},
         )
         complete = SimulationResult(
             t=np.array([0.0, 1.0]),
@@ -323,18 +322,15 @@ class TestIterativeEnlarger:
             max_char_rate=1.0,
             final_char_rate=0.5,
             max_edge_rate_ratio={},
-            peak_edge_signed_rate={},
         )
         sim_inst = MagicMock()
         sim_inst.simulate.side_effect = [interrupted, complete]
-        sim_inst.evaluate_core_rates.return_value = {}
-        sim_inst.evaluate_edge_rates.return_value = {}
         ode_cls.return_value = sim_inst
 
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -350,14 +346,14 @@ class TestIterativeEnlarger:
         self,
         ode_cls,
         mock_bees_object,
-        mock_model_generator,
+        mock_reaction_generator,
         output_dir,
     ):
         """If interrupt cannot promote (no matching edge species), only one simulate call."""
         mock_bees_object.settings.toleranceKeepInEdge = 0.01
         mock_bees_object.settings.minEdgeIterationsForPrune = 0
-        mock_model_generator.ensure_estimator_initialized = MagicMock()
-        mock_model_generator._generate_reactions.return_value = [
+        mock_reaction_generator.ensure_estimator_initialized = MagicMock()
+        mock_reaction_generator._generate_reactions.return_value = [
             _make_reaction(
                 enzyme_label="Enzyme",
                 substrate_label="S",
@@ -377,16 +373,13 @@ class TestIterativeEnlarger:
             max_char_rate=1.0,
             final_char_rate=0.5,
             max_edge_rate_ratio={"prodx": 0.5},
-            peak_edge_signed_rate={"prodx": 0.1},
         )
-        sim_inst.evaluate_core_rates.return_value = {}
-        sim_inst.evaluate_edge_rates.return_value = {}
         ode_cls.return_value = sim_inst
 
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
@@ -399,7 +392,7 @@ class TestResetToInitialConsistency:
     """Every outer enlargement iteration must start from initial concentrations."""
 
     def test_reset_called_before_each_outer_iteration(
-        self, mock_bees_object, mock_model_generator, output_dir
+        self, mock_bees_object, mock_reaction_generator, output_dir
     ):
         """Ensure reset_concentrations_to_initial is called at the start of
         each enlargement iteration, even when the previous run completed
@@ -408,12 +401,12 @@ class TestResetToInitialConsistency:
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
-            model_generator=mock_model_generator,
+            reaction_generator=mock_reaction_generator,
             logger=logger,
             output_directory=output_dir,
         )
         enlarger._initialise_model()
-        enlarger.model_generator.ensure_estimator_initialized = MagicMock()
+        enlarger.reaction_generator.ensure_estimator_initialized = MagicMock()
 
         no_interrupt_result = SimulationResult(
             t=np.array([0.0, 50.0, 100.0]),
