@@ -404,6 +404,32 @@ def identify_significant_species_at_interrupt(
     return candidates[:max_objects]
 
 
+def identify_significant_species_from_peak_ratios(
+    max_edge_rate_ratio: Dict[str, float],
+    tol_move_to_core: float,
+    max_objects: int = 10,
+) -> List[SpeciesFlux]:
+    """
+    Promote edge species whose *peak* |R_edge|/R_char over a full (non-interrupted)
+    run reached tol_move_to_core.
+
+    RMG adds any edge species whose rate ratio exceeds toleranceMoveToCore at any
+    time during the simulation, not only at interrupt instants
+    (rmgpy/solver/base.pyx, ``invalid_objects``). Without this, a species with
+    tol_move_to_core <= rr < toleranceInterruptSimulation would never be promoted.
+
+    Returns candidates sorted by peak ratio descending, truncated to *max_objects*.
+    ``rate`` is not available from peak ratios and is set to 0.0.
+    """
+    candidates = [
+        SpeciesFlux(label=label, rate=0.0, normalized_rate=rr)
+        for label, rr in max_edge_rate_ratio.items()
+        if rr >= tol_move_to_core
+    ]
+    candidates.sort(key=lambda sf: sf.normalized_rate, reverse=True)
+    return candidates[:max_objects]
+
+
 def identify_insignificant_species_from_peak_ratios(
     max_edge_rate_ratio: Dict[str, float],
     max_char_rate: float,
