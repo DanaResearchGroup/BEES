@@ -13,6 +13,7 @@ from bees.core_edge_model import CoreEdgeModel, SpeciesData
 from bees.flux_calculator import (
     identify_insignificant_species_from_peak_ratios,
     identify_significant_species_at_interrupt,
+    identify_significant_species_from_peak_ratios,
 )
 from bees.reaction_generator import GeneratedReaction, ReactionGenerator, reaction_signature
 from bees.simulator import ODESimulator, SimulationResult
@@ -226,14 +227,25 @@ class IterativeEnlarger:
                         f"promoting {len(rxn_promote_species)} associated species."
                     )
 
-            if sim_result.simulation_interrupted:
-                significant_sub = identify_significant_species_at_interrupt(
-                    sim_result.interrupt_edge_rates,
-                    sim_result.interrupt_char_rate,
+            peak_sub = []
+            if not sim_result.simulation_interrupted:
+                peak_sub = identify_significant_species_from_peak_ratios(
+                    sim_result.max_edge_rate_ratio,
                     self.tol_move_to_core,
                     max_objects=self.max_num_objects_per_iter,
-                    abs_flux_floor=self.abs_flux_floor,
                 )
+
+            if sim_result.simulation_interrupted or peak_sub:
+                if sim_result.simulation_interrupted:
+                    significant_sub = identify_significant_species_at_interrupt(
+                        sim_result.interrupt_edge_rates,
+                        sim_result.interrupt_char_rate,
+                        self.tol_move_to_core,
+                        max_objects=self.max_num_objects_per_iter,
+                        abs_flux_floor=self.abs_flux_floor,
+                    )
+                else:
+                    significant_sub = peak_sub
                 if not significant_sub and not rxn_promote_species:
                     # Interrupt but nothing promotable: resume from here, don't terminate.
                     t_resume = float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0
@@ -264,13 +276,20 @@ class IterativeEnlarger:
                             if self.logger:
                                 self.logger.warning(f"  {result.convergence_reason}")
                             break
-                        significant_sub = identify_significant_species_at_interrupt(
-                            sim_result.interrupt_edge_rates,
-                            sim_result.interrupt_char_rate,
-                            self.tol_move_to_core,
-                            max_objects=self.max_num_objects_per_iter,
-                            abs_flux_floor=self.abs_flux_floor,
-                        )
+                        if sim_result.simulation_interrupted:
+                            significant_sub = identify_significant_species_at_interrupt(
+                                sim_result.interrupt_edge_rates,
+                                sim_result.interrupt_char_rate,
+                                self.tol_move_to_core,
+                                max_objects=self.max_num_objects_per_iter,
+                                abs_flux_floor=self.abs_flux_floor,
+                            )
+                        else:
+                            significant_sub = identify_significant_species_from_peak_ratios(
+                                sim_result.max_edge_rate_ratio,
+                                self.tol_move_to_core,
+                                max_objects=self.max_num_objects_per_iter,
+                            )
                         rxn_promote_species = []
                         if (
                             self.tol_move_edge_reaction_to_core is not None
@@ -321,11 +340,17 @@ class IterativeEnlarger:
                 labels_csv = ", ".join(sf.label for sf in significant_sub[:3])
                 if len(significant_sub) > 3:
                     labels_csv += f", ... (+{len(significant_sub) - 3} more)"
-                self.logger.info(
-                    f"  Interrupt at t={t_int:.6e} s: "
-                    f"R_char={sim_result.interrupt_char_rate:.6e}, "
-                    f"promoting {len(significant_sub)}: [{labels_csv}]"
-                )
+                if sim_result.simulation_interrupted:
+                    self.logger.info(
+                        f"  Interrupt at t={t_int:.6e} s: "
+                        f"R_char={sim_result.interrupt_char_rate:.6e}, "
+                        f"promoting {len(significant_sub)}: [{labels_csv}]"
+                    )
+                else:
+                    self.logger.info(
+                        f"  Full run to t={t_int:.6e} s without interrupt: peak rate ratio "
+                        f">= tol_move_to_core, promoting {len(significant_sub)}: [{labels_csv}]"
+                    )
                 for sf in significant_sub:
                     rr_s = (
                         f"{sf.normalized_rate:.4e}"

@@ -341,6 +341,60 @@ class TestIterativeEnlarger:
         enlarger.run()
         assert sim_inst.simulate.call_count == 2
 
+    @pytest.mark.parametrize(
+        "peak_rr, expect_promoted",
+        [(0.5, True), (1e-7, False)],
+    )
+    @patch("bees.enlarger.ODESimulator")
+    def test_full_run_promotes_by_peak_ratio(
+        self,
+        ode_cls,
+        mock_bees_object,
+        mock_reaction_generator,
+        output_dir,
+        peak_rr,
+        expect_promoted,
+    ):
+        """Non-interrupted run: promote edge species whose peak rr >= toleranceMoveToCore (RMG)."""
+        from bees.core_edge_model import SpeciesData
+
+        mock_bees_object.settings.toleranceInterruptSimulation = 1.0
+        mock_bees_object.settings.end_time = 100.0
+        mock_reaction_generator.ensure_estimator_initialized = MagicMock()
+        mock_reaction_generator._generate_reactions.return_value = []
+
+        def _complete(ratios):
+            return SimulationResult(
+                t=np.array([0.0, 100.0]),
+                y=np.ones((3, 2)),
+                species_labels=["S", "Enzyme", "prodx"],
+                success=True,
+                simulation_interrupted=False,
+                max_char_rate=1.0,
+                final_char_rate=0.5,
+                max_edge_rate_ratio=ratios,
+            )
+
+        sim_inst = MagicMock()
+        sim_inst.simulate.side_effect = [_complete({"prodx": peak_rr}), _complete({})]
+        ode_cls.return_value = sim_inst
+
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+        enlarger._initialise_model()
+        enlarger.model.add_edge_species(
+            SpeciesData(label="prodx", concentration=0.0, initial_concentration=0.0)
+        )
+        result = enlarger.run()
+
+        assert result.converged
+        assert enlarger.model.is_core_species("prodx") is expect_promoted
+        assert sim_inst.simulate.call_count == (2 if expect_promoted else 1)
+
     @patch("bees.enlarger.ODESimulator")
     def test_no_prune_when_simulation_interrupted(
         self,
