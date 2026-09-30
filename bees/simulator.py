@@ -40,6 +40,12 @@ class SimulationResult:
     interrupt_edge_rates: Dict[str, float] = field(default_factory=dict)
     # Signature is reaction_signature (includes enzyme).
     max_edge_reaction_dlnaccum: Dict[Tuple, float] = field(default_factory=dict)
+    # "rate_ratio" or "conversion" when the stepwise pass stopped at a termination criterion.
+    termination_reason: str = ""
+
+    @property
+    def terminated_early(self) -> bool:
+        return bool(self.termination_reason)
 
 class _VectorizedRHS:
     """NumPy-vectorized ODE RHS compiled once (no per-call Python loops)."""
@@ -400,8 +406,15 @@ class ODESimulator:
         tol_move_edge_reaction_to_core: Optional[float] = None,
         max_wall_time_s: Optional[float] = None,
         stepwise_heartbeat_interval_s: Optional[float] = None,
+        termination_rate_ratio: Optional[float] = None,
+        termination_conversion: Optional[Dict[str, float]] = None,
     ) -> SimulationResult:
-        """Run an ODE simulation of the full model (core + edge species and reactions)."""
+        """Run an ODE simulation of the full model (core + edge species and reactions).
+
+        termination_rate_ratio / termination_conversion stop the stepwise pass as soon
+        as R_char/peak drops below the ratio or a conversion target is met;
+        they have no effect on the continuous path.
+        """
         species_labels = self.model.get_all_species_labels()
         n_species = len(species_labels)
 
@@ -432,6 +445,8 @@ class ODESimulator:
                 tol_move_edge_reaction_to_core=tol_move_edge_reaction_to_core,
                 max_wall_time_s=max_wall_time_s,
                 stepwise_heartbeat_interval_s=stepwise_heartbeat_interval_s,
+                termination_rate_ratio=termination_rate_ratio,
+                termination_conversion=termination_conversion,
             )
         return self._simulate_continuous(
             end_time=end_time,
@@ -546,8 +561,13 @@ class ODESimulator:
         tol_move_edge_reaction_to_core: Optional[float] = None,
         max_wall_time_s: Optional[float] = None,
         stepwise_heartbeat_interval_s: Optional[float] = None,
+        termination_rate_ratio: Optional[float] = None,
+        termination_conversion: Optional[Dict[str, float]] = None,
     ) -> SimulationResult:
-        """Advance by dt; interrupt when any edge flux ratio exceeds tolerance (earliest at t > 0)."""
+        """Advance by dt; interrupt when any edge flux ratio exceeds tolerance (earliest at t > 0).
+
+        Termination criteria are checked after the interrupt checks at every outer step.
+        """
         species_labels = self.model.get_all_species_labels()
         n_species = len(species_labels)
         label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
@@ -608,6 +628,14 @@ class ODESimulator:
             edge_rxn_global_idx.append(j_global)
 
         max_edge_rxn_dlnaccum: Dict[Tuple, float] = {sig: 0.0 for sig in edge_rxn_sigs}
+
+        conversion_targets: List[Tuple[str, int, float, float]] = []
+        for sp_label, target_frac in (termination_conversion or {}).items():
+            idx = label_to_idx.get(sp_label.lower().strip())
+            if idx is not None and y0[idx] > 0.0:
+                conversion_targets.append((sp_label, idx, float(y0[idx]), float(target_frac)))
+        termination_reason = ""
+
         # Small floor to keep ln(1 + v/R) finite when R ~ 0.
         _RATE_FLOOR = 1e-30
 
@@ -809,6 +837,34 @@ class ODESimulator:
                     )
                 break
 
+            if not first_step:
+                if (
+                    termination_rate_ratio is not None
+                    and max_char_rate > 0.0
+                    and char_rate / max_char_rate < termination_rate_ratio
+                ):
+                    termination_reason = "rate_ratio"
+                    detail = (
+                        f"R_char/peak={char_rate / max_char_rate:.4e} "
+                        f"< {termination_rate_ratio}"
+                    )
+                else:
+                    for sp_label, idx, c0, target_frac in conversion_targets:
+                        conversion = 1.0 - max(float(current_y[idx]), 0.0) / c0
+                        if conversion >= target_frac:
+                            termination_reason = "conversion"
+                            detail = (
+                                f"conversion of '{sp_label}'={conversion:.4f} "
+                                f">= {target_frac}"
+                            )
+                            break
+                if termination_reason:
+                    if self.logger:
+                        self.logger.info(
+                            f"ODE terminated at t={current_t:.6e} s ({detail})"
+                        )
+                    break
+
             first_step = False
 
             # Do not shrink dt while max_rr <= tol.
@@ -840,6 +896,7 @@ class ODESimulator:
             message=fail_msg,
             simulation_interrupted=interrupted,
             max_char_rate=max_char_rate,
+            termination_reason=termination_reason,
         )
 
         if result.success and y_arr.shape[1] > 0:

@@ -396,6 +396,66 @@ class TestIterativeEnlarger:
         assert sim_inst.simulate.call_count == (2 if expect_promoted else 1)
 
     @patch("bees.enlarger.ODESimulator")
+    def test_terminated_growth_run_is_replaced_by_full_length_profile(
+        self,
+        ode_cls,
+        mock_bees_object,
+        mock_reaction_generator,
+        output_dir,
+    ):
+        """Early termination converges; exported profile is re-simulated to end_time (RMG)."""
+        from bees.core_edge_model import SpeciesData
+
+        mock_bees_object.settings.toleranceInterruptSimulation = 1.0
+        mock_bees_object.settings.end_time = 100.0
+        mock_bees_object.settings.termination_rate_ratio = 0.01
+        mock_reaction_generator.ensure_estimator_initialized = MagicMock()
+        mock_reaction_generator._generate_reactions.return_value = []
+
+        terminated = SimulationResult(
+            t=np.array([0.0, 20.0]),
+            y=np.ones((3, 2)),
+            species_labels=["S", "Enzyme", "prodx"],
+            success=True,
+            max_char_rate=1.0,
+            final_char_rate=0.005,
+            max_edge_rate_ratio={"prodx": 1e-7},
+            termination_reason="rate_ratio",
+        )
+        full = SimulationResult(
+            t=np.array([0.0, 50.0, 100.0]),
+            y=np.ones((3, 3)),
+            species_labels=["S", "Enzyme", "prodx"],
+            success=True,
+        )
+        sim_inst = MagicMock()
+        sim_inst.simulate.side_effect = [terminated, full]
+        ode_cls.return_value = sim_inst
+
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+        enlarger._initialise_model()
+        enlarger.model.add_edge_species(
+            SpeciesData(label="prodx", concentration=0.0, initial_concentration=0.0)
+        )
+        result = enlarger.run()
+
+        assert result.converged
+        assert result.convergence_reason == "Termination rate ratio reached."
+        assert not enlarger.model.is_core_species("prodx")
+        assert sim_inst.simulate.call_count == 2
+        growth_kwargs = sim_inst.simulate.call_args_list[0].kwargs
+        assert growth_kwargs["termination_rate_ratio"] == 0.01
+        final_kwargs = sim_inst.simulate.call_args_list[1].kwargs
+        assert final_kwargs["end_time"] == 100.0
+        assert "termination_rate_ratio" not in final_kwargs
+        assert result.simulation_profiles[-1] is full
+
+    @patch("bees.enlarger.ODESimulator")
     def test_no_prune_when_simulation_interrupted(
         self,
         ode_cls,

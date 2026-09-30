@@ -282,6 +282,47 @@ class TestStepwiseInterrupt:
         assert len(result.t) >= 2
         assert result.y.shape[1] == len(result.t)
 
+    def test_stepwise_stops_at_termination_rate_ratio(self):
+        """R_char/peak below termination_rate_ratio ends the pass before end_time."""
+        model = _make_core_edge_model_with_immediate_flux()
+        # Edge branch on S (not P) so R_char decays once S is depleted.
+        edge = model.edge_reactions[0]
+        edge.substrate_label = "S"
+        edge.reactant_labels = ["S"]
+        edge.stoichiometry = {"S": -1, "E_prod": 1}
+        result = ODESimulator(model).simulate(
+            end_time=5000.0,
+            interrupt_simulation_tol=1e9,
+            termination_rate_ratio=0.1,
+        )
+        assert result.termination_reason == "rate_ratio"
+        assert result.terminated_early
+        assert not result.simulation_interrupted
+        assert 0.0 < result.t[-1] < 5000.0
+        assert result.final_char_rate / result.max_char_rate < 0.1 * 1.01
+
+    def test_stepwise_stops_at_termination_conversion(self):
+        """Reaching a conversion target ends the pass before end_time."""
+        model = _make_core_edge_model_with_immediate_flux()
+        result = ODESimulator(model).simulate(
+            end_time=5000.0,
+            interrupt_simulation_tol=1e9,
+            termination_conversion={"S": 0.5},
+        )
+        s_idx = [lab.lower() for lab in result.species_labels].index("s")
+        assert result.termination_reason == "conversion"
+        assert result.t[-1] < 5000.0
+        assert result.y[s_idx, -1] <= 5.0
+
+    def test_stepwise_without_termination_runs_to_end_time(self):
+        model = _make_core_edge_model_with_immediate_flux()
+        result = ODESimulator(model).simulate(
+            end_time=500.0,
+            interrupt_simulation_tol=1e9,
+        )
+        assert not result.terminated_early
+        assert result.t[-1] == pytest.approx(500.0)
+
     def test_stepwise_dt_is_capped_at_5s(self):
         """
         The outer-step dt in stepwise mode should never exceed 5 s.
