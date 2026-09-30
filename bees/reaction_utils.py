@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+"""
+Reaction utilities module for BEES.
+This module contains utilities for validating and generating reactions.
+"""
+
 from typing import List, Set, Optional
 from bees.common import get_ontology_equivalents, load_ontology_categories
 from bees.cofactors import COFACTORS_ALWAYS_AVAILABLE
@@ -101,9 +106,9 @@ def check_reactant_availability(
     Check whether a reactant is "available" for reaction generation.
 
     Checks are applied in this order:
-    1) Always-available cofactors (e.g., H2O, H+, Pi; see COFACTORS_ALWAYS_AVAILABLE)
-    2) Direct match in `available_species_labels_lc`
-    3) Enzyme domain cofactors (if `enzyme_label` given; skipped for acyl-ACP reactants)
+    1) Always-available cofactors (e.g., H2O, H+, Pi; see COFACTORS_ALWAYS_AVAILABLE at bees.cofactors)
+    2) Direct match in `available_species_labels_lc` (lowercase)
+    3) Enzyme domain cofactors (if `enzyme_label` given)
     4) Ontology equivalents — with concrete vs category asymmetry:
        - Category reactant (e.g. "an acyl-CoA"): available if any member / alias is present.
        - Concrete reactant (e.g. "propanoyl-CoA"): only synonyms / ACP permutations count;
@@ -126,7 +131,7 @@ def check_reactant_availability(
     coenzyme_flags = get_coenzyme_like_flags(reactant)
 
     # Check if it's an always-available cofactor (implicitly available).
-    # NOTE: This uses COFACTORS_ALWAYS_AVAILABLE, which is a restricted subset
+    # NOTE: This uses COFACTORS_ALWAYS_AVAILABLE function at bees.cofactors, which is a restricted subset
     # of GENERAL_COFACTORS (H2O, H+, Pi, inorganic ions, etc.), so that high‑
     # energy carriers like ATP / NAD(H)/NADP(H) still need to be provided in
     # the input species list or produced in the network.
@@ -137,7 +142,7 @@ def check_reactant_availability(
         return True, "direct_match"
 
     # Check if it's a domain cofactor (part of enzyme structure)
-    # Skip for acyl-ACP: acetyl-ACP, hexanoyl-ACP etc. must come from prior reactions, not the domain
+    # in this version Skip for acyl-ACP: acetyl-ACP, hexanoyl-ACP etc. must come from prior reactions, not the domain
     if enzyme_label and not coenzyme_flags.get("is_acyl_acp", False):
         domain_cofactors = get_enzyme_domain_cofactors(enzyme_label)
         # Ensure patterns are lowercase for consistent matching
@@ -146,7 +151,7 @@ def check_reactant_availability(
             return True, "domain_cofactor"
 
     # Ontology equivalents. Category parents in the *available* set must not make
-    # sibling concrete molecules look present (Acetyl-CoA ≠ propanoyl-CoA).
+    # sibling concrete molecules look present (e.g Acetyl-CoA ≠ propanoyl-CoA).
     # Category keys from load_ontology_categories are lowercase; aliases from
     # get_ontology_equivalents may preserve YAML casing — compare lowercased.
     equivalents = get_ontology_equivalents(r_lc)
