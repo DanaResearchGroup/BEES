@@ -1,6 +1,8 @@
-project: fattyAcidSynthesis_ecoli
-project_directory: projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli
+project: fattyAcidSynthesis_ecoli_eps0.1
+project_directory: projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli_eps0.1
 
+# Tolerance-limit case: production FAS input with toleranceMoveToCore raised to 1e-1
+# (interrupt = 1000 x epsilon). 
 # E. coli FAS II production input. Calibrations: fabI_enoyl_reductase_measured_kcat,
 # tesa_long_chain_preference.
 # Feedback: FabH Ki=21 uM (CatPred C16 sat free acid); FabI Ki=20 uM (Bergler et al. 1996)
@@ -47,6 +49,7 @@ species:
 
 # those are the buffer components used in Yu et al. experimental setup
 # not triger reactions and can also be removed from the simulation.
+
   - label: HEPES
     concentration: 0.01
     smiles: OCCN1CCN(CCS(=O)(=O)O)CC1
@@ -162,9 +165,9 @@ settings:
   simulation_mode: iterative
   end_time: 3000
   termination_rate_ratio: 0.01
-  toleranceMoveToCore: 1e-2
+  toleranceMoveToCore: 1e-1
   toleranceKeepInEdge: 0
-  toleranceInterruptSimulation: 10
+  toleranceInterruptSimulation: 100
   max_iterations: 100
   max_num_objects_per_iter: 40
   estimate_kinetics: True
