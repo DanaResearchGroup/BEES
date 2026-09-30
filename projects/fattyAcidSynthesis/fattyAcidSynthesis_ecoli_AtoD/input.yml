@@ -1,5 +1,9 @@
-project: fattyAcidSynthesis_ecoli
-project_directory: projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli
+project: fattyAcidSynthesis_ecoli_AtoD
+project_directory: projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli_AtoD
+
+# Edge-selection case: production FAS input + AtoD (EC 2.8.3.8, P76458), which acts on the
+# FAS product butanoate: butanoate + acetyl-CoA -> butanoyl-CoA + acetate.
+# Same tolerances as production.
 
 # E. coli FAS II production input. Calibrations: fabI_enoyl_reductase_measured_kcat,
 # tesa_long_chain_preference.
@@ -45,8 +49,10 @@ species:
     constant: true
     reactive: true
 
+
 # those are the buffer components used in Yu et al. experimental setup
 # not triger reactions and can also be removed from the simulation.
+
   - label: HEPES
     concentration: 0.01
     smiles: OCCN1CCN(CCS(=O)(=O)O)CC1
@@ -150,6 +156,12 @@ enzymes:
     ecnumber: EC 3.1.2.14
     reactive: true
     amino_acid_sequence: MMNFNNVFRWHLPFLFLVLLTFRAAAADTLLILGDSLSAGYRMSASAAWPALLNDKWQSKTSVVNASISGDTSQQGLARLPALLKQHQPRWVLVELGGNDGLRGFQPQQTEQTLRQILQDVKAANAEPLLMQIRLPANYGRRYNEAFSAIYPKLAKEFDVPLLPFFMEEVYLKPQWMQDDGIHPNRDAQPFIADWMAKQLQPLVNHDS
+
+  - label: AtoD
+    concentration: 0.001
+    ecnumber: EC 2.8.3.8
+    reactive: true
+    amino_acid_sequence: MKTKLMTLQDATGFFRDGMTIMVGGFMGIGTPSRLVEALLESGVRDLTLIANDTAFVDTGIGPLIVNGRVRKVIASHIGTNPETGRRMISGEMDVVLVPQGTLIEQIRCGGAGLGGFLTPTGVGTVVEEGKQTLTLDGKTWLLERPLRADLALIRAHRCDTLGNLTYQLSARNFNPLIALAADITLVEPDELVETGELQPDHIVTPGAVIDHIIVSQESK
 
 environment:
   temperature: 298.0

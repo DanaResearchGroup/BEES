@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 
 from bees.cofactors import is_general_cofactor_label
 from bees.core_edge_model import CoreEdgeModel, SpeciesData
+from bees.flux_calculator import format_rate_law, rate_law_spec
 from bees.reaction_generator import GeneratedReaction, reaction_signature
 from bees.simulator import SimulationResult
 
@@ -385,8 +386,9 @@ class EnlargerExporter:
         """Export the network as SBML Level 3 Version 2.
 
         One compartment ``compartment1`` (1 L so mmol = mM). Core-only by default.
-        Kinetic laws: reversible common-modular (CM) when thermo is usable,
-        else forward-only MM. ``strict_invariant=True`` raises on production-only
+        Kinetic laws are the ones the simulator evaluates (flux_calculator.rate_law_spec):
+        reversible CM in the (1 - Q/Keq) form, product-inhibited CM, or legacy MM,
+        times the feedback factor. ``strict_invariant=True`` raises on production-only
         species (warns by default). See knowledge/functions/EXPORTER.md.
         """
         if not _LIBSBML_AVAILABLE:
@@ -503,10 +505,7 @@ class EnlargerExporter:
             sp.setConstant(is_const)
             sp.setBoundaryCondition(is_const)
 
-        # Set of boundary/constant species labels (H2O, H+, enzymes, buffers).
-        # These are excluded from saturation terms: their concentrations are
-        # fixed, so they don't limit the rate and their activities are already
-        # incorporated into the biochemical Keq from eQuilibrator.
+        # Boundary/constant species (H2O, H+, enzymes, buffers): never leaks.
         boundary_labels: Set[str] = {
             sd.label.lower().strip()
             for sd in species_list
@@ -591,9 +590,14 @@ class EnlargerExporter:
             p = model.createParameter()
             p.setId(pid)
             p.setName(f"[{sd.label}]")
-            p.setValue(max(input_concs.get(lc, 0.0) or 0.0, 0.0))
+            p.setValue(max(input_concs.get(lc, sd.concentration) or 0.0, 0.0))
             p.setConstant(True)
             enzyme_param_ids[lc] = pid
+        enzyme_conc_map: Dict[str, float] = {
+            sd.label.lower().strip(): sd.concentration
+            for sd in species_list
+            if getattr(sd, "is_enzyme", False)
+        }
 
         used_rxn_ids: Set[str] = set()
 
@@ -660,144 +664,47 @@ class EnlargerExporter:
 
             kl = sbml_rxn.createKineticLaw()
 
-            kcat_val = getattr(kin, "kcat", None)
-            km_per = getattr(kin, "km_per_substrate", None) or {}
-            km_single = getattr(kin, "km", None)
+            spec = rate_law_spec(rxn, enzyme_conc_map)
 
-            def _km_for_label(label: str) -> Optional[float]:
-                lc = label.lower().strip()
-                if km_per:
-                    v = km_per.get(label)
-                    if v is None:
-                        v = next(
-                            (w for k, w in km_per.items() if k.lower().strip() == lc),
-                            None,
-                        )
-                    return v
-                return km_single
+            def _new_param(pid: str, name: str, value: float) -> str:
+                base, n = pid, 2
+                while model.getParameter(pid) is not None:
+                    pid = f"{base}_{n}"
+                    n += 1
+                p = model.createParameter()
+                p.setId(pid)
+                p.setName(name)
+                p.setValue(float(value))
+                p.setConstant(True)
+                return pid
 
-            # Product Km default 1.0 matches empty Haldane list.
-            use_rev = (
-                td is not None
-                and not td.irreversible
-                and td.keq is not None
-                and math.isfinite(td.keq)
-                and td.keq > 0.0
-                and td.kcat_rev is not None
-                and math.isfinite(td.kcat_rev)
-                and kcat_val is not None
-            )
+            km_pids: Dict[Tuple[str, str], str] = {}
+            for role, terms in (("S", spec.substrates), ("P", spec.products)):
+                for lab, km_val, _ in terms:
+                    suffix = "_P" if role == "P" else ""
+                    km_pids[(lab, role)] = _new_param(
+                        f"Km_{rid}_{_sbml_id(lab)}{suffix}",
+                        f"Km for {lab} ({rxn.enzyme_label})", km_val,
+                    )
 
-            substrate_km_pairs: List[Tuple[str, str, int]] = []
-            for r_label in rxn.reactant_labels:
-                r_lc = r_label.lower().strip()
-                if r_lc in boundary_labels:
-                    continue
-                sid = label_to_id.get(r_lc)
-                if sid is None:
-                    continue 
-                km_val: Optional[float] = _km_for_label(r_label)
-                if km_val is None or km_val <= 0:
-                    use_rev = False
-                    continue
-                km_pid = f"Km_{rid}_{_sbml_id(r_label)}"
-                suffix_n = 2
-                orig_km_pid = km_pid
-                while model.getParameter(km_pid) is not None:
-                    km_pid = f"{orig_km_pid}_{suffix_n}"
-                    suffix_n += 1
-                p_km = model.createParameter()
-                p_km.setId(km_pid)
-                p_km.setName(f"Km for {r_label} ({rxn.enzyme_label})")
-                p_km.setValue(float(km_val))
-                p_km.setConstant(True)
-                
-                nu = abs(rxn.stoichiometry.get(r_label, 1))
-                substrate_km_pairs.append((sid, km_pid, nu))
-
-            product_km_pairs: List[Tuple[str, str, int]] = []
-            if use_rev:
-                for p_label in rxn.product_labels:
-                    p_lc = p_label.lower().strip()
-                    if p_lc in boundary_labels:
-                        continue
-                    sid_p = label_to_id.get(p_lc)
-                    if sid_p is None:
-                        use_rev = False
-                        break
-                    km_val_p: float = _km_for_label(p_label) or 1.0
-                    if km_val_p <= 0:
-                        km_val_p = 1.0
-                    km_pid_p = f"Km_{rid}_{_sbml_id(p_label)}_P"
-                    suffix_n = 2
-                    orig_p = km_pid_p
-                    while model.getParameter(km_pid_p) is not None:
-                        km_pid_p = f"{orig_p}_{suffix_n}"
-                        suffix_n += 1
-                    p_km_p = model.createParameter()
-                    p_km_p.setId(km_pid_p)
-                    p_km_p.setName(f"Km for {p_label} ({rxn.enzyme_label})")
-                    p_km_p.setValue(float(km_val_p))
-                    p_km_p.setConstant(True)
-                    
-                    nu = abs(rxn.stoichiometry.get(p_label, 1))
-                    product_km_pairs.append((sid_p, km_pid_p, nu))
-                if not product_km_pairs:
-                    use_rev = False
-
-            e_lc = rxn.enzyme_label.lower().strip()
-            e_param = enzyme_param_ids.get(e_lc)
-            e_token = e_param if e_param is not None else "0.001"
-
-            pid_kcat: Optional[str] = None
-            if kcat_val is not None:
-                pid_kcat = f"kcat_{rid}"
-                p_kcat = model.createParameter()
-                p_kcat.setId(pid_kcat)
-                p_kcat.setName(f"kcat ({rxn.enzyme_label})")
-                p_kcat.setValue(float(kcat_val))
-                p_kcat.setConstant(True)
-
-            if use_rev and substrate_km_pairs and product_km_pairs and pid_kcat:
-                pid_kcat_rev = f"kcat_rev_{rid}"
-                p_kcat_rev = model.createParameter()
-                p_kcat_rev.setId(pid_kcat_rev)
-                p_kcat_rev.setName(f"kcat_rev ({rxn.enzyme_label})")
-                p_kcat_rev.setValue(float(td.kcat_rev))
-                p_kcat_rev.setConstant(True)
-
-                # Keq is not a rate-law parameter: kcat_rev already carries it
-                # via the Haldane relation. It is reported in the reaction notes.
-
-                def _pow_wrap(base_expr: str, exponent: int) -> str:
-                    if exponent == 1:
-                        return base_expr
-                    return f"pow({base_expr}, {exponent})"
-
-                fwd_num = " * ".join(_pow_wrap(f"({s} / {k})", nu) for s, k, nu in substrate_km_pairs)
-                rev_num = " * ".join(_pow_wrap(f"({s} / {k})", nu) for s, k, nu in product_km_pairs)
-                sub_den = " * ".join(_pow_wrap(f"(1 + {s} / {k})", nu) for s, k, nu in substrate_km_pairs)
-                prod_den = " * ".join(_pow_wrap(f"(1 + {s} / {k})", nu) for s, k, nu in product_km_pairs)
-
-                formula = (
-                    f"({pid_kcat} * {e_token} * {fwd_num}"
-                    f" - {pid_kcat_rev} * {e_token} * {rev_num})"
-                    f" / ({sub_den} + {prod_den} - 1)"
-                )
-            elif pid_kcat and substrate_km_pairs:
-                formula_parts = [pid_kcat, e_token]
-                def _pow_wrap(base_expr: str, exponent: int) -> str:
-                    if exponent == 1:
-                        return base_expr
-                    return f"pow({base_expr}, {exponent})"
-                for sid, km_pid, nu in substrate_km_pairs:
-                    base_expr = f"({sid} / ({km_pid} + {sid}))"
-                    formula_parts.append(_pow_wrap(base_expr, nu))
-                formula = " * ".join(formula_parts)
-            elif pid_kcat:
-                formula = f"{pid_kcat} * {e_token}"
+            if spec.kcat is not None:
+                e_param = enzyme_param_ids.get(rxn.enzyme_label.lower().strip())
+                vf = f"{_new_param(f'kcat_{rid}', f'kcat ({rxn.enzyme_label})', spec.kcat)} * {e_param}"
+            elif spec.vmax is not None:
+                vf = _new_param(f"Vmax_{rid}", f"Vmax ({rxn.enzyme_label})", spec.vmax)
             else:
-                formula = "0"
+                vf = "0"
+            keq_pid = (
+                _new_param(f"Keq_{rid}", f"Keq ({rxn.enzyme_label})", spec.keq)
+                if spec.form == "reversible" else "Keq"
+            )
+            formula = format_rate_law(
+                spec,
+                conc=lambda lab: label_to_id.get(lab.lower().strip()),
+                km=lambda lab, role: km_pids[(lab, role)],
+                vf=vf,
+                keq=keq_pid,
+            )
 
             # Feedback = modifierSpeciesReference (not consumed).
             fb = getattr(rxn, "feedback_inhibitors", None)
@@ -849,12 +756,7 @@ class EnlargerExporter:
             else:
                 kl.setMath(_ast)
 
-            emitted_reversible = bool(
-                use_rev
-                and substrate_km_pairs
-                and product_km_pairs
-                and pid_kcat is not None
-            )
+            emitted_reversible = spec.form == "reversible"
             arrow = "<=>" if emitted_reversible else "->"
             sbml_rxn.setName(
                 f"{rxn.enzyme_label}: {' + '.join(rxn.reactant_labels)} {arrow} {' + '.join(rxn.product_labels)}"
@@ -869,8 +771,6 @@ class EnlargerExporter:
                     notes_parts.append(f"dGr_prime={td.dgr_prime_kJmol:.2f} kJ/mol")
                 if td.keq is not None and math.isfinite(td.keq):
                     notes_parts.append(f"Keq={td.keq:.4g}")
-                if td.kcat_rev is not None:
-                    notes_parts.append(f"kcat_rev={td.kcat_rev:.4g} 1/s")
                 notes_parts.append(f"irreversible={not emitted_reversible}")
                 sbml_rxn.setNotes(
                     "<body xmlns='http://www.w3.org/1999/xhtml'><p>"

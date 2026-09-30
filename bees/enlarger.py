@@ -181,6 +181,8 @@ class IterativeEnlarger:
                 interrupt_simulation_tol=self.tol_interrupt_simulation,
                 tol_move_edge_reaction_to_core=self.tol_move_edge_reaction_to_core,
                 max_wall_time_s=self.max_wall_time_per_iteration,
+                termination_rate_ratio=self.termination_rate_ratio,
+                termination_conversion=self.termination_conversion,
             )
             self._profiles.append(sim_result)
 
@@ -478,6 +480,9 @@ class IterativeEnlarger:
             )
             self.logger.info(result.convergence_reason)
 
+        if self._profiles and self._profiles[-1].terminated_early:
+            self._replace_last_profile_with_full_run()
+
         summary = self.model.summary()
         result.final_core_species = summary["core_species"]
         result.final_edge_species = summary["edge_species"]
@@ -634,6 +639,8 @@ class IterativeEnlarger:
         """X = 1 - C(t) / C(0); returns True when any target species reaches its threshold."""
         if not self.termination_conversion:
             return False
+        if sim_result.termination_reason == "conversion":
+            return True
 
         if sim_result.y.shape[1] == 0:
             return False
@@ -660,6 +667,31 @@ class IterativeEnlarger:
                 return True
         return False
 
+    def _replace_last_profile_with_full_run(self) -> None:
+        """Growth passes stop at termination; the exported profile must still span end_time."""
+        t_stop = float(self._profiles[-1].t[-1]) if len(self._profiles[-1].t) else 0.0
+        self.logger.info(
+            f"  Final model simulation to end_time={self.end_time:g} s "
+            f"(last growth pass stopped at termination, t={t_stop:.3e} s)."
+        )
+        self.model.reset_concentrations_to_initial()
+        full = ODESimulator(self.model, logger=self.logger).simulate(
+            end_time=self.end_time,
+            time_step=self.time_step,
+            method=self.ode_method,
+            rtol=self.ode_rtol,
+            atol=self.ode_atol,
+            interrupt_simulation_tol=float("inf"),
+            max_wall_time_s=self.max_wall_time_per_iteration,
+        )
+        if full.success:
+            self._profiles[-1] = full
+        else:
+            self.logger.warning(
+                f"  Final full-length simulation failed ({full.message}); "
+                "exporting the terminated growth profile instead."
+            )
+
     def _check_rate_ratio_termination(
         self,
         sim_result: SimulationResult,
@@ -667,6 +699,8 @@ class IterativeEnlarger:
         """Stop when R_char(t_end) / R_char(peak) < termination_rate_ratio."""
         if self.termination_rate_ratio is None:
             return False
+        if sim_result.termination_reason == "rate_ratio":
+            return True
 
         max_cr = sim_result.max_char_rate
         final_cr = sim_result.final_char_rate

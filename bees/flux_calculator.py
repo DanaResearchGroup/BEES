@@ -3,8 +3,8 @@
 """Flux and characteristic-rate calculations for the core/edge reaction network."""
 
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from bees.cofactors import is_rate_law_exempt_cofactor
 from bees.reaction_generator import GeneratedReaction
@@ -342,6 +342,178 @@ def compute_reversible_mm_rate(
         return 0.0
 
     return vmax_f * sub_sat_num * disequilibrium / denom
+
+
+@dataclass
+class RateLawSpec:
+    """Symbolic form of the rate law the simulator evaluates (feedback factor excluded).
+
+    form: "reversible" (compute_reversible_mm_rate), "product_inhibited" (CM branch of
+    compute_mm_rate), "mm" (legacy irreversible MM) or "zero". Exporters build their
+    formulas from this so written models evaluate exactly like the simulator.
+    """
+
+    form: str
+    kcat: Optional[float] = None
+    vmax: Optional[float] = None
+    substrates: List[Tuple[str, float, float]] = field(default_factory=list)  # (label, Km, nu)
+    products: List[Tuple[str, float, float]] = field(default_factory=list)  # (label, Km, nu)
+    q_substrates: List[Tuple[str, float]] = field(default_factory=list)  # (label, nu)
+    q_products: List[Tuple[str, float]] = field(default_factory=list)  # (label, nu)
+    keq: Optional[float] = None
+
+
+def _vmax_source(reaction: GeneratedReaction, e_conc: float) -> Tuple[Optional[float], Optional[float]]:
+    kin = reaction.kinetics
+    if kin.kcat is not None and e_conc > 0:
+        return kin.kcat, None
+    if kin.vmax is not None:
+        return None, kin.vmax
+    return None, None
+
+
+def _substrate_terms(reaction: GeneratedReaction) -> List[Tuple[str, float, float]]:
+    """Substrates with a usable Km (others are treated as saturated), as in compute_mm_rate."""
+    stoich = reaction.stoichiometry
+    terms = []
+    for reactant in reaction.reactant_labels:
+        km = _km_for(reaction, reactant)
+        if km is None or km <= 0:
+            continue
+        terms.append((reactant, float(km), float(abs(stoich.get(reactant, 1)))))
+    return terms
+
+
+def _irreversible_spec(reaction: GeneratedReaction, e_conc: float) -> RateLawSpec:
+    kcat, vmax = _vmax_source(reaction, e_conc)
+    if kcat is None and vmax is None:
+        return RateLawSpec("zero")
+    substrates = _substrate_terms(reaction)
+    if not has_complete_explicit_product_kms(reaction):
+        return RateLawSpec("mm", kcat=kcat, vmax=vmax, substrates=substrates)
+    stoich = reaction.stoichiometry
+    products = [
+        (p, float(explicit_product_km(reaction, p)), float(abs(stoich.get(p, 1))))
+        for p in _product_labels_requiring_km(reaction)
+    ]
+    return RateLawSpec("product_inhibited", kcat=kcat, vmax=vmax,
+                       substrates=substrates, products=products)
+
+
+def _reversible_spec(reaction: GeneratedReaction, e_conc: float) -> Optional[RateLawSpec]:
+    """Mirror of compute_reversible_mm_rate; None where it falls back to compute_mm_rate."""
+    kin = reaction.kinetics
+    thermo = reaction.thermo
+    keq = getattr(thermo, "keq", None)
+    if not isinstance(keq, (int, float)) or not math.isfinite(keq) or keq <= 0.0:
+        return None
+    if kin.kcat is None or e_conc <= 0:
+        return None
+    stoich = reaction.stoichiometry
+    substrates = []
+    for reactant in reaction.reactant_labels:
+        km = _km_for(reaction, reactant)
+        if km is None or km <= 0:
+            if is_rate_law_exempt_cofactor(reactant):
+                continue
+            return None
+        substrates.append((reactant, float(km), float(abs(stoich.get(reactant, 1)))))
+    products = []
+    for product in _product_labels_requiring_km(reaction):
+        km_p = _km_for(reaction, product)
+        if km_p is None or km_p <= 0:
+            return None
+        products.append((product, float(km_p), float(abs(stoich.get(product, 1)))))
+    q_s = [(lab, float(-c)) for lab, c in stoich.items() if c < 0 and not is_rate_law_exempt_cofactor(lab)]
+    q_p = [(lab, float(c)) for lab, c in stoich.items() if c > 0 and not is_rate_law_exempt_cofactor(lab)]
+    return RateLawSpec("reversible", kcat=kin.kcat, substrates=substrates, products=products,
+                       q_substrates=q_s, q_products=q_p, keq=float(keq))
+
+
+def rate_law_spec(reaction: GeneratedReaction, enzyme_concentrations: Dict[str, float]) -> RateLawSpec:
+    """Which rate law the simulator uses for this reaction, with its parameters (see RateLawSpec)."""
+    kin = reaction.kinetics
+    if kin is None or reaction.rate_law is None:
+        return RateLawSpec("zero")
+    thermo = getattr(reaction, "thermo", None)
+    e_conc = enzyme_concentrations.get(reaction.enzyme_label.lower().strip(), 0.0)
+    is_reversible = (
+        getattr(reaction.template, "reversible", False)
+        and thermo is not None
+        and not thermo.irreversible
+    )
+    if is_reversible:
+        spec = _reversible_spec(reaction, e_conc)
+        if spec is not None:
+            return spec
+    return _irreversible_spec(reaction, e_conc)
+
+
+def format_rate_law(
+    spec: RateLawSpec,
+    conc: Callable[[str], Optional[str]],
+    km: Callable[[str, str], str],
+    vf: str,
+    keq: str = "Keq",
+) -> str:
+    """Infix formula for ``spec`` (``^`` = power). ``conc`` returns None for species absent
+    from the written model (concentration 0); ``km(label, "S"|"P")`` names Km parameters;
+    ``vf`` is the Vmax expression (kcat*[E] or Vmax) and ``keq`` the Keq token.
+
+    Reversible form: vf * prod_i (S_i/Km_i)^nu_i * (1 - Q/Keq) / (den_S + den_P - 1),
+    written without dividing by concentrations so it stays finite at S = 0.
+    """
+    def pw(base: str, nu: float) -> str:
+        return base if nu == 1 else f"({base})^{nu:g}"
+
+    def prod(parts: List[str]) -> str:
+        return " * ".join(parts) if parts else "1"
+
+    if spec.form == "zero":
+        return "0"
+
+    if spec.form == "mm":
+        parts = [vf]
+        for lab, _, nu in spec.substrates:
+            c = conc(lab)
+            if c is None:
+                return "0"
+            parts.append(pw(f"{c} / ({km(lab, 'S')} + {c})", nu))
+        return " * ".join(parts)
+
+    for lab, _, _ in spec.substrates:
+        if conc(lab) is None:
+            return "0"
+    sub_den = prod([pw(f"(1 + {conc(lab)} / {km(lab, 'S')})", nu) for lab, _, nu in spec.substrates])
+    prod_den = prod([
+        pw(f"(1 + {conc(lab)} / {km(lab, 'P')})", nu)
+        for lab, _, nu in spec.products if conc(lab) is not None
+    ])
+    den = f"({sub_den} + {prod_den} - 1)"
+
+    if spec.form == "product_inhibited":
+        sub_num = prod([pw(f"({conc(lab)} / {km(lab, 'S')})", nu) for lab, _, nu in spec.substrates])
+        return f"{vf} * {sub_num} / {den}"
+
+    q_s = dict(spec.q_substrates)
+    sat_labels = {lab for lab, _, _ in spec.substrates}
+    q_s_only = [(lab, nu) for lab, nu in spec.q_substrates if lab not in sat_labels]
+    if any(conc(lab) is None for lab, _ in q_s_only):
+        return "0"
+    both = [(lab, nu) for lab, _, nu in spec.substrates if lab in q_s]
+    fwd = prod([pw(conc(lab), q_s[lab]) for lab, _ in both])
+    if any(conc(lab) is None for lab, _ in spec.q_products):
+        driving = fwd
+    else:
+        rev_den = " * ".join([keq] + [pw(conc(lab), nu) for lab, nu in q_s_only])
+        rev = prod([pw(conc(lab), nu) for lab, nu in spec.q_products])
+        driving = f"{fwd} - {rev} / ({rev_den})"
+    factors = [vf] + [pw(f"({conc(lab)} / {km(lab, 'S')})", nu)
+                      for lab, _, nu in spec.substrates if lab not in q_s]
+    formula = " * ".join(factors + [f"({driving})"])
+    if both:
+        formula += f" / ({prod([pw(km(lab, 'S'), nu) for lab, nu in both])})"
+    return f"{formula} / {den}"
 
 
 def identify_significant_species_at_interrupt(
