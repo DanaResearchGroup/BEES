@@ -440,6 +440,52 @@ def test_feedback_inhibition_exported_to_kinetic_law(mock_bees_object, output_di
     )
 
 
+def test_sbml_kinetic_laws_evaluate_like_simulator(mock_bees_object, output_dir):
+    """
+    Each exported kineticLaw must give the simulator's rate. The reversible reaction
+    carries a scaled substrate Km and a kcat_rev that is not Haldane-consistent with it
+    (as after hydrophobic_chain_length_km); the simulator uses 1 - Q/Keq, so must the SBML.
+    """
+    libsbml = pytest.importorskip("libsbml")
+    from bees.flux_calculator import compute_mm_rate, compute_reversible_mm_rate
+
+    rxn_rev = _make_reaction_with_thermo(
+        enzyme_label="EnzymeR", reactant_labels=("A",), product_labels=("B", "H2O"),
+        stoichiometry={"A": -1, "B": 1, "H2O": 1}, keq=1.19, kcat=6.5, kcat_rev=4.67,
+    )
+    rxn_rev.kinetics.km_per_substrate = {"A": 1.4e-5, "B": 0.039}
+    rxn_pi = _make_reaction_with_thermo(
+        enzyme_label="EnzymeP", reactant_labels=("B",), product_labels=("C",),
+        stoichiometry={"B": -1, "C": 1}, irreversible=True, kcat=2.0,
+    )
+    rxn_pi.kinetics.km_per_substrate = {"B": 0.01, "C": 0.05}
+
+    path = _export_sbml_with_reactions(
+        [rxn_rev, rxn_pi], output_dir, mock_bees_object, strict_invariant=False,
+    )
+    m = libsbml.SBMLReader().readSBMLFromFile(path).getModel()
+    conc = {"a": 1.9e-6, "b": 2.27e-6, "h2o": 55.0, "c": 0.02}
+    enz = {"enzymer": 0.01, "enzymep": 0.01}
+    ns = {p.getId(): p.getValue() for p in m.getListOfParameters()}
+    ns["compartment1"] = 1.0
+    for s in m.getListOfSpecies():
+        ns[s.getId()] = conc.get(s.getName().lower(), 0.01)
+
+    expected = {
+        "EnzymeR": compute_reversible_mm_rate(rxn_rev, conc, enz),
+        "EnzymeP": compute_mm_rate(rxn_pi, conc, enz),
+    }
+    assert expected["EnzymeR"] < 1e-3 * 6.5 * 0.01  # near equilibrium, unlike kcat_rev form
+    for i in range(m.getNumReactions()):
+        rx = m.getReaction(i)
+        enzyme = rx.getName().split(":")[0]
+        formula = libsbml.formulaToL3String(rx.getKineticLaw().getMath()).replace("^", "**")
+        v = eval(formula, {"__builtins__": {}}, ns)
+        assert v == pytest.approx(expected[enzyme], rel=1e-9), (enzyme, formula)
+    assert m.getReaction(0).getReversible() is True
+    assert m.getReaction(1).getReversible() is False
+
+
 class _StrictLogger:
     """Mimics bees.logger.Logger: every level takes a single message string.
 

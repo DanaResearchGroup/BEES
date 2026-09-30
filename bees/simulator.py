@@ -19,7 +19,9 @@ from bees.core_edge_model import CoreEdgeModel
 from bees.flux_calculator import (
     compute_mm_rate,
     compute_reversible_mm_rate,
+    format_rate_law,
     has_complete_explicit_product_kms,
+    rate_law_spec,
 )
 from bees.conservator import Conservator
 from bees.reaction_generator import reaction_signature
@@ -963,7 +965,8 @@ class ODESimulator:
                 s for s, c in rxn.stoichiometry.items() if c > 0
             )
             td = getattr(rxn, "thermo", None)
-            _is_rev = td is not None and not td.irreversible
+            spec = rate_law_spec(rxn, enzyme_map)
+            _is_rev = spec.form == "reversible"
             arrow = "<=>" if _is_rev else "->"
             lines.append(f"R{r_idx}: {reactants} {arrow} {products}")
             lines.append(f"    Enzyme: {rxn.enzyme_label}  ({rxn.ec_number or 'N/A'})")
@@ -972,81 +975,41 @@ class ODESimulator:
             if kin is None or rxn.rate_law is None:
                 lines.append("    v = (no kinetics - rate = 0)")
             else:
-                e_conc = enzyme_map.get(rxn.enzyme_label.lower().strip(), 0.0)
                 kcat = kin.kcat
                 vmax = kin.vmax
                 km_per = getattr(kin, "km_per_substrate", None) or {}
                 km_single = kin.km
 
-                # Buffered species omitted (activities in Keq; matches SBML).
-                def _is_buffered(lab: str) -> bool:
-                    return constant_mask.get(lab.lower().strip(), False)
-
-                if _is_rev:
-                    sub_terms = []
-                    for r in rxn.reactant_labels:
-                        if _is_buffered(r):
-                            continue
-                        km_val = km_per.get(r) if km_per else km_single
-                        if km_val and km_val > 0:
-                            sub_terms.append(f"[{r}]/Km_{r}")
-                        else:
-                            sub_terms.append(f"[{r}]")
-                    prod_num_terms = []
-                    prod_terms = []
-                    for p in rxn.product_labels:
-                        if _is_buffered(p):
-                            continue
-                        km_val = km_per.get(p) if km_per else None
-                        if km_val and km_val > 0:
-                            prod_num_terms.append(f"[{p}]/Km_{p}")
-                            prod_terms.append(f"(1+[{p}]/Km_{p})")
-                        else:
-                            prod_num_terms.append(f"[{p}]")
-                            prod_terms.append(f"(1+[{p}])")
-                    sub_num = " * ".join(sub_terms) if sub_terms else "1"
-                    prod_num = " * ".join(prod_num_terms) if prod_num_terms else "1"
-                    sub_den = " * ".join(
-                        f"(1+[{r}]/Km_{r})" if (km_per.get(r) or km_single) else f"(1+[{r}])"
-                        for r in rxn.reactant_labels
-                        if not _is_buffered(r)
-                    )
-                    prod_den = " * ".join(prod_terms) if prod_terms else "1"
-                    rate_str = (
-                        f"v{r_idx} = (kcat_fwd * [{rxn.enzyme_label}] * ({sub_num})"
-                        f" - kcat_rev * [{rxn.enzyme_label}] * ({prod_num}))"
-                        f" / ({sub_den} + {prod_den} - 1)"
-                    )
+                if spec.kcat is not None:
+                    vf = f"kcat * [{rxn.enzyme_label}]"
+                elif spec.vmax is not None:
+                    vf = "Vmax"
                 else:
-                    if kcat is not None and e_conc > 0:
-                        rate_pre = f"v{r_idx} = kcat * [{rxn.enzyme_label}] * "
-                    elif vmax is not None:
-                        rate_pre = f"v{r_idx} = Vmax * "
-                    else:
-                        rate_pre = f"v{r_idx} = (missing kcat/Vmax)"
-                    sat_parts = []
-                    for r in rxn.reactant_labels:
-                        if _is_buffered(r):
-                            continue
-                        km_val = km_per.get(r) if km_per else km_single
-                        if km_val is not None and km_val > 0:
-                            sat_parts.append(f"[{r}]/(Km_{r}+[{r}])")
-                        else:
-                            sat_parts.append(f"[{r}]")
-                    rate_str = rate_pre + " * ".join(sat_parts) if sat_parts else rate_pre.rstrip(" * ")
+                    vf = "0"
+                expr = format_rate_law(
+                    spec,
+                    conc=lambda lab: f"[{lab}]" if lab.lower().strip() in label_to_idx else None,
+                    km=lambda lab, role: f"Km_{lab}",
+                    vf=vf,
+                )
+                rate_str = f"v{r_idx} = {expr}"
+                fb = getattr(rxn, "feedback_inhibitors", None)
+                if expr != "0" and isinstance(fb, dict) and fb:
+                    fb_terms = " * ".join(f"1/(1+([{lab}]/Ki_{lab})^h_{lab})" for lab in fb)
+                    rate_str = f"v{r_idx} = ({expr}) * {fb_terms}"
 
                 lines.append(f"    {rate_str}")
 
                 params = []
                 if kcat is not None:
-                    if _is_rev:
-                        params.append(f"kcat_fwd={kcat:.6g} 1/s")
-                    else:
-                        params.append(f"kcat={kcat:.6g} 1/s")
+                    params.append(f"kcat={kcat:.6g} 1/s")
                     if getattr(kin, "kcat_sd", None) is not None:
                         params.append(f"kcat_sd={kin.kcat_sd:.6g} 1/s")
-                if _is_rev and td is not None and td.kcat_rev is not None:
-                    params.append(f"kcat_rev={td.kcat_rev:.6g} 1/s")
+                if _is_rev:
+                    params.append(f"Keq={spec.keq:.6g}")
+                if isinstance(fb, dict):
+                    for lab, (ki_val, hill_val) in fb.items():
+                        params.append(f"Ki({lab})={float(ki_val):.6g} mM, h({lab})={float(hill_val):g}")
                 if vmax is not None:
                     params.append(f"Vmax={vmax:.6g} mM/s")
                 if km_per:

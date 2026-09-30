@@ -503,8 +503,9 @@ class TestExportOdeEquationsBufferedFilter:
         assert "Km_H+" not in rate_line, rate_line
         assert "Km_H2O" not in rate_line, rate_line
         # Variable species must still be there
-        assert "[S]/Km_S" in rate_line
-        assert "[P]/Km_P" in rate_line
+        assert "[S] / Km_S" in rate_line
+        assert "[P] / Km_P" in rate_line
+        assert "Keq" in rate_line and "kcat_rev" not in rate_line
 
     def test_buffered_species_omitted_from_irreversible_rate_law(self, tmp_path):
         model = CoreEdgeModel()

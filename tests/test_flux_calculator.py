@@ -5,12 +5,17 @@ To run:  pytest -v tests/test_flux_calculator.py
 """
 
 
+import re
 from unittest.mock import MagicMock
+
+import pytest
 
 from bees.flux_calculator import (
     compute_mm_rate,
     compute_reversible_mm_rate,
+    format_rate_law,
     has_complete_explicit_product_kms,
+    rate_law_spec,
     identify_insignificant_species_from_peak_ratios,
     identify_significant_species_at_interrupt,
 )
@@ -532,3 +537,155 @@ class TestDispatch:
         conc = {"s": 0.1, "p": 10.0}
         v = compute_mm_rate(rxn, conc, {"hexokinase": 0.001})
         assert v > 0.0  # forward MM, P ignored
+
+
+# ---------------------------------------------------------------------------
+# rate_law_spec / format_rate_law: written formulas must evaluate like the simulator
+# ---------------------------------------------------------------------------
+
+def _simulator_rate(rxn, conc, enz):
+    """Dispatch of _VectorizedRHS.compute_v (feedback excluded)."""
+    is_rev = (
+        getattr(rxn.template, "reversible", False)
+        and rxn.thermo is not None
+        and not rxn.thermo.irreversible
+    )
+    if is_rev:
+        return compute_reversible_mm_rate(rxn, conc, enz)
+    return compute_mm_rate(rxn, conc, enz)
+
+
+def _formula_rate(rxn, conc, enz):
+    spec = rate_law_spec(rxn, enz)
+    names = {}
+    km_vals = {("S", lab): km for lab, km, _ in spec.substrates}
+    km_vals.update({("P", lab): km for lab, km, _ in spec.products})
+
+    def c(lab):
+        key = "c_" + re.sub(r"\W", "_", lab)
+        names[key] = conc.get(lab.lower().strip(), 0.0)
+        return key
+
+    def km(lab, role):
+        key = f"km_{role}_" + re.sub(r"\W", "_", lab)
+        names[key] = km_vals[(role, lab)]
+        return key
+
+    e = enz.get(rxn.enzyme_label.lower().strip(), 0.0)
+    vf = f"{spec.kcat!r} * {e!r}" if spec.kcat is not None else repr(spec.vmax or 0.0)
+    expr = format_rate_law(spec, c, km, vf=vf, keq=repr(spec.keq))
+    return spec.form, eval(expr.replace("^", "**"), {"__builtins__": {}}, names)
+
+
+def _thermo(keq, irreversible=False):
+    return ThermoData(
+        dgr_prime_kJmol=-1.0, sigma_kJmol=1.0, keq=keq,
+        kcat_rev=123.0,  # deliberately not Haldane-consistent: must not matter
+        irreversible=irreversible, source="equilibrator",
+    )
+
+
+def _fabg_like():
+    rxn = _make_reaction(
+        reactant_labels=["oxoACP", "NADPH", "H+"],
+        product_labels=["OHACP", "NADP"],
+        stoichiometry={"oxoACP": -1, "NADPH": -1, "H+": -1, "OHACP": 1, "NADP": 1},
+        km=None, kcat=10.0,
+        km_per_substrate={"oxoACP": 0.08, "NADPH": 0.12, "OHACP": 0.2, "NADP": 0.15},
+    )
+    rxn.template = MagicMock(reversible=True)
+    rxn.thermo = _thermo(340.0)
+    return rxn
+
+
+def _faba_like_scaled_km():
+    rxn = _make_reaction(
+        reactant_labels=["OHACP"],
+        product_labels=["enoylACP", "H2O"],
+        stoichiometry={"OHACP": -1, "enoylACP": 1, "H2O": 1},
+        km=None, kcat=6.5,
+        km_per_substrate={"OHACP": 1.4e-5, "enoylACP": 0.039},
+    )
+    rxn.template = MagicMock(reversible=True)
+    rxn.thermo = _thermo(1.19)
+    return rxn
+
+
+def _two_to_one():
+    rxn = _make_reaction(
+        reactant_labels=["S"],
+        product_labels=["P"],
+        stoichiometry={"S": -2, "P": 1},
+        km=None, kcat=3.0,
+        km_per_substrate={"S": 0.3, "P": 0.7},
+    )
+    rxn.template = MagicMock(reversible=True)
+    rxn.thermo = _thermo(5.0)
+    return rxn
+
+
+def _product_inhibited():
+    rxn = _make_reaction(
+        reactant_labels=["A", "B", "H+"],
+        product_labels=["C", "CO2"],
+        stoichiometry={"A": -1, "B": -1, "H+": -1, "C": 1, "CO2": 1},
+        km=None, kcat=4.0,
+        km_per_substrate={"A": 0.02, "B": 0.04, "C": 0.03},
+    )
+    rxn.template = MagicMock(reversible=True)
+    rxn.thermo = _thermo(1e6, irreversible=True)
+    return rxn
+
+
+def _legacy_mm():
+    rxn = _make_reaction(
+        reactant_labels=["A"],
+        product_labels=["C"],
+        stoichiometry={"A": -1, "C": 1},
+        km=None, kcat=4.0,
+        km_per_substrate={"A": 0.02},
+    )
+    rxn.template = MagicMock(reversible=False)
+    rxn.thermo = None
+    return rxn
+
+
+_CONC_POINTS = [
+    {"oxoacp": 0.1, "nadph": 0.5, "h+": 4e-5, "ohacp": 0.01, "nadp": 0.2},
+    {"oxoacp": 1e-6, "nadph": 0.5, "h+": 4e-5, "ohacp": 0.3, "nadp": 0.5},
+    {"ohacp": 1.9e-6, "enoylacp": 2.27e-6, "h2o": 55.0},
+    {"ohacp": 1e-6, "enoylacp": 1e-3, "h2o": 55.0},
+    {"s": 0.2, "p": 0.05},
+    {"s": 0.05, "p": 2.0},
+    {"a": 0.01, "b": 0.1, "h+": 4e-5, "c": 0.2, "co2": 0.0},
+]
+
+
+@pytest.mark.parametrize(
+    "factory, form",
+    [
+        (_fabg_like, "reversible"),
+        (_faba_like_scaled_km, "reversible"),
+        (_two_to_one, "reversible"),
+        (_product_inhibited, "product_inhibited"),
+        (_legacy_mm, "mm"),
+    ],
+)
+@pytest.mark.parametrize("conc", _CONC_POINTS)
+def test_formula_matches_simulator_rate(factory, form, conc):
+    rxn = factory()
+    enz = {"hexokinase": 0.001}
+    got_form, v_formula = _formula_rate(rxn, conc, enz)
+    v_sim = _simulator_rate(rxn, conc, enz)
+    assert got_form == form
+    assert v_formula == pytest.approx(v_sim, rel=1e-9, abs=1e-18)
+
+
+def test_reversible_spec_falls_back_like_simulator_when_product_km_missing():
+    rxn = _two_to_one()
+    rxn.kinetics.km_per_substrate = {"S": 0.3}
+    conc = {"s": 0.05, "p": 2.0}
+    enz = {"hexokinase": 0.001}
+    got_form, v_formula = _formula_rate(rxn, conc, enz)
+    assert got_form == "mm"
+    assert v_formula == pytest.approx(_simulator_rate(rxn, conc, enz), rel=1e-12)
