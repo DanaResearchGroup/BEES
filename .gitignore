@@ -46,55 +46,23 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Jupyter Notebook
+# Jupyter
 .ipynb_checkpoints/
 
-# IPython
-profile_default/
-ipython_config.py
-
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
+# Environments 
 .env
 .venv
-env/
 venv/
-ENV/
-env.bak/
-venv.bak/
 
-# Spyder project settings
-.spyderproject
-.spyproject
-
-#---gstack---
+# gstack
 .gstack/
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
 
 # BEES generated outputs
 /**/output/
-scratch/**/output/
-
 
 # BEES output files (general)
 *.log
-*_errors.log
 
 # AI IDE files
 .cursor/
@@ -109,33 +77,8 @@ CLAUDE.md
 # LibreOffice lock files for CSVs
 .~lock.*.csv#
 
-#banchmarking files
-ecmdb.json
-A kinetic rationale for functional redundancy in fatty acid biosynthesis/
-
-# reusable code
-scripts/
-
 #---  in workprojects ---
 projects/In_work/
-
-#experimental data
-projects/Glycolysis/experimental/
-
-# Glycolysis validation outputs (generated)
-projects/Glycolysis/ecoli/output_validate/
-projects/Glycolysis/ecoli/output_validate_mM/
-
-# --- Personal analysis / comparison scripts (not part of the repo) ---
-projects/Glycolysis/ecoli/compare_to_chassagnole.py
-projects/Glycolysis/ecoli/plot_kinetic_params.py
-
-# --- Generated figures ---
-BEES_equations.pdf
-projects/Glycolysis/ecoli/*.pdf
-projects/Glycolysis/ecoli/*.png
-projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/*.pdf
-projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/*.png
 
 # --- Konwledge---
 knowledge
