@@ -10,7 +10,7 @@ import os
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from bees.common import canonical_smiles, smiles_to_inchi, smiles_to_inchikey,R
 
@@ -217,19 +217,17 @@ class ThermoEngine:
             )
         return cpd
 
-    def _compute_dgr_prime(
+    def _build_cc_reaction(
         self,
         stoichiometry: Dict[str, int],
         smiles_map: Dict[str, str],
-    ) -> Tuple[Optional[float], Optional[float]]:
-        """Build equilibrator Reaction and return (ΔG°′ kJ/mol, σ kJ/mol), or (None, None).
+    ):
+        """Build the equilibrator Reaction for a stoichiometry.
 
+        Returns ``("ok", Reaction)``, ``("null", None)`` when substitution cancels the
+        reaction (ΔG°′ = 0 exactly), or ``(None, None)`` when it cannot be built.
         H+ and H2O must stay in the stoichiometry (needed for is_balanced(); equilibrator accounts for both).
         """
-        cc = self._cc
-        if cc is None:
-            return None, None
-
         try:
             from equilibrator_api import Reaction  # type: ignore
         except ImportError:
@@ -257,7 +255,7 @@ class ThermoEngine:
                 break
             smiles_coeffs[can] = smiles_coeffs.get(can, 0) + coeff
         if all_have_smiles and not any(c != 0 for c in smiles_coeffs.values()):
-            return 0.0, 0.0
+            return "null", None
 
         compound_map: Dict[str, object] = {}
         for label in stoichiometry:
@@ -271,24 +269,41 @@ class ThermoEngine:
                 return None, None
             compound_map[label] = cpd
 
-        try:
-            # Accumulate coeffs per CC compound (don't overwrite when labels resolve to the same id).
-            accumulated: Dict[object, float] = {}
-            for lab, coeff in stoichiometry.items():
-                cpd = compound_map[lab]
-                accumulated[cpd] = accumulated.get(cpd, 0) + coeff
-            # Drop net-zero spectators from CoA substitution.
-            accumulated = {cpd: c for cpd, c in accumulated.items() if c != 0}
-            if not accumulated:
-                return 0.0, 0.0
-            rxn = Reaction(accumulated)
+        # Accumulate coeffs per CC compound (don't overwrite when labels resolve to the same id).
+        accumulated: Dict[object, float] = {}
+        for lab, coeff in stoichiometry.items():
+            cpd = compound_map[lab]
+            accumulated[cpd] = accumulated.get(cpd, 0) + coeff
+        # Drop net-zero spectators from CoA substitution.
+        accumulated = {cpd: c for cpd, c in accumulated.items() if c != 0}
+        if not accumulated:
+            return "null", None
+        rxn = Reaction(accumulated)
 
-            # Check balance before computing — unbalanced reactions return garbage ΔG°' with no warning.
-            if not rxn.is_balanced():
-                logger.warning(
-                    "Reaction is not balanced (atoms/charge); skipping ΔG°' computation. "
-                    "Stoichiometry: %s", dict(stoichiometry)
-                )
+        # Check balance before computing — unbalanced reactions return garbage ΔG°' with no warning.
+        if not rxn.is_balanced():
+            logger.warning(
+                "Reaction is not balanced (atoms/charge); skipping ΔG°' computation. "
+                "Stoichiometry: %s", dict(stoichiometry)
+            )
+            return None, None
+        return "ok", rxn
+
+    def _compute_dgr_prime(
+        self,
+        stoichiometry: Dict[str, int],
+        smiles_map: Dict[str, str],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Build equilibrator Reaction and return (ΔG°′ kJ/mol, σ kJ/mol), or (None, None)."""
+        cc = self._cc
+        if cc is None:
+            return None, None
+
+        try:
+            status, rxn = self._build_cc_reaction(stoichiometry, smiles_map)
+            if status == "null":
+                return 0.0, 0.0
+            if status is None:
                 return None, None
 
             res = cc.standard_dg_prime(rxn)
@@ -303,7 +318,58 @@ class ThermoEngine:
             )
             return None, None
 
-  
+    def joint_dgr_prime(
+        self,
+        stoichiometries: List[Dict[str, int]],
+        smiles_maps: List[Dict[str, str]],
+    ):
+        """Joint ΔG°′ (kJ/mol) and covariance ((kJ/mol)²) for several reactions.
+
+        Reactions share group-contribution parameters, so their ΔG°′ errors are correlated;
+        the scalar σ from ``compute_keq`` drops that. Null (carrier-swap) reactions get
+        ΔG°′ = 0 with zero variance; unbuildable ones get NaN, zero variance and
+        ``resolved=False``. Returns None when equilibrator is unavailable or disabled.
+        Not cached.
+        """
+        import numpy as np
+
+        if _is_disabled():
+            return None
+        cc = self._load_cc()
+        if cc is None:
+            return None
+
+        n = len(stoichiometries)
+        dg = np.full(n, np.nan)
+        cov = np.zeros((n, n))
+        resolved = np.zeros(n, dtype=bool)
+        cc_rxns = []
+        cc_idx = []
+        for i, (stoich, smap) in enumerate(zip(stoichiometries, smiles_maps)):
+            try:
+                status, rxn = self._build_cc_reaction(stoich, smap)
+            except Exception as e:
+                logger.warning("joint ΔG°': cannot build reaction %s: %s", dict(stoich), e)
+                continue
+            if status == "null":
+                dg[i] = 0.0
+                resolved[i] = True
+            elif status == "ok":
+                cc_rxns.append(rxn)
+                cc_idx.append(i)
+
+        if cc_rxns:
+            values, covariance = cc.standard_dg_prime_multi(
+                cc_rxns, uncertainty_representation="cov"
+            )
+            vals = np.asarray(values.m_as("kJ/mol"), dtype=float).ravel()
+            cov_sub = np.asarray(covariance.m_as("kJ**2/mol**2"), dtype=float)
+            idx = np.asarray(cc_idx)
+            dg[idx] = vals
+            cov[np.ix_(idx, idx)] = cov_sub
+            resolved[idx] = True
+        return dg, cov, resolved
+
     def compute_keq(
         self,
         stoichiometry: Dict[str, int],

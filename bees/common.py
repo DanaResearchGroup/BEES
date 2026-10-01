@@ -211,6 +211,14 @@ def log10_sd_to_linear_sd(linear_mean: float, sd_log10: float) -> float:
     var_linear = (exp_s2 - 1) * (linear_mean * linear_mean) * exp_s2
     return math.sqrt(max(0, var_linear))
 
+def linear_sd_to_log10_sd(linear_mean: float, sd_linear: float) -> float:
+    """Exact inverse of ``log10_sd_to_linear_sd`` for the same ``linear_mean``."""
+    if not (linear_mean > 0) or not (sd_linear > 0):
+        return 0.0
+    r2 = (sd_linear / linear_mean) ** 2
+    exp_s2 = (1.0 + math.sqrt(1.0 + 4.0 * r2)) / 2.0
+    return math.sqrt(math.log(exp_s2)) / math.log(10)
+
 def load_and_invert_ontology(path: str) -> Dict[str, List[str]]:
     """Read category-based YAML ontology and invert for lookups."""
     if not os.path.exists(path):
