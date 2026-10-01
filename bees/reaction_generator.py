@@ -451,6 +451,7 @@ class ReactionGenerator:
                     available_species_labels_lc=provided_species_labels_lc,
                     return_all=True,
                     substrate_smiles=substrate_smiles,
+                    enzyme_label=enzyme_label,
                 )
                 if matches:
                     all_kinetic_data.extend(matches)
@@ -810,6 +811,7 @@ class ReactionGenerator:
                         ph_range=ph_range,
                         available_species_labels_lc=provided_species_labels_lc,
                         return_all=True,
+                        enzyme_label=getattr(reaction, "enzyme_label", None),
                     )
                     for rev_kd in (rev_matches or []):
                         rev_stoich = getattr(rev_kd, "stoichiometry", None) or {}

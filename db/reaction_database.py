@@ -243,8 +243,14 @@ class ReactionDatabase:
         available_species_labels_lc: Optional[Set[str]] = None,
         return_all: bool = False,
         substrate_smiles: Optional[str] = None,
+        enzyme_label: Optional[str] = None,
     ) -> Union[Optional[KineticData], List[KineticData]]:
-        """Query by EC + substrate (SMILES then name/ontology)."""
+        """Query by EC + substrate (SMILES then name/ontology).
+
+        When several rows describe the same reaction, a row whose enzyme name
+        matches ``enzyme_label`` is kept. No match falls back to the usual
+        priority order, so a custom enzyme label still gets an EC match.
+        """
         self.logger.debug(f"Querying database: EC={ec_number}, Substrate={substrate_label}, "
                          f"Cofactor={cofactor}, TempRange={temperature_range}, pHRange={ph_range}")
 
@@ -382,9 +388,14 @@ class ReactionDatabase:
                 
                 matches.append((reaction, needs_reversal, priority_score))
 
-        # If we have matches, sort by priority (highest first) then deduplicate by (EC, substrate identity)
+        # Name match first, then priority. Dedup keeps the first row per reaction.
         if matches:
-            matches.sort(key=lambda x: -x[2])  # Sort by priority_score descending
+            label_lc = (enzyme_label or "").lower().strip()
+
+            def _name_match(rxn: KineticData) -> bool:
+                return bool(label_lc) and str(rxn.enzyme_name or "").lower().strip() == label_lc
+
+            matches.sort(key=lambda x: (-int(_name_match(x[0])), -x[2]))
 
             def _dedup_key(rxn: KineticData, needs_rev: bool) -> Tuple:
                 stoich = rxn.stoichiometry or {}
