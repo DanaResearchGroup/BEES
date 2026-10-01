@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
@@ -123,6 +124,25 @@ class RuleRegistry:
 
     def enabled_rules(self) -> Sequence[Rule]:
         return [r for r in self._rules if r.enabled]
+
+    def baseline_snapshot(self, reaction: object) -> Optional[dict[str, dict[str, Any]]]:
+        """Deep copy of the pre-rule values stored for ``reaction``, or None if unseen."""
+        snap = self._baselines.get(_reaction_key(reaction))
+        return copy.deepcopy(snap) if snap is not None else None
+
+    def seed_baseline(self, reaction: object, snap: dict[str, dict[str, Any]]) -> None:
+        """Set the pre-rule values ``apply_all`` restores for ``reaction`` (e.g. a sampled draw)."""
+        self._baselines[_reaction_key(reaction)] = copy.deepcopy(snap)
+
+    @contextmanager
+    def isolated_baselines(self) -> Iterator[None]:
+        """Run with an empty baseline store; the previous store is put back on exit."""
+        saved = self._baselines
+        self._baselines = {}
+        try:
+            yield
+        finally:
+            self._baselines = saved
 
     def apply_all(self, reactions: Iterable[object]) -> None:
         """Restore baselines then apply enabled rules."""
