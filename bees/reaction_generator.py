@@ -712,6 +712,7 @@ class ReactionGenerator:
             if getattr(enz, "label", None) == reaction.enzyme_label:
                 enzyme_seq = getattr(enz, "amino_acid_sequence", None)
                 break
+        product_km_sds: Dict[str, float] = {}
         product_kms, product_smiles = self._lookup_product_kms_via_reverse_query(
             reaction=reaction,
             stoich=stoich,
@@ -722,6 +723,7 @@ class ReactionGenerator:
             enzyme_sequence=enzyme_seq,
             smiles_map=smiles_map,
             substitutor=substitutor,
+            product_km_sds=product_km_sds,
         )
 
         if product_smiles:
@@ -733,10 +735,21 @@ class ReactionGenerator:
         kin._product_kms_for_haldane = product_kms or {}
         if product_kms:
             existing_km = getattr(kin, "km_per_substrate", None) or {}
+            existing_sd = getattr(kin, "km_sd_per_substrate", None) or {}
+            # New dict: the estimator memo hands out shared dicts.
+            merged_sd = dict(existing_sd)
             for lab, km in product_kms.items():
                 if lab not in existing_km:
                     existing_km[lab] = km
+                if (
+                    lab in product_km_sds
+                    and lab not in merged_sd
+                    and existing_km.get(lab) == km
+                ):
+                    merged_sd[lab] = product_km_sds[lab]
             kin.km_per_substrate = existing_km
+            if merged_sd:
+                kin.km_sd_per_substrate = merged_sd
 
         td_full = thermo_engine.compute_keq(stoichiometry=stoich, smiles_map=smiles_map)
         reaction.thermo = td_full
@@ -752,8 +765,12 @@ class ReactionGenerator:
         enzyme_sequence: Optional[str] = None,
         smiles_map: Optional[Dict[str, str]] = None,
         substitutor=None,
+        product_km_sds: Optional[Dict[str, float]] = None,
     ) -> tuple:
-        """Collect product Kms via reverse CatPred, then DB fallback."""
+        """Collect product Kms via reverse CatPred, then DB fallback.
+
+        If ``product_km_sds`` is given, it is filled with the reverse CatPred linear Km SDs.
+        """
         product_kms: Dict[str, float] = {}
         product_smiles: Dict[str, str] = {}
 
@@ -784,9 +801,13 @@ class ReactionGenerator:
                         ec_number=getattr(reaction, "ec_number", None)
                         or (ec_numbers_to_try[0] if ec_numbers_to_try else None),
                     )
+                    est_sds = getattr(est, "km_sd_per_substrate", None) or {}
                     for lab, km in (getattr(est, "km_per_substrate", None) or {}).items():
                         if km and km > 0 and lab not in product_kms:
                             product_kms[lab] = km
+                            sd = est_sds.get(lab)
+                            if product_km_sds is not None and sd is not None and sd > 0:
+                                product_km_sds[lab] = sd
                     self.logger.debug(
                         f"CatPred reverse Kms for {reaction.enzyme_label}"
                         f" ({reaction.substrate_label}): "
