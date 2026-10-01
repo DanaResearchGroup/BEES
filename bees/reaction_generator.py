@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
+import copy
 import os
 from types import SimpleNamespace
 
@@ -459,6 +460,9 @@ class ReactionGenerator:
 
         generated_reactions = []
         for kinetic_data in all_kinetic_data:
+            # The database returns its stored row. Two enzymes with the same EC
+            # would otherwise write into that one object.
+            kinetic_data = copy.deepcopy(kinetic_data)
             if self.kinetics_estimator is not None:
                 try:
                     enzyme_seq = getattr(enzyme, "amino_acid_sequence", None)
@@ -511,9 +515,12 @@ class ReactionGenerator:
                             if getattr(est, "ki_sd", None) is not None:
                                 kinetic_data.ki_sd = est.ki_sd
                             if getattr(est, "km_per_substrate", None):
-                                kinetic_data.km_per_substrate = est.km_per_substrate
+                                # The estimator memo hands out one shared dict per call.
+                                kinetic_data.km_per_substrate = dict(est.km_per_substrate)
                                 if getattr(est, "km_sd_per_substrate", None):
-                                    kinetic_data.km_sd_per_substrate = est.km_sd_per_substrate
+                                    kinetic_data.km_sd_per_substrate = dict(
+                                        est.km_sd_per_substrate
+                                    )
                             if est.km is not None:
                                 kinetic_data.km = est.km
                                 if getattr(est, "km_sd", None) is not None:
