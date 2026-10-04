@@ -19,7 +19,8 @@ from bees.rules.physics_rules import (
     _HYDROPHOBIC_TEMPERATURE_K,
     _R_KJ,
 )
-from db.reaction_database import KineticData
+from bees.logger import Logger
+from db.reaction_database import KineticData, ReactionDatabase
 
 _SUB = "(3R)-hydroxytetradecanoyl-[ACP]"
 _PROD = "(2E)-tetradecenoyl-[ACP]"
@@ -74,15 +75,15 @@ class _OneRowDB:
         return [self.row]
 
 
-def _row():
+def _row(enzyme_name="shared", kcat=1.0):
     return KineticData(
         ec_number=_EC,
-        enzyme_name="shared",
+        enzyme_name=enzyme_name,
         reaction_string=f"{_SUB} = {_PROD}",
         stoichiometry={_SUB: -1, _PROD: 1},
         compound_smiles=dict(_SMI),
         source="database",
-        kcat=1.0,
+        kcat=kcat,
         km_per_substrate={_SUB: 9.0},
     )
 
@@ -118,10 +119,12 @@ def _generator(enzymes, estimator):
     return gen
 
 
-def _generate_pair(with_thermo=False):
+def _generate_pair(with_thermo=False, kinetic_db=None, estimate=True):
     enzymes = [_enzyme("FabA", "SEQA"), _enzyme("FabZ", "SEQZ")]
-    estimator = _SharedMemoEstimator()
+    estimator = _SharedMemoEstimator() if estimate else None
     gen = _generator(enzymes, estimator)
+    if kinetic_db is not None:
+        gen.kinetic_db = kinetic_db
     available = {_SUB.lower(), _PROD.lower()}
     thermo = None
     if with_thermo:
@@ -168,10 +171,10 @@ def test_isozymes_keep_separate_kinetics():
     assert fab_z.kinetics.km_per_substrate[_SUB] == pytest.approx(0.050)
 
 
-def test_chain_length_km_scales_once_per_reaction():
+def test_chain_length_km_scales_once_per_reaction(monkeypatch):
     _estimator, by_enzyme = _generate_pair()
     load_rules()
-    RULES._baselines.clear()
+    monkeypatch.setattr(RULES, "_baselines", {})
     RULES.apply_all([by_enzyme["FabA"], by_enzyme["FabZ"]])
     once = _factor()
     assert by_enzyme["FabA"].kinetics.km_per_substrate[_SUB] == pytest.approx(0.040 * once)
@@ -187,3 +190,14 @@ def test_generation_does_not_mutate_estimator_memo():
     reverse = estimator.memo[("SEQA", (_PROD,))]
     assert reverse is not forward
     assert set(reverse.km_per_substrate) == {_PROD}
+
+
+def test_each_isozyme_gets_its_own_database_row(tmp_path):
+    # Equal priority, so without the enzyme name both would get the first row.
+    db = ReactionDatabase(Logger(str(tmp_path), None, 0.0))
+    db._ec_index[_EC] = [_row("FabA", kcat=11.5), _row("FabZ", kcat=7.36)]
+    _estimator, by_enzyme = _generate_pair(kinetic_db=db, estimate=False)
+    assert by_enzyme["FabA"].kinetics.enzyme_name == "FabA"
+    assert by_enzyme["FabZ"].kinetics.enzyme_name == "FabZ"
+    assert by_enzyme["FabA"].kinetics.kcat == pytest.approx(11.5)
+    assert by_enzyme["FabZ"].kinetics.kcat == pytest.approx(7.36)
