@@ -440,6 +440,35 @@ def test_feedback_inhibition_exported_to_kinetic_law(mock_bees_object, output_di
     )
 
 
+def test_sbml_passes_libsbml_consistency_check(mock_bees_object, output_dir):
+    """The exported document has no SBML errors (e.g. unit ids clashing with built-in units)."""
+    libsbml = pytest.importorskip("libsbml")
+    from bees.core_edge_model import SpeciesData
+
+    rxn = _make_reaction_with_thermo(
+        enzyme_label="FabH", reactant_labels=("A",), product_labels=("B",),
+        thermo_source="fallback", irreversible=True, keq=float("nan"),
+        kcat_rev=None, dgr=float("nan"),
+    )
+    rxn.feedback_inhibitors = {"inh_x": (0.005, 1.0)}
+    path = _export_sbml_with_reactions(
+        [rxn], output_dir, mock_bees_object, strict_invariant=False,
+        extra_species=(SpeciesData(label="inh_x", concentration=0.0),),
+    )
+
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    doc.setConsistencyChecks(libsbml.LIBSBML_CAT_UNITS_CONSISTENCY, False)
+    doc.checkConsistency()
+    errors = [
+        doc.getError(i).getMessage().strip()
+        for i in range(doc.getNumErrors())
+        if doc.getError(i).getSeverity() >= libsbml.LIBSBML_SEV_ERROR
+    ]
+    assert errors == []
+    m = doc.getModel()
+    assert (m.getTimeUnits(), m.getVolumeUnits(), m.getSubstanceUnits()) == ("second", "litre", "mmol")
+
+
 def test_feedback_inhibitors_exported_as_shared_site(mock_bees_object, output_dir):
     """Two feedback inhibitors export as one shared site, matching the simulator."""
     libsbml = pytest.importorskip("libsbml")
