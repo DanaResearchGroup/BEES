@@ -396,7 +396,7 @@ def _walk_ast_ci_names(ast_node):
 def test_feedback_inhibition_exported_to_kinetic_law(mock_bees_object, output_dir):
     """
     A reaction carrying `feedback_inhibitors` (Enzyme.feedback_inhibition, the
-    simulator's Overlay 3) must export the multiplier ∏ 1/(1+([I]/Ki)^h) into its
+    simulator's Overlay 3) must export the multiplier 1/(1+Σ([I]/Ki)^h) into its
     kineticLaw, declare each inhibitor as a modifier, and emit Ki/hill parameters.
     Without this the SBML shows the baseline shape, not the feedback shape.
     """
@@ -438,6 +438,70 @@ def test_feedback_inhibition_exported_to_kinetic_law(mock_bees_object, output_di
     assert any(n.startswith("Ki_fb_") for n in ci_names), (
         "kineticLaw must reference the feedback Ki parameter"
     )
+
+
+def test_sbml_passes_libsbml_consistency_check(mock_bees_object, output_dir):
+    """The exported document has no SBML errors (e.g. unit ids clashing with built-in units)."""
+    libsbml = pytest.importorskip("libsbml")
+    from bees.core_edge_model import SpeciesData
+
+    rxn = _make_reaction_with_thermo(
+        enzyme_label="FabH", reactant_labels=("A",), product_labels=("B",),
+        thermo_source="fallback", irreversible=True, keq=float("nan"),
+        kcat_rev=None, dgr=float("nan"),
+    )
+    rxn.feedback_inhibitors = {"inh_x": (0.005, 1.0)}
+    path = _export_sbml_with_reactions(
+        [rxn], output_dir, mock_bees_object, strict_invariant=False,
+        extra_species=(SpeciesData(label="inh_x", concentration=0.0),),
+    )
+
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    doc.setConsistencyChecks(libsbml.LIBSBML_CAT_UNITS_CONSISTENCY, False)
+    doc.checkConsistency()
+    errors = [
+        doc.getError(i).getMessage().strip()
+        for i in range(doc.getNumErrors())
+        if doc.getError(i).getSeverity() >= libsbml.LIBSBML_SEV_ERROR
+    ]
+    assert errors == []
+    m = doc.getModel()
+    assert (m.getTimeUnits(), m.getVolumeUnits(), m.getSubstanceUnits()) == ("second", "litre", "mmol")
+
+
+def test_feedback_inhibitors_exported_as_shared_site(mock_bees_object, output_dir):
+    """Two feedback inhibitors export as one shared site, matching the simulator."""
+    libsbml = pytest.importorskip("libsbml")
+    from bees.core_edge_model import SpeciesData
+    from bees.flux_calculator import compute_mm_rate
+
+    rxn = _make_reaction_with_thermo(
+        enzyme_label="FabH", reactant_labels=("A",), product_labels=("B",),
+        thermo_source="fallback", irreversible=True, keq=float("nan"),
+        kcat_rev=None, dgr=float("nan"),
+    )
+    rxn.feedback_inhibitors = {"inh_x": (0.005, 1.0), "inh_y": (0.005, 1.0)}
+
+    path = _export_sbml_with_reactions(
+        [rxn], output_dir, mock_bees_object, strict_invariant=False,
+        extra_species=(
+            SpeciesData(label="inh_x", concentration=0.0),
+            SpeciesData(label="inh_y", concentration=0.0),
+        ),
+    )
+    m = libsbml.SBMLReader().readSBMLFromFile(path).getModel()
+    conc = {"a": 0.1, "b": 0.0, "inh_x": 0.005, "inh_y": 0.005}
+    ns = {p.getId(): p.getValue() for p in m.getListOfParameters()}
+    ns["compartment1"] = 1.0
+    for s in m.getListOfSpecies():
+        ns[s.getId()] = conc.get(s.getName().lower(), 0.01)
+    base = compute_mm_rate(rxn, conc, {"fabh": ns.get(next(
+        s.getId() for s in m.getListOfSpecies() if s.getName().lower() == "fabh"
+    ), 0.01)})
+
+    formula = libsbml.formulaToL3String(m.getReaction(0).getKineticLaw().getMath())
+    v = eval(formula.replace("^", "**"), {"__builtins__": {}}, ns)
+    assert v == pytest.approx(base / 3.0, rel=1e-9), formula
 
 
 def test_sbml_kinetic_laws_evaluate_like_simulator(mock_bees_object, output_dir):

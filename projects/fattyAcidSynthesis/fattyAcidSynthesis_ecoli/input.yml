@@ -33,37 +33,30 @@ species:
     reactive: true
 
   - label: H2O
-    concentration: 55.0
+    concentration: 55500.0 # pure water, 55.5 M in mM (solvent; not used in rate laws)
     smiles: O
     constant: true
     reactive: true
     solvent: true
 
   - label: H+
-    concentration: 4e-5 # pH 7.4
+    concentration: 3.16e-5 # pH 7.5 (effect of the 100 mM sodium phosphate)
     smiles: "[H+]"
     constant: true
     reactive: true
 
-# those are the buffer components used in Yu et al. experimental setup
-# not triger reactions and can also be removed from the simulation.
-  - label: HEPES
-    concentration: 0.01
-    smiles: OCCN1CCN(CCS(=O)(=O)O)CC1
+# Buffers
+  - label: sodium phosphate 
+    concentration: 100.0
+    smiles: "[Na+].[Na+].OP([O-])([O-])=O"
     constant: true
-    reactive: true
+    reactive: false
 
-  - label: NaCl
-    concentration: 0.15
-    smiles: "[Na+].[Cl-]"
-    constant: true
-    reactive: true
-
-  - label: TCEP
-    concentration: 5e-4
+  - label: TCEP # buffer; reducing agent
+    concentration: 1.0
     smiles: O=C(O)CCP(CC(=O)O)CC(=O)O
     constant: true
-    reactive: true
+    reactive: false
 
 enzymes:
   - label: FabA 
@@ -153,7 +146,7 @@ enzymes:
 
 environment:
   temperature: 298.0
-  pH: 7.4
+  pH: 7.5
 
 database:
   name: ecoli

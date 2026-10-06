@@ -307,18 +307,16 @@ class _VectorizedRHS:
                 for col, rxn in zip(self._product_inhibited_indices, self._product_inhibited_reactions):
                     v[col] = compute_mm_rate(rxn, conc, self._enzyme_conc_map)
 
+        # Feedback inhibitors compete for one site: 1 / (1 + sum_j ([I_j]/Ki_j)^h_j).
         if self._has_feedback:
+            c = np.maximum(y_ext[self._fb_idx_mat], 0.0)
             if is_mat:
-                c = np.maximum(y_ext[self._fb_idx_mat], 0.0)
                 ki = self._fb_ki_mat[:, :, np.newaxis]
                 hill = self._fb_hill_mat[:, :, np.newaxis]
-                factor = np.prod(1.0 / (1.0 + (c / ki) ** hill), axis=1)
             else:
-                c = np.maximum(y_ext[self._fb_idx_mat], 0.0)
-                factor = np.prod(
-                    1.0 / (1.0 + (c / self._fb_ki_mat) ** self._fb_hill_mat), axis=1
-                )
-            v = v * factor
+                ki = self._fb_ki_mat
+                hill = self._fb_hill_mat
+            v = v / (1.0 + np.sum((c / ki) ** hill, axis=1))
 
         return v
 
@@ -995,8 +993,8 @@ class ODESimulator:
                 rate_str = f"v{r_idx} = {expr}"
                 fb = getattr(rxn, "feedback_inhibitors", None)
                 if expr != "0" and isinstance(fb, dict) and fb:
-                    fb_terms = " * ".join(f"1/(1+([{lab}]/Ki_{lab})^h_{lab})" for lab in fb)
-                    rate_str = f"v{r_idx} = ({expr}) * {fb_terms}"
+                    fb_terms = " + ".join(f"([{lab}]/Ki_{lab})^h_{lab}" for lab in fb)
+                    rate_str = f"v{r_idx} = ({expr}) / (1 + {fb_terms})"
 
                 lines.append(f"    {rate_str}")
 

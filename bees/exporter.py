@@ -419,14 +419,7 @@ class EnlargerExporter:
         # ----------------------------------------------------------------
         # 1.  Unit Definitions
         # ----------------------------------------------------------------
-        # Time units = seconds
-        tu = model.createUnitDefinition()
-        tu.setId("second")
-        u = tu.createUnit()
-        u.setKind(_libsbml.UNIT_KIND_SECOND)
-        u.setExponent(1)
-        u.setScale(0)
-        u.setMultiplier(1.0)
+        # Time = built-in "second", volume = built-in "litre"; L3 forbids redefining them.
         model.setTimeUnits("second")
 
         # Substance units = mmol
@@ -439,15 +432,6 @@ class EnlargerExporter:
         u2.setMultiplier(1.0)
         model.setSubstanceUnits("mmol")
         model.setExtentUnits("mmol")
-
-        # Volume units = litre
-        vu = model.createUnitDefinition()
-        vu.setId("litre")
-        u3 = vu.createUnit()
-        u3.setKind(_libsbml.UNIT_KIND_LITRE)
-        u3.setExponent(1)
-        u3.setScale(0)
-        u3.setMultiplier(1.0)
         model.setVolumeUnits("litre")
 
         # ----------------------------------------------------------------
@@ -737,9 +721,9 @@ class EnlargerExporter:
                     p_h.setName(f"feedback Hill ({rxn.enzyme_label}<-{inh_label})")
                     p_h.setValue(float(hill_val))
                     p_h.setConstant(True)
-                    fb_terms.append(f"1 / (1 + ({inh_sid} / {pid_ki})^{pid_h})")
+                    fb_terms.append(f"({inh_sid} / {pid_ki})^{pid_h}")
                 if fb_terms:
-                    formula = f"({formula}) * ({' * '.join(fb_terms)})"
+                    formula = f"({formula}) / (1 + {' + '.join(fb_terms)})"
 
            
             if formula != "0":
