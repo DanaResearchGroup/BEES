@@ -552,13 +552,14 @@ class TestFeedbackInhibition:
     """Opt-in end-product / feedback inhibition overlay in _VectorizedRHS.
 
     A reaction carrying ``feedback_inhibitors = {label: (Ki, hill)}`` has its
-    rate multiplied by ∏ 1/(1+([I]/Ki)^hill). Reactions without the attribute
-    (None, or a MagicMock as built by _make_reaction) are unaffected.
+    rate multiplied by the shared-site factor 1/(1 + Σ_j ([I_j]/Ki_j)^hill_j).
+    Reactions without the attribute (None, or a MagicMock as built by
+    _make_reaction) are unaffected.
     """
 
     def _build_rhs(self, feedback):
-        # species: S, P, I (inhibitor), Enz ; reaction S -> P by Enz.
-        species = ["S", "P", "I", "Enz"]
+        # species: S, P, I and J (inhibitors), Enz ; reaction S -> P by Enz.
+        species = ["S", "P", "I", "J", "Enz"]
         rxn = _make_reaction(
             enzyme_label="Enz", substrate_label="S",
             reactant_labels=["S"], product_labels=["P"],
@@ -571,8 +572,8 @@ class TestFeedbackInhibition:
             reactions=[rxn],
             alias_to_model_label={s.lower(): s.lower() for s in species},
             enzyme_conc_map={"enz": 0.01},
-            constant_mask=np.array([False, False, False, True]),
-            n_core_species=4, n_core_reactions=1,
+            constant_mask=np.array([False, False, False, False, True]),
+            n_core_species=5, n_core_reactions=1,
         )
 
     def _base_rate(self):
@@ -583,27 +584,40 @@ class TestFeedbackInhibition:
         """A MagicMock feedback_inhibitors (auto-attr) must be ignored, not crash."""
         rhs = self._build_rhs(feedback=MagicMock())  # not a dict
         assert rhs._has_feedback is False
-        v = rhs.compute_v(np.array([10.0, 0.0, 2.0, 0.01]))
+        v = rhs.compute_v(np.array([10.0, 0.0, 2.0, 0.0, 0.01]))
         np.testing.assert_allclose(v[0], self._base_rate(), rtol=1e-9)
 
     def test_inhibitor_throttles_rate(self):
         """Ki=2 mM, [I]=2 mM, hill=1 -> factor 1/(1+1) = 0.5."""
         rhs = self._build_rhs(feedback={"i": (2.0, 1.0)})
         assert rhs._has_feedback is True
-        v = rhs.compute_v(np.array([10.0, 0.0, 2.0, 0.01]))
+        v = rhs.compute_v(np.array([10.0, 0.0, 2.0, 0.0, 0.01]))
         np.testing.assert_allclose(v[0], self._base_rate() * 0.5, rtol=1e-9)
 
     def test_zero_inhibitor_is_neutral(self):
         """No product yet ([I]=0) -> factor 1, rate equals baseline."""
         rhs = self._build_rhs(feedback={"i": (2.0, 1.0)})
-        v = rhs.compute_v(np.array([10.0, 0.0, 0.0, 0.01]))
+        v = rhs.compute_v(np.array([10.0, 0.0, 0.0, 0.0, 0.01]))
         np.testing.assert_allclose(v[0], self._base_rate(), rtol=1e-9)
 
     def test_hill_exponent(self):
         """Ki=2, [I]=4, hill=2 -> factor 1/(1+(4/2)^2) = 1/5."""
         rhs = self._build_rhs(feedback={"i": (2.0, 2.0)})
-        v = rhs.compute_v(np.array([10.0, 0.0, 4.0, 0.01]))
+        v = rhs.compute_v(np.array([10.0, 0.0, 4.0, 0.0, 0.01]))
         np.testing.assert_allclose(v[0], self._base_rate() * (1.0 / 5.0), rtol=1e-9)
+
+    def test_inhibitors_share_one_site(self):
+        """Two inhibitors at [I]=Ki compete for one site: 1/(1+1+1) = 1/3, not 1/4."""
+        rhs = self._build_rhs(feedback={"i": (2.0, 1.0), "j": (2.0, 1.0)})
+        v = rhs.compute_v(np.array([10.0, 0.0, 2.0, 2.0, 0.01]))
+        np.testing.assert_allclose(v[0], self._base_rate() / 3.0, rtol=1e-9)
+
+    def test_shared_site_on_time_matrix(self):
+        """Matrix input (species x time) applies the same shared-site factor per column."""
+        rhs = self._build_rhs(feedback={"i": (2.0, 1.0), "j": (2.0, 1.0)})
+        y = np.array([[10.0, 10.0], [0.0, 0.0], [0.0, 2.0], [0.0, 2.0], [0.01, 0.01]])
+        v = rhs.compute_v(y)
+        np.testing.assert_allclose(v[0], [self._base_rate(), self._base_rate() / 3.0], rtol=1e-9)
 
 
 # ---------------------------------------------------------------------------

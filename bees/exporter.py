@@ -737,9 +737,9 @@ class EnlargerExporter:
                     p_h.setName(f"feedback Hill ({rxn.enzyme_label}<-{inh_label})")
                     p_h.setValue(float(hill_val))
                     p_h.setConstant(True)
-                    fb_terms.append(f"1 / (1 + ({inh_sid} / {pid_ki})^{pid_h})")
+                    fb_terms.append(f"({inh_sid} / {pid_ki})^{pid_h}")
                 if fb_terms:
-                    formula = f"({formula}) * ({' * '.join(fb_terms)})"
+                    formula = f"({formula}) / (1 + {' + '.join(fb_terms)})"
 
            
             if formula != "0":
