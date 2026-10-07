@@ -15,7 +15,12 @@ from scipy.integrate import solve_ivp
 from scipy.sparse import csc_matrix
 
 from bees.common import get_ontology_equivalents
-from bees.core_edge_model import CoreEdgeModel
+from bees.core_edge_model import CoreEdgeModel, RateLawOptions
+from bees.enzyme_sharing import (
+    LegacyCompetition,
+    PartitionCompetition,
+    format_sharing_terms,
+)
 from bees.flux_calculator import (
     compute_mm_rate_and_den,
     compute_reversible_mm_rate_and_den,
@@ -25,6 +30,21 @@ from bees.flux_calculator import (
 )
 from bees.conservator import Conservator
 from bees.reaction_generator import reaction_signature
+
+_OLD_MODEL_NOTED = False
+
+
+def rate_law_options_of(model, logger=None) -> RateLawOptions:
+    """The model's RateLawOptions; models pickled before the options existed mean all off."""
+    global _OLD_MODEL_NOTED
+    opts = getattr(model, "rate_law_options", None)
+    if not isinstance(opts, RateLawOptions):
+        if not _OLD_MODEL_NOTED and logger:
+            logger.info("Model has no rate_law_options (older pickle): enzyme competition off.")
+        _OLD_MODEL_NOTED = True
+        return RateLawOptions()
+    return opts
+
 
 @dataclass
 class SimulationResult:
@@ -61,6 +81,7 @@ class _VectorizedRHS:
         constant_mask: np.ndarray,
         n_core_species: Optional[int] = None,
         n_core_reactions: Optional[int] = None,
+        options: Optional[RateLawOptions] = None,
     ):
         n_sp = len(species_labels)
         n_rx = len(reactions)
@@ -241,6 +262,21 @@ class _VectorizedRHS:
         self._species_labels = list(species_labels)
         self._enzyme_conc_map = dict(enzyme_conc_map)
 
+        self.options = options or RateLawOptions()
+        self._competition = None
+        self._legacy_competition = None
+        if self.options.enzyme_competition:
+            if self.options.competition_form == "legacy":
+                self._legacy_competition = LegacyCompetition(
+                    reactions, self._n_core_reactions, label_to_idx, alias_to_model_label
+                )
+            else:
+                self._competition = PartitionCompetition(
+                    reactions, self._n_core_reactions, species_labels, label_to_idx,
+                    alias_to_model_label, enzyme_conc_map,
+                    include_products=self.options.competition_products,
+                )
+
     def __call__(self, t: float, y: np.ndarray) -> np.ndarray:
         """Evaluate dydt = S @ v(y)."""
         return self.compute_dydt(y)
@@ -253,8 +289,45 @@ class _VectorizedRHS:
         """Rates v(y) and each reaction's rate-law denominator D (same shape as v)."""
         return self._rates(y, want_den=True)
 
-    def _rates(self, y: np.ndarray, want_den: bool = False) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def competition_factor(self, y: np.ndarray) -> np.ndarray:
+        """c_r per reaction (ones when competition is off)."""
+        y_ext, den, shape = self._ext_den(y)
+        return self._competition_c(y_ext, den, shape)
+
+    def competition_contributions(self, y: np.ndarray) -> Dict[str, Dict[str, float]]:
+        """{enzyme: {complex: weight in Z}} for a 1-D state (partition competition only)."""
+        if self._competition is None:
+            return {}
+        return self._competition.contributions(np.append(y, 1.0))
+
+    def competition_breakdown(self, y: np.ndarray) -> Dict[int, dict]:
+        """Per competing reaction: enzyme, own D_r and the other complexes' weights in Z_r."""
+        if self._competition is None:
+            return {}
+        y_ext, den, _ = self._ext_den(y)
+        return self._competition.breakdown(y_ext, den)
+
+    def _ext_den(self, y: np.ndarray):
+        y_ext = np.vstack([y, np.ones((1, y.shape[1]))]) if y.ndim > 1 else np.append(y, 1.0)
+        v, den = self._rates(y, want_den=True, apply_sharing=False)
+        return y_ext, den, v.shape
+
+    def _competition_c(self, y_ext, den, shape) -> np.ndarray:
+        if self._competition is not None:
+            return self._competition.factor(y_ext, den)
+        if self._legacy_competition is not None:
+            return self._legacy_competition.factor(y_ext, shape)
+        return np.ones(shape)
+
+    def _rates(
+        self, y: np.ndarray, want_den: bool = False, apply_sharing: bool = True
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         is_mat = (y.ndim > 1)
+        sharing = apply_sharing and (
+            self._competition is not None
+            or self._legacy_competition is not None
+        )
+        want_den = want_den or (sharing and self._competition is not None)
 
         # NEVER clip y globally (breaks S@v mass balance). Dummy 1.0 is the pad sentinel.
         if is_mat:
@@ -342,6 +415,9 @@ class _VectorizedRHS:
                 hill = self._fb_hill_mat
             v = v / (1.0 + np.sum((c / ki) ** hill, axis=1))
 
+        if sharing:
+            v = v * self._competition_c(y_ext, den, v.shape)
+
         return v, den
 
     def compute_dydt(self, y: np.ndarray) -> np.ndarray:
@@ -410,8 +486,14 @@ class ODESimulator:
     """Integrate the biochemical reaction network for a CoreEdgeModel."""
 
     def __init__(self, model: CoreEdgeModel, logger=None):
+        if "BEES_ENZYME_COMPETITION" in os.environ:
+            raise RuntimeError(
+                "BEES_ENZYME_COMPETITION is no longer read; use settings.enzyme_competition "
+                "(carried on the model as rate_law_options). Unset the variable."
+            )
         self.model = model
         self.logger = logger
+        self.options = rate_law_options_of(model, logger)
 
     @staticmethod
     def _concentrations_nonnegative(y: np.ndarray) -> np.ndarray:
@@ -516,6 +598,7 @@ class ODESimulator:
             constant_mask=constant_mask,
             n_core_species=len(self.model.core_species),
             n_core_reactions=len(self.model.core_reactions),
+            options=self.options,
         )
         conservator = Conservator(species_labels)
 
@@ -618,6 +701,7 @@ class ODESimulator:
             constant_mask=constant_mask,
             n_core_species=n_core,
             n_core_reactions=n_core_rxns,
+            options=self.options,
         )
         conservator = Conservator(species_labels)
 
@@ -979,6 +1063,18 @@ class ODESimulator:
         lines.append("Reactions (rate laws with parameters)")
         lines.append("-" * 80)
 
+        _ode_sharing = None
+        if self.options.enzyme_competition and self.options.competition_form == "partition":
+            _ode_sharing = PartitionCompetition(
+                reactions,
+                len(self.model.core_reactions),
+                species_labels,
+                label_to_idx,
+                {lab.lower().strip(): lab.lower().strip() for lab in species_labels},
+                enzyme_map,
+                include_products=self.options.competition_products,
+            )
+
         for r_idx, rxn in enumerate(reactions, 1):
             reactants = " + ".join(
                 s for s, c in rxn.stoichiometry.items() if c < 0
@@ -1008,11 +1104,26 @@ class ODESimulator:
                     vf = "Vmax"
                 else:
                     vf = "0"
+                others, k_of = None, {}
+                if (
+                    self.options.enzyme_competition
+                    and self.options.competition_form == "partition"
+                    and _ode_sharing is not None
+                ):
+                    terms = _ode_sharing.other_terms(r_idx - 1)
+                    k_of = {lab: k for _, ligands in terms for lab, _, k in ligands}
+                    enzyme = rxn.enzyme_label
+                    others = format_sharing_terms(
+                        terms,
+                        lambda lab: f"[{lab}]" if lab.lower().strip() in label_to_idx else None,
+                        lambda lab, _e=enzyme: f"Kc({_e}, {lab})",
+                    )
                 expr = format_rate_law(
                     spec,
                     conc=lambda lab: f"[{lab}]" if lab.lower().strip() in label_to_idx else None,
                     km=lambda lab, role: f"Km_{lab}",
                     vf=vf,
+                    others=others,
                 )
                 rate_str = f"v{r_idx} = {expr}"
                 fb = getattr(rxn, "feedback_inhibitors", None)
@@ -1034,6 +1145,8 @@ class ODESimulator:
                         params.append(f"Ki({lab})={float(ki_val):.6g} mM, h({lab})={float(hill_val):g}")
                 if vmax is not None:
                     params.append(f"Vmax={vmax:.6g} mM/s")
+                for lab, k_can in k_of.items():
+                    params.append(f"Kc({rxn.enzyme_label}, {lab})={k_can:.6g} mM")
                 if km_per:
                     km_sd_per = getattr(kin, "km_sd_per_substrate", None) or {}
                     for r, k in km_per.items():

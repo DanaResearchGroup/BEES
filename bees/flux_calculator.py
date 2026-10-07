@@ -543,6 +543,7 @@ def format_rate_law(
     km: Callable[[str, str], str],
     vf: str,
     keq: str = "Keq",
+    others: Optional[str] = None,
 ) -> str:
     """Infix formula for ``spec`` (``^`` = power). ``conc`` returns None for species absent
     from the written model (concentration 0); ``km(label, "S"|"P")`` names Km parameters;
@@ -550,12 +551,19 @@ def format_rate_law(
 
     Reversible form: vf * prod_i (S_i/Km_i)^nu_i * (1 - Q/Keq) / (den_S + den_P - 1),
     written without dividing by concentrations so it stays finite at S = 0.
+    ``others`` (shared-enzyme competition) appends v * D / (D + others).
     """
     def pw(base: str, nu: float) -> str:
         return base if nu == 1 else f"({base})^{nu:g}"
 
     def prod(parts: List[str]) -> str:
         return " * ".join(parts) if parts else "1"
+
+    def share(formula: str, den: str) -> str:
+        # v * D / (D + other bound forms): the reactions of one enzyme share its free enzyme.
+        if not others or formula == "0":
+            return formula
+        return f"({formula}) * ({den}) / (({den}) + ({others}))"
 
     if spec.form == "zero":
         return "0"
@@ -567,7 +575,8 @@ def format_rate_law(
             if c is None:
                 return "0"
             parts.append(pw(f"{c} / ({km(lab, 'S')} + {c})", nu))
-        return " * ".join(parts)
+        den = prod([pw(f"(1 + {conc(lab)} / {km(lab, 'S')})", nu) for lab, _, nu in spec.substrates])
+        return share(" * ".join(parts), den)
 
     for lab, _, _ in spec.substrates:
         if conc(lab) is None:
@@ -581,7 +590,7 @@ def format_rate_law(
 
     if spec.form == "product_inhibited":
         sub_num = prod([pw(f"({conc(lab)} / {km(lab, 'S')})", nu) for lab, _, nu in spec.substrates])
-        return f"{vf} * {sub_num} / {den}"
+        return share(f"{vf} * {sub_num} / {den}", den)
 
     q_s = dict(spec.q_substrates)
     sat_labels = {lab for lab, _, _ in spec.substrates}
@@ -601,7 +610,7 @@ def format_rate_law(
     formula = " * ".join(factors + [f"({driving})"])
     if both:
         formula += f" / ({prod([pw(km(lab, 'S'), nu) for lab, nu in both])})"
-    return f"{formula} / {den}"
+    return share(f"{formula} / {den}", den)
 
 
 def identify_significant_species_at_interrupt(

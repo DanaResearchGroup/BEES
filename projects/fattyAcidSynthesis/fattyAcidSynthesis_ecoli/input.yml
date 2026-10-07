@@ -166,4 +166,5 @@ settings:
   calibrations:
     - fabI_enoyl_reductase_measured_kcat
     - tesa_long_chain_preference
+  enzyme_competition: true
   verbose: 20

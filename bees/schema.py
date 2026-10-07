@@ -172,6 +172,9 @@ class Settings(BaseModel):
     thermo_smiles_substitutions: Optional[Dict[str, str]] = None
     thermo_irreversible_cutoff_kJmol: Annotated[float, Field(gt=0)] = 30.0  # ΔG°' < −this kJ/mol
 
+    # Reactions of one enzyme share its free enzyme (partition function over CM bound forms).
+    enzyme_competition: bool = True
+
     model_config = ConfigDict(extra="forbid")
 
     @classmethod
