@@ -602,7 +602,8 @@ def test_free_fatty_acid_global_quantities_exported(mock_bees_object, output_dir
     """
     The exporter must emit one global quantity (parameter + assignment rule)
     for the Yu-2011 / Ruppe S2A time-course PE metric:
-      palmitic_equivalents_uM = 1000·Σ(carbons/16)·[acid]
+      palmitic_equivalents_uM = 1000·Σ((carbons-2)/14)·[acid]
+    (malonyl-label weight: Yu et al. 2011 counts [2-14C]malonyl, palmitate = 7 units).
     Legacy total_free_FA and C14–C18 band quantities must not be emitted.
     """
     libsbml = pytest.importorskip("libsbml")
@@ -642,6 +643,19 @@ def test_free_fatty_acid_global_quantities_exported(mock_bees_object, output_dir
     ci_names = set(_walk_ast_ci_names(palm_rule.getMath()))
     assert {"octanoate", "hexadecanoate"} <= ci_names, (
         "palmitic-equivalents rule must weight every free-acid species"
+    )
+
+    formula = libsbml.formulaToL3String(palm_rule.getMath())
+
+    def _rule_value(octanoate, hexadecanoate):
+        return eval(formula, {"__builtins__": {}},
+                    {"octanoate": octanoate, "hexadecanoate": hexadecanoate})
+
+    assert _rule_value(1.0, 0.0) == pytest.approx(1000.0 * (8 - 2) / 14), (
+        "C8 term must carry the malonyl-label weight (8-2)/14"
+    )
+    assert _rule_value(0.0, 1.0) == pytest.approx(1000.0 * 14 / 14), (
+        "C16 term must carry weight 14/14 (palmitate = 1)"
     )
 
 

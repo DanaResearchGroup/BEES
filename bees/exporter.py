@@ -764,7 +764,9 @@ class EnlargerExporter:
 
         # ----------------------------------------------------------------
         # Palmitic equivalents assignment rule - aligning with Yu et al. 2011 
-        # and ruppe et al. 2020 metric. used for the fas project solo
+        # used for the fas project solo.
+        # Yu counts [2-14C]malonyl label: C_n carries (n-2)/2 labelled units
+        # (acetyl primer unlabelled) vs 7 in palmitate -> weight (n-2)/14.
         # ----------------------------------------------------------------
         _FA_STEMS = [  # most specific first so e.g. 'hexadec' wins over 'hex'
             ("icosen", 20), ("icosan", 20), ("octadecen", 18), ("octadecan", 18),
@@ -789,7 +791,7 @@ class EnlargerExporter:
             if c is None:
                 continue
             sid = label_to_id[sd.label.lower().strip()]
-            fa_palm_terms.append(f"({c}/16) * {sid}")
+            fa_palm_terms.append(f"({c - 2}/14) * {sid}")
 
         if fa_palm_terms:
             pid = "palmitic_equivalents_uM"
