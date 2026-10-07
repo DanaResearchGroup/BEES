@@ -17,8 +17,8 @@ from scipy.sparse import csc_matrix
 from bees.common import get_ontology_equivalents
 from bees.core_edge_model import CoreEdgeModel
 from bees.flux_calculator import (
-    compute_mm_rate,
-    compute_reversible_mm_rate,
+    compute_mm_rate_and_den,
+    compute_reversible_mm_rate_and_den,
     format_rate_law,
     has_complete_explicit_product_kms,
     rate_law_spec,
@@ -247,6 +247,13 @@ class _VectorizedRHS:
 
     def compute_v(self, y: np.ndarray) -> np.ndarray:
         """Compute rate vector v(y). Accepts (n_species,) or (n_species, n_timepoints)."""
+        return self._rates(y)[0]
+
+    def compute_v_and_den(self, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Rates v(y) and each reaction's rate-law denominator D (same shape as v)."""
+        return self._rates(y, want_den=True)
+
+    def _rates(self, y: np.ndarray, want_den: bool = False) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         is_mat = (y.ndim > 1)
 
         # NEVER clip y globally (breaks S@v mass balance). Dummy 1.0 is the pad sentinel.
@@ -269,6 +276,15 @@ class _VectorizedRHS:
             sat = s_pos / (self._km_mat + s_pos)
             v = self._vmax * np.prod(sat ** self._nu_mat, axis=1)
 
+        den = None
+        if want_den:
+            # Pad columns have Km = 0, nu = 0: (1 + 1/0)**0 = 1.
+            with np.errstate(divide="ignore"):
+                if is_mat:
+                    den = np.prod((1.0 + s_pos / km) ** nu, axis=1)
+                else:
+                    den = np.prod((1.0 + s_pos / self._km_mat) ** self._nu_mat, axis=1)
+
         # Overlays apply max(c, 0) themselves.
         _need_overlay = self._reversible_indices or self._product_inhibited_indices
         if _need_overlay and not is_mat:
@@ -286,12 +302,16 @@ class _VectorizedRHS:
                             lab.lower().strip(): float(y[i, k])
                             for i, lab in enumerate(self._species_labels)
                         }
-                        v[col, k] = compute_reversible_mm_rate(
+                        v[col, k], d = compute_reversible_mm_rate_and_den(
                             rxn, conc_k, self._enzyme_conc_map
                         )
+                        if den is not None:
+                            den[col, k] = d
             else:
                 for col, rxn in zip(self._reversible_indices, self._reversible_reactions):
-                    v[col] = compute_reversible_mm_rate(rxn, conc, self._enzyme_conc_map)
+                    v[col], d = compute_reversible_mm_rate_and_den(rxn, conc, self._enzyme_conc_map)
+                    if den is not None:
+                        den[col] = d
 
         if self._product_inhibited_indices:
             if is_mat:
@@ -302,10 +322,14 @@ class _VectorizedRHS:
                             lab.lower().strip(): float(y[i, k])
                             for i, lab in enumerate(self._species_labels)
                         }
-                        v[col, k] = compute_mm_rate(rxn, conc_k, self._enzyme_conc_map)
+                        v[col, k], d = compute_mm_rate_and_den(rxn, conc_k, self._enzyme_conc_map)
+                        if den is not None:
+                            den[col, k] = d
             else:
                 for col, rxn in zip(self._product_inhibited_indices, self._product_inhibited_reactions):
-                    v[col] = compute_mm_rate(rxn, conc, self._enzyme_conc_map)
+                    v[col], d = compute_mm_rate_and_den(rxn, conc, self._enzyme_conc_map)
+                    if den is not None:
+                        den[col] = d
 
         # Feedback inhibitors compete for one site: 1 / (1 + sum_j ([I_j]/Ki_j)^h_j).
         if self._has_feedback:
@@ -318,7 +342,7 @@ class _VectorizedRHS:
                 hill = self._fb_hill_mat
             v = v / (1.0 + np.sum((c / ki) ** hill, axis=1))
 
-        return v
+        return v, den
 
     def compute_dydt(self, y: np.ndarray) -> np.ndarray:
         """dydt = S @ v(y) with edge isolation for the integrator."""

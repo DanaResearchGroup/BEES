@@ -112,13 +112,86 @@ def _compute_mm_rate_legacy(
     return v_max_eff * saturation
 
 
+def _legacy_mm_denominator(reaction: GeneratedReaction, concentrations: Dict[str, float]) -> float:
+    """prod_i (1 + S_i/Km_i)^νi over the substrates _compute_mm_rate_legacy saturates."""
+    kin = reaction.kinetics
+    km_per = getattr(kin, "km_per_substrate", None) or {}
+    km_single = kin.km
+    stoich = reaction.stoichiometry
+    den = 1.0
+    for reactant in reaction.reactant_labels:
+        reactant_lc = reactant.lower().strip()
+        if km_per:
+            km_val = km_per.get(reactant)
+            if km_val is None:
+                km_val = next(
+                    (v for k, v in km_per.items() if k.lower().strip() == reactant_lc),
+                    None,
+                )
+            if km_val is None:
+                continue
+        else:
+            km_val = km_single
+        if km_val is None or km_val <= 0:
+            continue
+        s_conc = max(concentrations.get(reactant_lc, 0.0), 0.0)
+        den *= (1.0 + s_conc / km_val) ** abs(stoich.get(reactant, 1))
+    return den
+
+
+def _product_inhibited_denominator(reaction: GeneratedReaction, concentrations: Dict[str, float]) -> float:
+    """CM denominator of compute_mm_rate's product-inhibited branch (same lookups and order)."""
+    kin = reaction.kinetics
+    km_per = getattr(kin, "km_per_substrate", None) or {}
+    km_single = kin.km
+    stoich = reaction.stoichiometry
+    sub_sat_den = 1.0
+    for reactant in reaction.reactant_labels:
+        reactant_lc = reactant.lower().strip()
+        s_conc = max(concentrations.get(reactant_lc, 0.0), 0.0)
+        km_val = None
+        if km_per:
+            km_val = km_per.get(reactant)
+            if km_val is None:
+                km_val = next(
+                    (v for k, v in km_per.items() if k.lower().strip() == reactant_lc),
+                    None,
+                )
+            if km_val is None:
+                continue
+        else:
+            km_val = km_single
+        if km_val is None or km_val <= 0:
+            continue
+        sub_sat_den *= (1.0 + s_conc / km_val) ** abs(stoich.get(reactant, 1))
+    prod_sat_den = 1.0
+    for product in _product_labels_requiring_km(reaction):
+        km_p = explicit_product_km(reaction, product)
+        p_conc = max(concentrations.get(product.lower().strip(), 0.0), 0.0)
+        prod_sat_den *= (1.0 + p_conc / km_p) ** abs(stoich.get(product, 1))
+    return sub_sat_den + prod_sat_den - 1.0
+
+
 def compute_mm_rate(
     reaction: GeneratedReaction,
     concentrations: Dict[str, float],
     enzyme_concentrations: Dict[str, float],
 ) -> float:
+    """Irreversible rate; see compute_mm_rate_and_den."""
+    return compute_mm_rate_and_den(reaction, concentrations, enzyme_concentrations)[0]
+
+
+def compute_mm_rate_and_den(
+    reaction: GeneratedReaction,
+    concentrations: Dict[str, float],
+    enzyme_concentrations: Dict[str, float],
+) -> Tuple[float, float]:
     """
-    Compute the irreversible reaction rate.
+    Compute the irreversible reaction rate and the rate-law denominator D it divides by.
+
+    D is the sum of the enzyme's bound-state weights in this reaction's own law (free
+    enzyme = 1); shared-enzyme competition rescales v by D / (D + other bound states).
+    D is 1.0 when the rate has no Michaelis-Menten form (missing kinetics).
 
     When all product Kms are explicitly available in km_per_substrate, uses
     the common-modular (CM) symmetric denominator with forward-only flux:
@@ -134,7 +207,7 @@ def compute_mm_rate(
     """
     kin = reaction.kinetics
     if kin is None or reaction.rate_law is None:
-        return 0.0
+        return 0.0, 1.0
 
     enzyme_key = reaction.enzyme_label.lower().strip()
     e_conc = enzyme_concentrations.get(enzyme_key, 0.0)
@@ -146,10 +219,13 @@ def compute_mm_rate(
     elif vmax is not None:
         v_max_eff = vmax
     else:
-        return 0.0
+        return 0.0, 1.0
 
     if not has_complete_explicit_product_kms(reaction):
-        return _compute_mm_rate_legacy(reaction, concentrations, v_max_eff)
+        return (
+            _compute_mm_rate_legacy(reaction, concentrations, v_max_eff),
+            _legacy_mm_denominator(reaction, concentrations),
+        )
 
     km_per = getattr(kin, "km_per_substrate", None) or {}
     km_single = kin.km
@@ -185,7 +261,7 @@ def compute_mm_rate(
         sub_sat_num *= ratio ** nu
         sub_sat_den *= (1.0 + ratio) ** nu
         if sub_sat_num == 0.0:
-            return 0.0
+            return 0.0, _product_inhibited_denominator(reaction, concentrations)
 
     # ---- Product denominator terms --------------------------------------
     # prod_j (1 + P_j/Km_p,j)^νj  — skip buffered cofactors (H2O/H+/CO2/…)
@@ -198,9 +274,9 @@ def compute_mm_rate(
 
     denom = sub_sat_den + prod_sat_den - 1.0
     if denom <= 0.0 or not math.isfinite(denom):
-        return 0.0
+        return 0.0, denom
 
-    return v_max_eff * sub_sat_num / denom
+    return v_max_eff * sub_sat_num / denom, denom
 
 
 # Below this magnitude, |1 − Q/Keq| is treated as exact zero — protects the
@@ -231,7 +307,18 @@ def compute_reversible_mm_rate(
     concentrations: Dict[str, float],
     enzyme_concentrations: Dict[str, float],
 ) -> float:
+    """Reversible rate; see compute_reversible_mm_rate_and_den."""
+    return compute_reversible_mm_rate_and_den(reaction, concentrations, enzyme_concentrations)[0]
+
+
+def compute_reversible_mm_rate_and_den(
+    reaction: GeneratedReaction,
+    concentrations: Dict[str, float],
+    enzyme_concentrations: Dict[str, float],
+) -> Tuple[float, float]:
     """
+    Reversible rate and the denominator D it divides by (see compute_mm_rate_and_den).
+
     Reversible Michaelis-Menten rate — common-modular (CM) kinetics
     (Liebermeister, Uhlendorf & Klipp 2010), with stoichiometric exponents.
     When all ν = 1 this coincides with convenience kinetics (2006).
@@ -262,13 +349,13 @@ def compute_reversible_mm_rate(
         or not math.isfinite(thermo.keq)
         or thermo.keq <= 0.0
     ):
-        return compute_mm_rate(reaction, concentrations, enzyme_concentrations)
+        return compute_mm_rate_and_den(reaction, concentrations, enzyme_concentrations)
 
     enzyme_key = reaction.enzyme_label.lower().strip()
     e_conc = enzyme_concentrations.get(enzyme_key, 0.0)
     kcat_fwd = kin.kcat
     if kcat_fwd is None or e_conc <= 0:
-        return compute_mm_rate(reaction, concentrations, enzyme_concentrations)
+        return compute_mm_rate_and_den(reaction, concentrations, enzyme_concentrations)
 
     vmax_f = kcat_fwd * e_conc
 
@@ -286,7 +373,7 @@ def compute_reversible_mm_rate(
         if km is None or km <= 0:
             if is_rate_law_exempt_cofactor(reactant):
                 continue
-            return compute_mm_rate(reaction, concentrations, enzyme_concentrations)
+            return compute_mm_rate_and_den(reaction, concentrations, enzyme_concentrations)
         c = max(concentrations.get(reactant.lower().strip(), 0.0), 0.0)
         nu = abs(stoich.get(reactant, 1))        # stoichiometric exponent
         ratio = c / km
@@ -300,10 +387,12 @@ def compute_reversible_mm_rate(
         km_p = _km_for(reaction, product)
         if km_p is None or km_p <= 0:
             # No product Km → Haldane was not applied; fall back to forward-only.
-            return compute_mm_rate(reaction, concentrations, enzyme_concentrations)
+            return compute_mm_rate_and_den(reaction, concentrations, enzyme_concentrations)
         c = max(concentrations.get(product.lower().strip(), 0.0), 0.0)
         nu = abs(stoich.get(product, 1))
         prod_sat_den *= (1.0 + c / km_p) ** nu
+
+    denom = sub_sat_den + prod_sat_den - 1.0
 
     # ---- Disequilibrium ratio Q/Keq (log-space to avoid cancellation) ------
     # Q = ∏ [P_j]^νp,j / ∏ [S_i]^νs,i  (stoich coefficients are signed).
@@ -322,7 +411,7 @@ def compute_reversible_mm_rate(
                 log_q = float("-inf")
             else:
                 # A substrate is absent → v = 0 (numerator already 0)
-                return 0.0
+                return 0.0, denom
             finite = False
             break
         log_q += coeff * math.log(c)
@@ -335,13 +424,12 @@ def compute_reversible_mm_rate(
 
     disequilibrium = 1.0 - q_over_keq
     if abs(disequilibrium) < _EQUILIBRIUM_CLAMP:
-        return 0.0
+        return 0.0, denom
 
-    denom = sub_sat_den + prod_sat_den - 1.0
     if denom <= 0.0 or not math.isfinite(denom):
-        return 0.0
+        return 0.0, denom
 
-    return vmax_f * sub_sat_num * disequilibrium / denom
+    return vmax_f * sub_sat_num * disequilibrium / denom, denom
 
 
 @dataclass
