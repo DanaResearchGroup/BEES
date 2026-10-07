@@ -23,9 +23,10 @@ import matplotlib.pyplot as plt
 
 from bees.cofactors import is_general_cofactor_label
 from bees.core_edge_model import CoreEdgeModel, SpeciesData
+from bees.enzyme_sharing import PartitionCompetition, format_sharing_terms
 from bees.flux_calculator import format_rate_law, rate_law_spec
 from bees.reaction_generator import GeneratedReaction, reaction_signature
-from bees.simulator import SimulationResult
+from bees.simulator import SimulationResult, rate_law_options_of
 
 try:
     import libsbml as _libsbml  # python-libsbml
@@ -378,9 +379,7 @@ class EnlargerExporter:
         core_only: bool = True,
         # If True, the production-only invariant raises ValueError instead of
         # warning — blocks SBML export when any core species is produced but
-        # never consumed (intended for catching incomplete enlarger snapshots
-        # during development; off by default so legitimate branch exits and
-        # terminal products do not block export).
+        # never consumed.
         strict_invariant: bool = False,
     ) -> Optional[str]:
         """Export the network as SBML Level 3 Version 2.
@@ -397,6 +396,8 @@ class EnlargerExporter:
                 "Install it with:  pip install python-libsbml"
             )
             return None
+
+        options = rate_law_options_of(self.model, self.logger)
 
         reactions: List[GeneratedReaction] = list(self.model.core_reactions)
         species_list: List[SpeciesData] = list(self.model.core_species)
@@ -583,6 +584,20 @@ class EnlargerExporter:
             if getattr(sd, "is_enzyme", False)
         }
 
+        sharing = None
+        if options.enzyme_competition and options.competition_form == "partition":
+            labels = [sd.label for sd in species_list]
+            sharing = PartitionCompetition(
+                reactions,
+                len(reactions) if core_only else len(self.model.core_reactions),
+                labels,
+                {lab.lower().strip(): i for i, lab in enumerate(labels)},
+                {lab.lower().strip(): lab.lower().strip() for lab in labels},
+                enzyme_conc_map,
+                include_products=options.competition_products,
+            )
+        kc_pids: Dict[Tuple[str, str], str] = {}
+
         used_rxn_ids: Set[str] = set()
 
         for rxn_idx, rxn in enumerate(reactions, start=1):
@@ -682,13 +697,52 @@ class EnlargerExporter:
                 _new_param(f"Keq_{rid}", f"Keq ({rxn.enzyme_label})", spec.keq)
                 if spec.form == "reversible" else "Keq"
             )
+            others = None
+            if sharing is not None:
+                terms = sharing.other_terms(rxn_idx - 1)
+                k_of = {lab: k for _, ligands in terms for lab, _, k in ligands}
+
+                def _kc(lab: str, _k_of=k_of, _enzyme=rxn.enzyme_label) -> str:
+                    key = (_enzyme.lower().strip(), lab.lower().strip())
+                    pid = kc_pids.get(key)
+                    if pid is None:
+                        pid = _new_param(
+                            f"Kc_{_sbml_id(_enzyme)}_{_sbml_id(lab)}",
+                            f"canonical Km ({_enzyme}, {lab})", _k_of[lab],
+                        )
+                        kc_pids[key] = pid
+                    return pid
+
+                others = format_sharing_terms(
+                    terms, lambda lab: label_to_id.get(lab.lower().strip()), _kc,
+                )
+                if terms and others is None:
+                    self.logger.warning(
+                        f"SBML: {rid} competition ligand is not a model species; "
+                        "its bound forms were left out of the rate law"
+                    )
+
             formula = format_rate_law(
                 spec,
                 conc=lambda lab: label_to_id.get(lab.lower().strip()),
                 km=lambda lab, role: km_pids[(lab, role)],
                 vf=vf,
                 keq=keq_pid,
+                others=others,
             )
+            if others:
+                present = set()
+                for n, getter in (
+                    (sbml_rxn.getNumReactants(), sbml_rxn.getReactant),
+                    (sbml_rxn.getNumProducts(), sbml_rxn.getProduct),
+                    (sbml_rxn.getNumModifiers(), sbml_rxn.getModifier),
+                ):
+                    present.update(getter(j).getSpecies() for j in range(n))
+                for lab in k_of:
+                    sid = label_to_id.get(lab.lower().strip())
+                    if sid is not None and sid not in present:
+                        sbml_rxn.createModifier().setSpecies(sid)
+                        present.add(sid)
 
             # Feedback = modifierSpeciesReference (not consumed).
             fb = getattr(rxn, "feedback_inhibitors", None)
@@ -764,7 +818,9 @@ class EnlargerExporter:
 
         # ----------------------------------------------------------------
         # Palmitic equivalents assignment rule - aligning with Yu et al. 2011 
-        # and ruppe et al. 2020 metric. used for the fas project solo
+        # used for the fas project solo.
+        # Yu counts [2-14C]malonyl label: C_n carries (n-2)/2 labelled units
+        # (acetyl primer unlabelled) vs 7 in palmitate -> weight (n-2)/14.
         # ----------------------------------------------------------------
         _FA_STEMS = [  # most specific first so e.g. 'hexadec' wins over 'hex'
             ("icosen", 20), ("icosan", 20), ("octadecen", 18), ("octadecan", 18),
@@ -789,7 +845,7 @@ class EnlargerExporter:
             if c is None:
                 continue
             sid = label_to_id[sd.label.lower().strip()]
-            fa_palm_terms.append(f"({c}/16) * {sid}")
+            fa_palm_terms.append(f"({c - 2}/14) * {sid}")
 
         if fa_palm_terms:
             pid = "palmitic_equivalents_uM"

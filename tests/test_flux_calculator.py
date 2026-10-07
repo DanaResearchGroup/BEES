@@ -681,6 +681,53 @@ def test_formula_matches_simulator_rate(factory, form, conc):
     assert v_formula == pytest.approx(v_sim, rel=1e-9, abs=1e-18)
 
 
+@pytest.mark.parametrize(
+    "factory", [_fabg_like, _faba_like_scaled_km, _two_to_one, _product_inhibited, _legacy_mm]
+)
+def test_vectorized_denominator_matches_rate_law(factory):
+    import numpy as np
+    from bees.simulator import _VectorizedRHS
+
+    rxn = factory()
+    enz = {"hexokinase": 0.001}
+    species = list(rxn.stoichiometry)
+    rhs = _VectorizedRHS(
+        species_labels=species,
+        reactions=[rxn],
+        alias_to_model_label={s.lower(): s.lower() for s in species},
+        enzyme_conc_map=enz,
+        constant_mask=np.zeros(len(species), dtype=bool),
+    )
+    points = [p for p in _CONC_POINTS if all(s.lower() in p for s in species)]
+    assert points
+    y_mat = np.array([[p[s.lower()] for p in points] for s in species])
+    v_mat, d_mat = rhs.compute_v_and_den(y_mat)
+    for k, conc in enumerate(points):
+        spec = rate_law_spec(rxn, enz)
+        d_sub = 1.0
+        for lab, km, nu in spec.substrates:
+            d_sub *= (1.0 + conc[lab.lower()] / km) ** nu
+        d_prod = 1.0
+        for lab, km, nu in spec.products:
+            d_prod *= (1.0 + conc[lab.lower()] / km) ** nu
+        expected = d_sub if spec.form == "mm" else d_sub + d_prod - 1.0
+        v_vec, d_vec = rhs.compute_v_and_den(y_mat[:, k])
+        assert d_vec[0] == pytest.approx(expected, rel=1e-12)
+        assert d_mat[0, k] == pytest.approx(expected, rel=1e-12)
+        assert v_vec[0] == rhs.compute_v(y_mat[:, k])[0]
+        assert v_mat[0, k] == pytest.approx(v_vec[0], rel=1e-12)
+
+
+def test_product_inhibited_denominator_when_substrate_absent():
+    from bees.flux_calculator import compute_mm_rate_and_den
+
+    rxn = _product_inhibited()
+    conc = {"a": 0.0, "b": 0.1, "h+": 4e-5, "c": 0.2, "co2": 0.0}
+    v, d = compute_mm_rate_and_den(rxn, conc, {"hexokinase": 0.001})
+    assert v == 0.0
+    assert d == pytest.approx((1.0 + 0.1 / 0.04) + (1.0 + 0.2 / 0.03) - 1.0, rel=1e-12)
+
+
 def test_reversible_spec_falls_back_like_simulator_when_product_km_missing():
     rxn = _two_to_one()
     rxn.kinetics.km_per_substrate = {"S": 0.3}

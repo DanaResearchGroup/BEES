@@ -226,13 +226,20 @@ def _fd_pe(pe_p, pe_m, denom):
     return (math.log(pe_p) - math.log(pe_m)) / denom
 
 
-def _pe_series(sim):
-    """Palmitate-equivalent free-FA titer (uM) vs time."""
+def _pe_series(sim, weighting="malonyl"):
+    """Palmitate-equivalent free-FA titer (uM) vs time.
+
+    "malonyl" (default) weights C_n by (n-2)/14: Yu 2011 counts
+    [2-14C]malonyl label, the acetyl primer is unlabelled, palmitate has 7.
+    "carbon" is the older n/16 score, kept only to check different method.
+    """
+    if weighting not in ("malonyl", "carbon"):
+        raise ValueError(f"weighting must be 'malonyl' or 'carbon', got {weighting!r}")
     weights = {}
     for i, lab in enumerate(sim.species_labels):
         c = _fa_carbons(lab)
         if c is not None:
-            weights[i] = c / 16.0
+            weights[i] = (c - 2) / 14.0 if weighting == "malonyl" else c / 16.0
     if not weights:
         return np.zeros_like(sim.t)
     idx = list(weights.keys())

@@ -12,6 +12,29 @@ from dataclasses import dataclass
 from bees.reaction_generator import GeneratedReaction, reaction_signature
 
 
+@dataclass(frozen=True)
+class RateLawOptions:
+    """Rate-law options carried on the model so enlargement, simulation and export agree.
+
+    enzyme_competition: reactions of one enzyme share its free enzyme
+        (rapid-equilibrium partition function over the reactions' CM bound forms).
+    competition_form / competition_products: verification-only switches, not settable
+        from YAML ("legacy" = the earlier acyl-substrate-only patch formula).
+    """
+
+    enzyme_competition: bool = False
+    competition_form: str = "partition"
+    competition_products: bool = True
+
+    def __post_init__(self):
+        if self.competition_form not in ("partition", "legacy"):
+            raise ValueError(f"Unknown competition_form: {self.competition_form!r}")
+
+    @property
+    def any_on(self) -> bool:
+        return self.enzyme_competition
+
+
 @dataclass
 class SpeciesData:
     label: str
@@ -35,6 +58,7 @@ class CoreEdgeModel:
         self._core_species_labels_lc: Set[str] = set()
         self._edge_species_labels_lc: Set[str] = set()
         self._known_reaction_signatures: Set[tuple] = set()
+        self.rate_law_options = RateLawOptions()
 
     # ------------------------------------------------------------------
     # Species management

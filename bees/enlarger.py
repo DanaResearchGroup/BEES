@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
-from bees.core_edge_model import CoreEdgeModel, SpeciesData
+from bees.core_edge_model import CoreEdgeModel, RateLawOptions, SpeciesData
 from bees.flux_calculator import (
     identify_insignificant_species_from_peak_ratios,
     identify_significant_species_at_interrupt,
@@ -103,6 +103,9 @@ class IterativeEnlarger:
         )
 
         self.model = CoreEdgeModel()
+        self.model.rate_law_options = RateLawOptions(
+            enzyme_competition=getattr(settings, "enzyme_competition", False) is True,
+        )
         self._profiles: List[SimulationResult] = []
         self._edge_species_created_iter: Dict[str, int] = {}
         self._ingest_iteration: int = 0
