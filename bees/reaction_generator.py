@@ -725,16 +725,6 @@ class ReactionGenerator:
             if smi:
                 smiles_map[lab] = smi
 
-        # Snapshot substrate Kms BEFORE product Km merge (Haldane needs the original set).
-        from bees.cofactors import COFACTORS_ALWAYS_AVAILABLE as _COFACTORS
-        _km_sub = getattr(kin, "km_per_substrate", None) or {}
-        kin._substrate_kms_for_haldane = {
-            lab: km for lab, km in _km_sub.items()
-            if stoich.get(lab, 0) < 0
-            and km and km > 0
-            and lab.lower().strip() not in _COFACTORS
-        }
-
         td = thermo_engine.compute_keq(stoichiometry=stoich, smiles_map=smiles_map)
         reaction.thermo = td
 
@@ -761,8 +751,6 @@ class ReactionGenerator:
             kin.compound_smiles = {**product_smiles, **existing}
             smiles_map.update({k: v for k, v in product_smiles.items() if k not in smiles_map})
 
-        # Haldane uses ONLY reverse-queried product Kms, not forward catalytic product Kms.
-        kin._product_kms_for_haldane = product_kms or {}
         if product_kms:
             existing_km = getattr(kin, "km_per_substrate", None) or {}
             for lab, km in product_kms.items():

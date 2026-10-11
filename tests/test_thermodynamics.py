@@ -97,9 +97,9 @@ class TestHaldane:
         assert result == pytest.approx(1e12)
 
     def test_no_product_kms_returns_finite(self):
-        # Empty product Km list: ΠKm_p = 1.0. Result = 100 * 1 / (10 * 0.5) = 20.
+        # Empty product Km list: Π(Km_p/c°) = 1. Result = 100 / (10 * 0.5 mM / 1000 mM) = 2e4.
         result = compute_haldane_reverse_kcat(100.0, keq=10.0, km_substrates=[0.5], km_products=[])
-        assert result == pytest.approx(20.0)
+        assert result == pytest.approx(2e4)
 
 
 # ---------------------------------------------------------------------------
