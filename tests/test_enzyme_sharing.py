@@ -220,11 +220,6 @@ class TestPlumbing:
         del model.rate_law_options
         assert rate_law_options_of(model) == RateLawOptions()
 
-    def test_old_env_var_raises(self, monkeypatch):
-        monkeypatch.setenv("BEES_ENZYME_COMPETITION", "0")
-        with pytest.raises(RuntimeError, match="settings.enzyme_competition"):
-            ODESimulator(_model())
-
     def test_settings_default_off(self):
         from bees.schema import Settings
         s = Settings(end_time=10.0)

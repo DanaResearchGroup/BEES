@@ -11,7 +11,7 @@ import math
 import os
 import time
 import numpy as np
-from scipy.integrate import solve_ivp
+from scipy.integrate import BDF, DOP853, RK23, RK45, Radau, solve_ivp
 from scipy.sparse import csc_matrix
 
 from bees.common import get_ontology_equivalents
@@ -28,6 +28,10 @@ from bees.conservator import Conservator
 from bees.reaction_generator import reaction_signature
 
 _OLD_MODEL_NOTED = False
+
+# Solvers that clip their step to t_bound, so one instance can be moved from check
+# point to check point (keeps its Jacobian and step size). LSODA cannot.
+_CONTINUABLE_SOLVERS = {"BDF": BDF, "Radau": Radau, "RK45": RK45, "RK23": RK23, "DOP853": DOP853}
 
 
 def rate_law_options_of(model, logger=None) -> RateLawOptions:
@@ -471,11 +475,6 @@ class ODESimulator:
     """Integrate the biochemical reaction network for a CoreEdgeModel."""
 
     def __init__(self, model: CoreEdgeModel, logger=None):
-        if "BEES_ENZYME_COMPETITION" in os.environ:
-            raise RuntimeError(
-                "BEES_ENZYME_COMPETITION is no longer read; use settings.enzyme_competition "
-                "(carried on the model as rate_law_options). Unset the variable."
-            )
         self.model = model
         self.logger = logger
         self.options = rate_law_options_of(model, logger)
@@ -778,6 +777,8 @@ class ODESimulator:
         outer_step_idx = 0
         state_invalid = False
         invalid_message = ""
+        solver_cls = _CONTINUABLE_SOLVERS.get(method)
+        solver = None
 
         while current_t < end_time:
             now_wall = time.monotonic()
@@ -797,12 +798,30 @@ class ODESimulator:
                 break
 
             try:
-                sol = solve_ivp(
-                    rhs, (current_t, target_t), current_y,
-                    method=method, rtol=rtol, atol=atol,
-                    dense_output=False,
-                    max_step=target_t - current_t,
-                )
+                if solver_cls is not None:
+                    if solver is None:
+                        solver = solver_cls(
+                            rhs, current_t, current_y, t_bound=target_t, rtol=rtol, atol=atol,
+                        )
+                    else:
+                        solver.t_bound = target_t
+                        solver.status = "running"
+                    message = None
+                    while solver.status == "running":
+                        message = solver.step()
+                    ok = solver.status == "finished"
+                    new_t, new_y = solver.t, solver.y
+                else:
+                    sol = solve_ivp(
+                        rhs, (current_t, target_t), current_y,
+                        method=method, rtol=rtol, atol=atol,
+                        dense_output=False,
+                        max_step=target_t - current_t,
+                    )
+                    ok = bool(sol.success) and sol.y.shape[1] > 0
+                    message = sol.message
+                    if ok:
+                        new_t, new_y = sol.t[-1], sol.y[:, -1]
             except Exception:
                 if self.logger:
                     self.logger.warning(
@@ -810,16 +829,16 @@ class ODESimulator:
                     )
                 break
 
-            if not sol.success or sol.y.shape[1] == 0:
+            if not ok:
                 if self.logger:
                     self.logger.warning(
                         f"ODE solver failed at t={current_t:.6e} s: "
-                        f"{getattr(sol, 'message', 'unknown')}"
+                        f"{message or 'unknown'}"
                     )
                 break
 
-            current_t = float(sol.t[-1])
-            current_y = sol.y[:, -1].copy()
+            current_t = float(new_t)
+            current_y = np.array(new_y, dtype=float)
             outer_step_idx += 1
             if not np.isfinite(current_y).all():
                 state_invalid = True
