@@ -214,3 +214,62 @@ def test_nadp_product_queried_for_fabg_like():
     assert "NADP" in captured["reactant_smiles"]
     assert "H+" not in captured["reactant_smiles"]
     assert product_kms.get("NADP", 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Generic (Rhea class) database rows against the real E. coli database
+# ---------------------------------------------------------------------------
+
+def _ecoli_generator(tmp_path, species_labels):
+    import os
+
+    import bees.common as common
+    from bees.logger import Logger
+
+    ontology = common.load_and_invert_ontology(os.path.join(common.BEES_PATH, "db", "ontology.yaml"))
+    bees = SimpleNamespace(
+        species=[SimpleNamespace(label=lab, smiles=None) for lab in species_labels],
+        enzymes=[],
+        environment=SimpleNamespace(temperature=None, pH=None),
+        settings=SimpleNamespace(estimate_kinetics=False, smiles_mode="auto"),
+    )
+    gen = ReactionGenerator(bees, Logger(str(tmp_path), None, 0.0), str(tmp_path))
+    gen.load_kinetic_database(os.path.join(common.BEES_PATH, "db", "ecoli.csv"), ontology=ontology)
+    gen.logger = MagicMock()
+    return gen
+
+
+def test_generic_row_is_skipped_not_collapsed(tmp_path):
+    """FadA EC 2.3.1.16 is stored as 'an acyl-CoA + Acetyl-CoA -> a 3-oxoacyl-CoA + CoA'.
+
+    Acetyl-CoA matches the generic slot by design, but the slot is never instantiated:
+    canonicalization merged both reactants into {'Acetyl-CoA': -2} and kept the
+    structureless class 'a 3-oxoacyl-CoA' as a product. The row must be skipped instead.
+    """
+    gen = _ecoli_generator(tmp_path, ["Acetyl-CoA", "Coenzyme A"])
+    enzyme = SimpleNamespace(label="FadA", ecnumber="EC 2.3.1.16", amino_acid_sequence=None)
+    available = {"acetyl-coa", "an acyl-coa", "coenzyme a", "a 3-oxoacyl-coa"}
+    rxns = gen._generate_reactions(
+        enzyme, SimpleNamespace(label="Acetyl-CoA", smiles=None),
+        available_species_labels_lc=available, provided_species_labels_lc=set(),
+    )
+    assert rxns == []
+    logged = " ".join(str(c) for c in gen.logger.debug.call_args_list)
+    assert "an acyl-CoA" in logged and "placeholder" in logged
+    # The skipped row must not leave the class name registered as an alias of a real species.
+    assert gen._canonicalize_species_label("Acetyl-CoA", None, "Acetyl-CoA") == "Acetyl-CoA"
+
+
+def test_concrete_alias_matched_row_still_generates(tmp_path):
+    """A concrete row reached through an ACP naming permutation is kept."""
+    gen = _ecoli_generator(tmp_path, ["NADPH"])
+    enzyme = SimpleNamespace(label="FabG", ecnumber="EC 1.1.1.100", amino_acid_sequence=None)
+    substrate = "3-oxo-(5Z)-dodecenoyl-[ACP]"  # stored as (5Z)-3-oxododecenoyl-[ACP]
+    rxns = gen._generate_reactions(
+        enzyme, SimpleNamespace(label=substrate, smiles=None),
+        available_species_labels_lc={"nadph", "h+", "h(+)", substrate.lower(), "(5z)-3-oxododecenoyl-[acp]"},
+        provided_species_labels_lc=set(),
+    )
+    assert rxns
+    assert all(c in (-1, 1) for r in rxns for c in r.stoichiometry.values())
+    assert not any(lab.lower().startswith(("a ", "an ")) for r in rxns for lab in r.stoichiometry)

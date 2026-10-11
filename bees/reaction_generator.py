@@ -357,6 +357,29 @@ class ReactionGenerator:
         )
         return self._register_species_label(label=label, smiles=smiles)
     
+    def _placeholder_participants(self, kinetic_data) -> List[str]:
+        """Raw row participants that name a generic class with no structure.
+
+        Rhea class names start with "a"/"an" ("an acyl-CoA", "a quinone"). A concrete
+        substrate may match such a row through the ontology, but the class slot is
+        never instantiated, so canonicalization would collapse it onto a real species
+        or leave a structureless product. Ontology categories without the article
+        (ATP, NADH, butanoyl-[acyl-carrier protein]) are synonym groups, not classes.
+        """
+        smiles = getattr(kinetic_data, "compound_smiles", None) or {}
+        provided = {
+            str(getattr(sp, "label", "")).lower().strip()
+            for sp in getattr(self.bees_object, "species", []) or []
+        }
+        placeholders = []
+        for raw in (getattr(kinetic_data, "stoichiometry", None) or {}):
+            lc = str(raw).lower().strip()
+            if lc in COFACTORS_ALWAYS_AVAILABLE or lc in provided:
+                continue
+            if lc.startswith(("a ", "an ")) and not smiles.get(raw):
+                placeholders.append(raw)
+        return placeholders
+
     def _check_heavy_atom_balance(
         self,
         stoichiometry: Dict[str, int],
@@ -461,6 +484,15 @@ class ReactionGenerator:
 
         generated_reactions = []
         for kinetic_data in all_kinetic_data:
+            # Checked on raw names, before canonicalization registers the class as an alias.
+            placeholders = self._placeholder_participants(kinetic_data)
+            if placeholders:
+                self.logger.debug(
+                    f"  Skipping {substrate_label}/{enzyme_label} row "
+                    f"({getattr(kinetic_data, 'ec_number', '?')}): generic placeholder "
+                    f"participant(s) {placeholders} have no structure"
+                )
+                continue
             # The database returns its stored row. Two enzymes with the same EC
             # would otherwise write into that one object.
             kinetic_data = copy.deepcopy(kinetic_data)
@@ -569,12 +601,15 @@ class ReactionGenerator:
                 
                 if kinetic_data.stoichiometry:
                     canonical_stoich: Dict[str, int] = {}
+                    raw_to_canonical: Dict[str, str] = {}
                     for raw_name, coeff in kinetic_data.stoichiometry.items():
                         canonical_name = self._canonicalize_species_label(
                             label=raw_name,
                             kinetic_data=kinetic_data,
                             substrate_label=substrate_label,
                         )
+                        if canonical_name != raw_name:
+                            raw_to_canonical[raw_name] = canonical_name
                         canonical_stoich[canonical_name] = (
                             canonical_stoich.get(canonical_name, 0) + coeff
                         )
@@ -590,26 +625,23 @@ class ReactionGenerator:
                     ]
 
                     # Remap km_per_substrate keys to canonical labels (else unbounded accumulation).
-                    if getattr(kinetic_data, "km_per_substrate", None) and kinetic_data.stoichiometry:
-                        raw_to_canonical: Dict[str, str] = {}
-                        for raw_name in kinetic_data.stoichiometry:
-                            canon = self._canonicalize_species_label(
-                                label=raw_name,
-                                kinetic_data=kinetic_data,
-                                substrate_label=substrate_label,
-                            )
-                            if canon != raw_name:
-                                raw_to_canonical[raw_name] = canon
-                        if raw_to_canonical:
-                            kinetic_data.km_per_substrate = {
+                    if raw_to_canonical and getattr(kinetic_data, "km_per_substrate", None):
+                        kinetic_data.km_per_substrate = {
+                            raw_to_canonical.get(k, k): v
+                            for k, v in kinetic_data.km_per_substrate.items()
+                        }
+                        if getattr(kinetic_data, "km_sd_per_substrate", None):
+                            kinetic_data.km_sd_per_substrate = {
                                 raw_to_canonical.get(k, k): v
-                                for k, v in kinetic_data.km_per_substrate.items()
+                                for k, v in kinetic_data.km_sd_per_substrate.items()
                             }
-                            if getattr(kinetic_data, "km_sd_per_substrate", None):
-                                kinetic_data.km_sd_per_substrate = {
-                                    raw_to_canonical.get(k, k): v
-                                    for k, v in kinetic_data.km_sd_per_substrate.items()
-                                }
+                    # Product-Km and thermo lookups key SMILES by canonical label; keep the
+                    # raw keys too so a later pass over this row still resolves them.
+                    smiles_by_label = getattr(kinetic_data, "compound_smiles", None)
+                    if raw_to_canonical and isinstance(smiles_by_label, dict):
+                        for raw, canon in raw_to_canonical.items():
+                            if smiles_by_label.get(raw) and not smiles_by_label.get(canon):
+                                smiles_by_label[canon] = smiles_by_label[raw]
 
                     balanced = self._check_heavy_atom_balance(
                         stoichiometry=canonical_stoich,
