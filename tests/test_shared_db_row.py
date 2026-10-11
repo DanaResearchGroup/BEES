@@ -201,3 +201,30 @@ def test_each_isozyme_gets_its_own_database_row(tmp_path):
     assert by_enzyme["FabZ"].kinetics.enzyme_name == "FabZ"
     assert by_enzyme["FabA"].kinetics.kcat == pytest.approx(11.5)
     assert by_enzyme["FabZ"].kinetics.kcat == pytest.approx(7.36)
+
+
+def test_renamed_product_keeps_smiles_for_product_km():
+    # The row names the product differently from the model; product Km needs its SMILES.
+    alias = "(2E)-tetradec-2-enoyl-[ACP]"
+    row = _row()
+    row.stoichiometry = {_SUB: -1, alias: 1}
+    row.compound_smiles = {_SUB: _SMI[_SUB], alias: _SMI[_PROD]}
+    estimator = _SharedMemoEstimator()
+    enzyme = _enzyme("FabA", "SEQA")
+    gen = _generator([enzyme], estimator)
+    gen.kinetic_db = _OneRowDB(row)
+    thermo = MagicMock()
+    thermo.compute_keq.return_value = SimpleNamespace(
+        dgr_prime_kJmol=-10.0, sigma_kJmol=1.0, keq=50.0, irreversible=False, source="fake",
+    )
+    available = {_SUB.lower(), _PROD.lower()}
+    (rxn,) = gen._generate_reactions(
+        enzyme,
+        _substrate(),
+        available_species_labels_lc=available,
+        provided_species_labels_lc=available,
+        thermo_engine=thermo,
+        global_smiles_map={_SUB: _SMI[_SUB]},
+    )
+    assert rxn.product_labels == [_PROD]
+    assert rxn.kinetics.km_per_substrate[_PROD] == pytest.approx(0.040)

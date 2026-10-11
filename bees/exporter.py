@@ -585,7 +585,7 @@ class EnlargerExporter:
         }
 
         sharing = None
-        if options.enzyme_competition and options.competition_form == "partition":
+        if options.enzyme_competition:
             labels = [sd.label for sd in species_list]
             sharing = PartitionCompetition(
                 reactions,
@@ -694,7 +694,7 @@ class EnlargerExporter:
             else:
                 vf = "0"
             keq_pid = (
-                _new_param(f"Keq_{rid}", f"Keq ({rxn.enzyme_label})", spec.keq)
+                _new_param(f"Keq_{rid}", f"Keq ({rxn.enzyme_label}) [mM^{spec.delta_nu:g}]", spec.keq)
                 if spec.form == "reversible" else "Keq"
             )
             others = None

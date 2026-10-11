@@ -11,16 +11,12 @@ import math
 import os
 import time
 import numpy as np
-from scipy.integrate import solve_ivp
+from scipy.integrate import BDF, DOP853, RK23, RK45, Radau, solve_ivp
 from scipy.sparse import csc_matrix
 
 from bees.common import get_ontology_equivalents
 from bees.core_edge_model import CoreEdgeModel, RateLawOptions
-from bees.enzyme_sharing import (
-    LegacyCompetition,
-    PartitionCompetition,
-    format_sharing_terms,
-)
+from bees.enzyme_sharing import PartitionCompetition, format_sharing_terms
 from bees.flux_calculator import (
     compute_mm_rate_and_den,
     compute_reversible_mm_rate_and_den,
@@ -32,6 +28,10 @@ from bees.conservator import Conservator
 from bees.reaction_generator import reaction_signature
 
 _OLD_MODEL_NOTED = False
+
+# Solvers that clip their step to t_bound, so one instance can be moved from check
+# point to check point (keeps its Jacobian and step size). LSODA cannot.
+_CONTINUABLE_SOLVERS = {"BDF": BDF, "Radau": Radau, "RK45": RK45, "RK23": RK23, "DOP853": DOP853}
 
 
 def rate_law_options_of(model, logger=None) -> RateLawOptions:
@@ -264,18 +264,12 @@ class _VectorizedRHS:
 
         self.options = options or RateLawOptions()
         self._competition = None
-        self._legacy_competition = None
         if self.options.enzyme_competition:
-            if self.options.competition_form == "legacy":
-                self._legacy_competition = LegacyCompetition(
-                    reactions, self._n_core_reactions, label_to_idx, alias_to_model_label
-                )
-            else:
-                self._competition = PartitionCompetition(
-                    reactions, self._n_core_reactions, species_labels, label_to_idx,
-                    alias_to_model_label, enzyme_conc_map,
-                    include_products=self.options.competition_products,
-                )
+            self._competition = PartitionCompetition(
+                reactions, self._n_core_reactions, species_labels, label_to_idx,
+                alias_to_model_label, enzyme_conc_map,
+                include_products=self.options.competition_products,
+            )
 
     def __call__(self, t: float, y: np.ndarray) -> np.ndarray:
         """Evaluate dydt = S @ v(y)."""
@@ -315,19 +309,14 @@ class _VectorizedRHS:
     def _competition_c(self, y_ext, den, shape) -> np.ndarray:
         if self._competition is not None:
             return self._competition.factor(y_ext, den)
-        if self._legacy_competition is not None:
-            return self._legacy_competition.factor(y_ext, shape)
         return np.ones(shape)
 
     def _rates(
         self, y: np.ndarray, want_den: bool = False, apply_sharing: bool = True
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         is_mat = (y.ndim > 1)
-        sharing = apply_sharing and (
-            self._competition is not None
-            or self._legacy_competition is not None
-        )
-        want_den = want_den or (sharing and self._competition is not None)
+        sharing = apply_sharing and self._competition is not None
+        want_den = want_den or sharing
 
         # NEVER clip y globally (breaks S@v mass balance). Dummy 1.0 is the pad sentinel.
         if is_mat:
@@ -486,11 +475,6 @@ class ODESimulator:
     """Integrate the biochemical reaction network for a CoreEdgeModel."""
 
     def __init__(self, model: CoreEdgeModel, logger=None):
-        if "BEES_ENZYME_COMPETITION" in os.environ:
-            raise RuntimeError(
-                "BEES_ENZYME_COMPETITION is no longer read; use settings.enzyme_competition "
-                "(carried on the model as rate_law_options). Unset the variable."
-            )
         self.model = model
         self.logger = logger
         self.options = rate_law_options_of(model, logger)
@@ -793,6 +777,8 @@ class ODESimulator:
         outer_step_idx = 0
         state_invalid = False
         invalid_message = ""
+        solver_cls = _CONTINUABLE_SOLVERS.get(method)
+        solver = None
 
         while current_t < end_time:
             now_wall = time.monotonic()
@@ -812,12 +798,30 @@ class ODESimulator:
                 break
 
             try:
-                sol = solve_ivp(
-                    rhs, (current_t, target_t), current_y,
-                    method=method, rtol=rtol, atol=atol,
-                    dense_output=False,
-                    max_step=target_t - current_t,
-                )
+                if solver_cls is not None:
+                    if solver is None:
+                        solver = solver_cls(
+                            rhs, current_t, current_y, t_bound=target_t, rtol=rtol, atol=atol,
+                        )
+                    else:
+                        solver.t_bound = target_t
+                        solver.status = "running"
+                    message = None
+                    while solver.status == "running":
+                        message = solver.step()
+                    ok = solver.status == "finished"
+                    new_t, new_y = solver.t, solver.y
+                else:
+                    sol = solve_ivp(
+                        rhs, (current_t, target_t), current_y,
+                        method=method, rtol=rtol, atol=atol,
+                        dense_output=False,
+                        max_step=target_t - current_t,
+                    )
+                    ok = bool(sol.success) and sol.y.shape[1] > 0
+                    message = sol.message
+                    if ok:
+                        new_t, new_y = sol.t[-1], sol.y[:, -1]
             except Exception:
                 if self.logger:
                     self.logger.warning(
@@ -825,16 +829,16 @@ class ODESimulator:
                     )
                 break
 
-            if not sol.success or sol.y.shape[1] == 0:
+            if not ok:
                 if self.logger:
                     self.logger.warning(
                         f"ODE solver failed at t={current_t:.6e} s: "
-                        f"{getattr(sol, 'message', 'unknown')}"
+                        f"{message or 'unknown'}"
                     )
                 break
 
-            current_t = float(sol.t[-1])
-            current_y = sol.y[:, -1].copy()
+            current_t = float(new_t)
+            current_y = np.array(new_y, dtype=float)
             outer_step_idx += 1
             if not np.isfinite(current_y).all():
                 state_invalid = True
@@ -1064,7 +1068,7 @@ class ODESimulator:
         lines.append("-" * 80)
 
         _ode_sharing = None
-        if self.options.enzyme_competition and self.options.competition_form == "partition":
+        if self.options.enzyme_competition:
             _ode_sharing = PartitionCompetition(
                 reactions,
                 len(self.model.core_reactions),
@@ -1105,11 +1109,7 @@ class ODESimulator:
                 else:
                     vf = "0"
                 others, k_of = None, {}
-                if (
-                    self.options.enzyme_competition
-                    and self.options.competition_form == "partition"
-                    and _ode_sharing is not None
-                ):
+                if _ode_sharing is not None:
                     terms = _ode_sharing.other_terms(r_idx - 1)
                     k_of = {lab: k for _, ligands in terms for lab, _, k in ligands}
                     enzyme = rxn.enzyme_label
@@ -1139,7 +1139,7 @@ class ODESimulator:
                     if getattr(kin, "kcat_sd", None) is not None:
                         params.append(f"kcat_sd={kin.kcat_sd:.6g} 1/s")
                 if _is_rev:
-                    params.append(f"Keq={spec.keq:.6g}")
+                    params.append(f"Keq={spec.keq:.6g} mM^{spec.delta_nu:g}")
                 if isinstance(fb, dict):
                     for lab, (ki_val, hill_val) in fb.items():
                         params.append(f"Ki({lab})={float(ki_val):.6g} mM, h({lab})={float(hill_val):g}")

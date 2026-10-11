@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 
 from bees.cofactors import COFACTORS_ALWAYS_AVAILABLE
 from bees.rules.base import RULES, Reference, Rule
+from bees.thermodynamics import STANDARD_CONCENTRATION_MM
 from bees.rules.helpers import (  # noqa: F401  — re-export detect_acyl_chain_length
     detect_acyl_chain_length,
     _CO2_LABELS,
@@ -27,8 +28,14 @@ def compute_haldane_reverse_kcat(
     keq: float,
     km_substrates: Iterable[float],
     km_products: Iterable[float],
+    nu_substrates: Optional[Iterable[float]] = None,
+    nu_products: Optional[Iterable[float]] = None,
 ) -> Optional[float]:
-    """kcat_rev = kcat_fwd · ∏Km_p / (Keq · ∏Km_s)."""
+    """kcat_rev = kcat_fwd · ∏(Km_p/c°)^νp / (Keq · ∏(Km_s/c°)^νs).
+
+    Kms in mM; Keq dimensionless against the 1 M standard state (c° = 1000 mM).
+    ν defaults to 1 per Km. Matches the saturated reverse limit of the CM rate law.
+    """
     if not (
         math.isfinite(keq)
         and keq > 0.0
@@ -36,19 +43,27 @@ def compute_haldane_reverse_kcat(
         and kcat_fwd > 0.0
     ):
         return None
-    prod_p = 1.0
-    for km in km_products:
-        if km is None or km <= 0 or not math.isfinite(km):
+
+    def _log_prod(kms, nus) -> Optional[float]:
+        kms = list(kms)
+        nus = [1.0] * len(kms) if nus is None else list(nus)
+        if len(nus) != len(kms):
             return None
-        prod_p *= km
-    prod_s = 1.0
-    for km in km_substrates:
-        if km is None or km <= 0 or not math.isfinite(km):
-            return None
-        prod_s *= km
-    if prod_s == 0.0:
+        total = 0.0
+        for km, nu in zip(kms, nus):
+            if km is None or km <= 0 or not math.isfinite(km):
+                return None
+            total += nu * math.log(km / STANDARD_CONCENTRATION_MM)
+        return total
+
+    log_p = _log_prod(km_products, nu_products)
+    log_s = _log_prod(km_substrates, nu_substrates)
+    if log_p is None or log_s is None:
         return None
-    val = kcat_fwd * prod_p / (keq * prod_s)
+    log_val = math.log(kcat_fwd) + log_p - math.log(keq) - log_s
+    if log_val > 700.0:
+        return None
+    val = math.exp(log_val)
     if not (math.isfinite(val) and val > 0.0):
         return None
     return val
@@ -162,7 +177,12 @@ class HydrophobicChainLengthKm(Rule):
             km_per[lab] = km * math.exp(dG * (n - n_ref) / rt)
 
 class HaldaneReverseKcat(Rule):
-    """Recompute kcat_rev via Haldane (reverse-queried product Kms)."""
+    """Recompute kcat_rev via Haldane from the Kms the rate law uses.
+
+    Runs after the Km rules, so kcat_rev is the saturated reverse turnover of the
+    simulated law. Only this reaction's participants count; buffered cofactors have
+    no Km (their activity enters as c/c°).
+    """
 
     def applies_to(self, reaction) -> bool:
         thermo = getattr(reaction, "thermo", None)
@@ -182,18 +202,25 @@ class HaldaneReverseKcat(Rule):
     def apply(self, reaction) -> None:
         thermo = reaction.thermo
         kin = reaction.kinetics
-        km_substrates = list(
-            (getattr(kin, "_substrate_kms_for_haldane", None) or {}).values()
-        )
-        km_products = [
-            km for lab, km in (getattr(kin, "_product_kms_for_haldane", None) or {}).items()
-            if lab.lower().strip() not in COFACTORS_ALWAYS_AVAILABLE
-        ]
+        stoich = getattr(reaction, "stoichiometry", None) or {}
+        km_by_lc = {
+            str(lab).lower().strip(): km
+            for lab, km in (getattr(kin, "km_per_substrate", None) or {}).items()
+        }
+        substrates, products = [], []
+        for lab, coeff in stoich.items():
+            lab_lc = lab.lower().strip()
+            km = km_by_lc.get(lab_lc)
+            if coeff == 0 or lab_lc in COFACTORS_ALWAYS_AVAILABLE or not km or km <= 0:
+                continue
+            (substrates if coeff < 0 else products).append((km, abs(coeff)))
         kcat_rev = compute_haldane_reverse_kcat(
             kcat_fwd=kin.kcat,
             keq=thermo.keq,
-            km_substrates=km_substrates,
-            km_products=km_products,
+            km_substrates=[km for km, _ in substrates],
+            km_products=[km for km, _ in products],
+            nu_substrates=[nu for _, nu in substrates],
+            nu_products=[nu for _, nu in products],
         )
         if kcat_rev is None:
             thermo.kcat_rev = None

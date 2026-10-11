@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
-from bees.flux_calculator import _km_for, rate_law_spec
+from bees.flux_calculator import rate_law_spec
 
 logger = logging.getLogger("BEES")
 
@@ -243,85 +243,3 @@ def format_sharing_terms(terms, conc, kname) -> Optional[str]:
             bits.append(base if copies == 1 else f"({base})^{copies}")
         parts.append(" * ".join(bits))
     return " + ".join(parts)
-
-
-# The earlier experiment patch (acyl substrates only, FAS enzymes); verification only.
-_LEGACY_ENZYMES = frozenset({"faba", "fabb", "fabf", "fabg", "fabi", "fabz", "tesa"})
-
-
-def _legacy_acyl_substrate(rxn) -> Optional[str]:
-    """Longest carrier-bound acyl substrate (malonyl donor excluded), or None."""
-    from bees.rules.helpers import _CARRIER_SUFFIXES, detect_acyl_chain_length
-
-    smiles_map = getattr(rxn.kinetics, "compound_smiles", None)
-    if not isinstance(smiles_map, dict):
-        smiles_map = {}
-    best, best_n = None, -1
-    for lab in rxn.reactant_labels:
-        lc = lab.lower().strip()
-        if "malonyl" in lc or not lc.endswith(_CARRIER_SUFFIXES):
-            continue
-        n = detect_acyl_chain_length(lab, smiles_map.get(lab))
-        if n is not None and n > best_n:
-            best, best_n = lab, n
-    return best
-
-
-class LegacyCompetition:
-    """c_r = (1 + x_r) / (1 + x_r + sum of other core x_j), x = (S/Km)^nu on the acyl substrate."""
-
-    def __init__(self, reactions: list, n_core_reactions: int, label_to_idx, alias):
-        by_enzyme: Dict[str, list] = {}
-        for j, rxn in enumerate(reactions):
-            enzyme = str(rxn.enzyme_label).lower().strip()
-            if enzyme not in _LEGACY_ENZYMES or rxn.kinetics is None or rxn.rate_law is None:
-                continue
-            sub = _legacy_acyl_substrate(rxn)
-            if sub is None:
-                continue
-            km = _km_for(rxn, sub)
-            if km is None or km <= 0:
-                continue
-            idx = _species_index(sub, label_to_idx, alias)
-            if idx is None:
-                continue
-            nu = float(abs(rxn.stoichiometry.get(sub, 1)))
-            by_enzyme.setdefault(enzyme, []).append((j, idx, float(km), nu))
-
-        self.groups = []
-        for members in by_enzyme.values():
-            if len(members) < 2:
-                continue
-            sp_idx = np.array([m[1] for m in members], dtype=np.int64)
-            first_core: Dict[int, int] = {}
-            for k, (j, idx, _, _) in enumerate(members):
-                if j < n_core_reactions and idx not in first_core:
-                    first_core[idx] = k
-            distinct = np.zeros(len(members), dtype=bool)
-            distinct[list(first_core.values())] = True
-            rep = np.array([first_core.get(idx, -1) for idx in sp_idx], dtype=np.int64)
-            self.groups.append((
-                np.array([m[0] for m in members], dtype=np.int64),
-                sp_idx,
-                np.array([m[2] for m in members], dtype=np.float64),
-                np.array([m[3] for m in members], dtype=np.float64),
-                distinct,
-                rep,
-            ))
-
-    def factor(self, y_ext: np.ndarray, shape: tuple) -> np.ndarray:
-        c = np.ones(shape)
-        is_mat = len(shape) > 1
-        for rxn_idx, sp_idx, km, nu, distinct, rep in self.groups:
-            s = np.maximum(y_ext[sp_idx], 0.0)
-            if is_mat:
-                x = (s / km[:, np.newaxis]) ** nu[:, np.newaxis]
-                has_rep = (rep >= 0)[:, np.newaxis]
-            else:
-                x = (s / km) ** nu
-                has_rep = rep >= 0
-            total = x[distinct].sum(axis=0)
-            own = np.where(has_rep, x[np.maximum(rep, 0)], 0.0)
-            others = np.maximum(total - own, 0.0)
-            c[rxn_idx] = (1.0 + x) / (1.0 + x + others)
-        return c

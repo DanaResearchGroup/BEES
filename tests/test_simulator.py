@@ -242,6 +242,18 @@ class TestStepwiseInterrupt:
         )
         assert not result.simulation_interrupted
 
+    @pytest.mark.parametrize("method", ["BDF", "LSODA"])
+    def test_stepwise_matches_continuous(self, method):
+        """The stepwise pass (no interrupt) must land on the same state as one solve."""
+        kw = dict(end_time=50.0, method=method, rtol=1e-8, atol=1e-12)
+        stepwise = ODESimulator(_make_core_edge_model_with_immediate_flux()).simulate(
+            interrupt_simulation_tol=1e6, **kw
+        )
+        continuous = ODESimulator(_make_core_edge_model_with_immediate_flux()).simulate(**kw)
+        assert not stepwise.simulation_interrupted
+        assert stepwise.t[-1] == pytest.approx(50.0)
+        np.testing.assert_allclose(stepwise.y[:, -1], continuous.y[:, -1], rtol=1e-5, atol=1e-10)
+
     def test_continuous_path_still_works(self):
         """When no edge species exist, the continuous path should be used."""
         model = CoreEdgeModel()

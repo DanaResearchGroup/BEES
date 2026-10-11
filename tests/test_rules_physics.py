@@ -108,6 +108,19 @@ class TestComputeHaldane:
         result = compute_haldane_reverse_kcat(1e6, 1e-6, [1.0], [1.0])
         assert result == pytest.approx(1e12)
 
+    def test_km_scaled_by_1_molar_standard_state(self):
+        # A + B -> C, Kms in mM, Keq dimensionless (1 M standard state):
+        # kcat_rev = kcat_f * (Km_C/c°) / (Keq * (Km_A/c°) * (Km_B/c°)), c° = 1000 mM.
+        result = compute_haldane_reverse_kcat(100.0, 10.0, [0.5, 0.2], [2.0])
+        assert result == pytest.approx(100.0 * (2.0 / 1000) / (10.0 * (0.5 / 1000) * (0.2 / 1000)))
+
+    def test_stoichiometric_powers(self):
+        # 2 A -> B: kcat_rev = kcat_f * (Km_B/c°) / (Keq * (Km_A/c°)^2).
+        result = compute_haldane_reverse_kcat(
+            100.0, 5.0, [0.3], [0.7], nu_substrates=[2], nu_products=[1],
+        )
+        assert result == pytest.approx(100.0 * (0.7 / 1000) / (5.0 * (0.3 / 1000) ** 2))
+
 
 # ---------------------------------------------------------------------------
 # DgrIrreversibility
@@ -350,13 +363,6 @@ class TestHydrophobicChainLengthKm:
         # malonyl is C3 (detected), so it also gets a (small) factor for n=3
         assert km["malonyl-[ACP]"] == pytest.approx(0.02 * self._expected_factor(3))
 
-    def test_forward_only_does_not_touch_haldane_snapshot(self):
-        rxn = self._tesa_rxn(0.005)
-        rxn.kinetics._substrate_kms_for_haldane = {"tetradecanoyl-[ACP]": 0.005}
-        self._rule().apply(rxn)
-        # The Haldane snapshot is left exactly as set (forward-only).
-        assert rxn.kinetics._substrate_kms_for_haldane == {"tetradecanoyl-[ACP]": 0.005}
-
     def test_idempotent_across_repeated_apply_all(self):
         km0 = 0.005
         rxn = self._tesa_rxn(km0)
@@ -471,15 +477,11 @@ class TestHaldaneReverseKcat:
     def test_computes_kcat_rev_when_inputs_valid(self):
         # Single substrate "S" (-1), single product "P" (+1), neither cofactor.
         # kcat_rev = 100 * 2 / (10 * 0.5) = 40
-        # The rule uses _substrate_kms_for_haldane (pre-absorption snapshot) and
-        # _product_kms_for_haldane (reverse-query only), not merged km_per_substrate.
         rxn = FakeReaction(
             stoichiometry={"S": -1, "P": 1},
             kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"S": 0.5, "P": 2.0}),
             thermo=FakeThermo(keq=10.0),
         )
-        rxn.kinetics._substrate_kms_for_haldane = {"S": 0.5}
-        rxn.kinetics._product_kms_for_haldane = {"P": 2.0}
         self._rule().apply(rxn)
         assert rxn.thermo.kcat_rev == pytest.approx(40.0)
         assert rxn.thermo.irreversible is False
@@ -491,16 +493,12 @@ class TestHaldaneReverseKcat:
             kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"S": 0.5, "P": 2.0}),
             thermo=FakeThermo(keq=0.0),
         )
-        rxn.kinetics._substrate_kms_for_haldane = {"S": 0.5}
-        rxn.kinetics._product_kms_for_haldane = {"P": 2.0}
         self._rule().apply(rxn)
         assert rxn.thermo.kcat_rev is None
         assert rxn.thermo.irreversible is True
 
     def test_cofactors_filtered_from_haldane(self):
         # H+ and H2O are buffered cofactors and must be excluded from ∏Km_p and ∏Km_s.
-        # The substrate snapshot (_substrate_kms_for_haldane) excludes h2o (cofactor).
-        # The product dict (_product_kms_for_haldane) excludes h+ (cofactor).
         # Result: kcat_rev = 100 * 2 / (10 * 0.5) = 40.
         rxn = FakeReaction(
             stoichiometry={"S": -1, "P": 1, "h+": 1, "h2o": -1},
@@ -510,12 +508,76 @@ class TestHaldaneReverseKcat:
             ),
             thermo=FakeThermo(keq=10.0),
         )
-        # Substrate snapshot: h2o excluded (cofactor), even though stoich < 0.
-        rxn.kinetics._substrate_kms_for_haldane = {"S": 0.5}
-        # Product Kms from reverse query: h+ excluded by rule's cofactor filter.
-        rxn.kinetics._product_kms_for_haldane = {"P": 2.0, "h+": 1e-6}
         self._rule().apply(rxn)
         assert rxn.thermo.kcat_rev == pytest.approx(40.0)
+
+    def test_ignores_kms_of_non_participants(self):
+        # FabA dehydration whose shared Km table also holds the (3Z) isomer of the product.
+        rxn = FakeReaction(
+            stoichiometry={"OH": -1, "2E": 1, "H2O": 1},
+            kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"OH": 0.5, "2E": 2.0, "3Z": 3.0}),
+            thermo=FakeThermo(keq=10.0),
+        )
+        self._rule().apply(rxn)
+        assert rxn.thermo.kcat_rev == pytest.approx(40.0)
+
+    def test_uses_km_after_chain_length_scaling(self):
+        # Registered after hydrophobic_chain_length_km: the scaled Km is the one simulated.
+        rxn = FakeReaction(
+            stoichiometry={"decanoyl-[ACP]": -1, "decanoate": 1},
+            kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"decanoyl-[ACP]": 0.5, "decanoate": 2.0}),
+            thermo=FakeThermo(dgr_prime_kJmol=-1.0, keq=10.0),
+        )
+        reg = RuleRegistry()
+        reg.register(_rule(HydrophobicChainLengthKm, params={
+            "dG_per_CH2_kJmol": _DG_PER_CH2_KJMOL,
+            "reference_chain_length": _HYDROPHOBIC_REFERENCE_CHAIN,
+            "temperature_K": _HYDROPHOBIC_TEMPERATURE_K,
+        }))
+        reg.register(_rule(HaldaneReverseKcat))
+        reg.apply_all([rxn])
+        km_s = rxn.kinetics.km_per_substrate["decanoyl-[ACP]"]
+        assert km_s < 0.5
+        assert rxn.thermo.kcat_rev == pytest.approx(100.0 * 2.0 / (10.0 * km_s))
+
+    def test_uses_stoichiometric_powers(self):
+        rxn = FakeReaction(
+            stoichiometry={"A": -2, "B": 1},
+            kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"A": 0.3, "B": 0.7}),
+            thermo=FakeThermo(keq=5.0),
+        )
+        self._rule().apply(rxn)
+        assert rxn.thermo.kcat_rev == pytest.approx(100.0 * (0.7 / 1000) / (5.0 * (0.3 / 1000) ** 2))
+
+    def test_matches_reverse_limit_of_rate_law(self):
+        # The reported kcat_rev must equal the simulator's saturated reverse rate / [E]:
+        # A + B -> C with A = B = 0 and C >> Km_C.
+        from unittest.mock import MagicMock
+
+        from bees.flux_calculator import compute_reversible_mm_rate
+        from bees.thermodynamics import ThermoData
+
+        kms = {"A": 0.5, "B": 0.2, "C": 2.0}
+        rxn = FakeReaction(
+            stoichiometry={"A": -1, "B": -1, "C": 1},
+            kinetics=FakeKinetics(kcat=100.0, km_per_substrate=dict(kms)),
+            thermo=FakeThermo(keq=10.0),
+        )
+        self._rule().apply(rxn)
+
+        sim = MagicMock()
+        sim.enzyme_label = "E1"
+        sim.reactant_labels = ["A", "B"]
+        sim.product_labels = ["C"]
+        sim.stoichiometry = rxn.stoichiometry
+        sim.rate_law = "Michaelis-Menten"
+        sim.kinetics = MagicMock(kcat=100.0, vmax=None, km=None, km_per_substrate=kms)
+        sim.template = MagicMock(reversible=True)
+        sim.thermo = ThermoData(dgr_prime_kJmol=0.0, sigma_kJmol=1.0, keq=10.0,
+                                kcat_rev=None, irreversible=False, source="equilibrator")
+        e = 1e-3
+        v = compute_reversible_mm_rate(sim, {"a": 0.0, "b": 0.0, "c": 1e9}, {"e1": e})
+        assert -v / e == pytest.approx(rxn.thermo.kcat_rev, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +593,6 @@ class TestRegistryOrderingAndIdempotence:
             kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"S": 0.5, "P": 2.0}),
             thermo=FakeThermo(dgr_prime_kJmol=-50.0, keq=1e6),
         )
-        rxn.kinetics._substrate_kms_for_haldane = {"S": 0.5}
-        rxn.kinetics._product_kms_for_haldane = {"P": 2.0}
         reg = RuleRegistry()
         reg.register(_rule(DgrIrreversibility, params={"dgr_kjmol_cutoff": 30.0}))
         reg.register(_rule(HaldaneReverseKcat))
@@ -551,8 +611,6 @@ class TestRegistryOrderingAndIdempotence:
             kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"acyl": 0.5}),
             thermo=FakeThermo(dgr_prime_kJmol=-5.0, keq=1e-3),
         )
-        rxn.kinetics._substrate_kms_for_haldane = {"acyl": 0.5}
-        rxn.kinetics._product_kms_for_haldane = {"3-oxoacyl-[ACP]": 1.0}
         reg = RuleRegistry()
         reg.register(_rule(DgrIrreversibility, params={"dgr_kjmol_cutoff": 30.0}))
         reg.register(_rule(DecarboxylationIrreversible))
@@ -567,8 +625,6 @@ class TestRegistryOrderingAndIdempotence:
             kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"S": 0.5, "P": 2.0}),
             thermo=FakeThermo(dgr_prime_kJmol=-10.0, keq=10.0),
         )
-        rxn.kinetics._substrate_kms_for_haldane = {"S": 0.5}
-        rxn.kinetics._product_kms_for_haldane = {"P": 2.0}
         reg = RuleRegistry()
         reg.register(_rule(DgrIrreversibility, params={"dgr_kjmol_cutoff": 30.0}))
         reg.register(_rule(HaldaneReverseKcat))

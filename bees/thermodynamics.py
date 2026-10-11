@@ -26,8 +26,15 @@ _DEFAULT_CACHE_DIR = Path(os.environ.get(
     str(Path.home() / ".cache" / "bees" / "equilibrator"),
 ))
 
-_DGR_IRREVERSIBLE_KJMOL = 30.0  # ΔG°' < −this ⇒ forward-irreversible (rule layer)
-_SIGMA_WARN_KJMOL = 10.0        # σ above this ⇒ Keq uncertain by >50×
+# eQuilibrator ΔG°' refers to a 1 M solute standard state; model
+# concentrations are mM, so a reaction quotient must use c / STANDARD_CONCENTRATION_MM.
+STANDARD_CONCENTRATION_MM = 1000.0
+
+# Bump when the meaning of a cached reaction entry changes (key or ΔG computation).
+_REACTION_CACHE_SCHEMA = "reaction-v2-substituted"
+
+_DGR_IRREVERSIBLE_KJMOL = 30.0  # ΔG°' < −this ⇒ forward-irreversible 
+_SIGMA_WARN_KJMOL = 10.0        # σ threshold ⇒ Keq uncertain by >50×
 
 logger = logging.getLogger("BEES")
 
@@ -36,7 +43,7 @@ def _is_disabled() -> bool:
 
 @dataclass
 class ThermoData:
-    """Per-reaction ΔG°′ / Keq / kcat_rev. Attached as reaction.thermo (runtime-only)."""
+    """Per-reaction ΔG°′ / Keq / kcat_rev. Attached as reaction.thermo."""
     dgr_prime_kJmol: float
     sigma_kJmol: float
     keq: float
@@ -217,6 +224,24 @@ class ThermoEngine:
             )
         return cpd
 
+    def _effective_smiles(
+        self,
+        stoichiometry: Dict[str, int],
+        smiles_map: Dict[str, str],
+    ) -> Dict[str, Optional[str]]:
+        """SMILES equilibrator actually sees for each label (after the substitutor)."""
+        effective: Dict[str, Optional[str]] = {}
+        for label in stoichiometry:
+            smi = smiles_map.get(label)
+            sub_smi = self.substitutor.substitute(label, smi) if self.substitutor else None
+            if sub_smi is not None and sub_smi != smi:
+                logger.debug(
+                    "CompoundSubstitutor: replaced SMILES for %r (was %r)",
+                    label, smi,
+                )
+            effective[label] = sub_smi if sub_smi is not None else smi
+        return effective
+
     def _compute_dgr_prime(
         self,
         stoichiometry: Dict[str, int],
@@ -235,19 +260,9 @@ class ThermoEngine:
         except ImportError:
             return None, None
 
-        effective_smi_map: Dict[str, Optional[str]] = {}
-        for label in stoichiometry:
-            smi = smiles_map.get(label)
-            sub_smi = self.substitutor.substitute(label, smi) if self.substitutor else None
-            effective_smi = sub_smi if sub_smi is not None else smi
-            if sub_smi is not None and sub_smi != smi:
-                logger.debug(
-                    "CompoundSubstitutor: replaced SMILES for %r (was %r)",
-                    label, smi,
-                )
-            effective_smi_map[label] = effective_smi
+        effective_smi_map = self._effective_smiles(stoichiometry, smiles_map)
 
-        # Carrier swaps collapse to a null reaction under substitution; short-circuit before equilibrator.
+        # Carrier swaps collapse to a null reaction under substitution
         smiles_coeffs: Dict[str, float] = {}
         all_have_smiles = True
         for label, coeff in stoichiometry.items():
@@ -309,7 +324,7 @@ class ThermoEngine:
         stoichiometry: Dict[str, int],
         smiles_map: Dict[str, str],
     ) -> ThermoData:
-        """Compute ΔG°′ and Keq. kcat_rev is always None; irreversibility is decided by the rule layer."""
+        """Compute ΔG°′ and Keq."""
         if _is_disabled():
             return _disabled_thermo()
 
@@ -317,13 +332,17 @@ class ThermoEngine:
         if cc is None:
             return _fallback_thermo("equilibrator unavailable")
 
+        # Keyed by the chemistry equilibrator evaluates (post-substitution), so a
+        # changed substitution can never reuse a ΔG computed for other compounds.
+        effective = self._effective_smiles(stoichiometry, smiles_map)
         canonical_pairs = sorted(
-            ((canonical_smiles(smiles_map.get(lab)) or lab, c)
+            ((canonical_smiles(effective.get(lab)) or lab, c)
              for lab, c in stoichiometry.items()),
             key=lambda p: p[0],
         )
         rxn_key = json.dumps(
-            [canonical_pairs, self.pH, self.ionic_strength_M, self.pMg, self.T_K],
+            [_REACTION_CACHE_SCHEMA, canonical_pairs,
+             self.pH, self.ionic_strength_M, self.pMg, self.T_K],
             default=str,
         )
 
@@ -332,7 +351,7 @@ class ThermoEngine:
             result = cached
         else:
             result = self._compute_dgr_prime(stoichiometry, smiles_map)
-            # Cache reaction hits only (substitutor is not in the key; caching misses would trap later runs).
+            # Cache hits only
             if result is not None and result != (None, None):
                 self.cache.set("reaction", rxn_key, result)
 
