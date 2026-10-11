@@ -1139,7 +1139,7 @@ class ODESimulator:
                     if getattr(kin, "kcat_sd", None) is not None:
                         params.append(f"kcat_sd={kin.kcat_sd:.6g} 1/s")
                 if _is_rev:
-                    params.append(f"Keq={spec.keq:.6g}")
+                    params.append(f"Keq={spec.keq:.6g} mM^{spec.delta_nu:g}")
                 if isinstance(fb, dict):
                     for lab, (ki_val, hill_val) in fb.items():
                         params.append(f"Ki({lab})={float(ki_val):.6g} mM, h({lab})={float(hill_val):g}")

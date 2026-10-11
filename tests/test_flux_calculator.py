@@ -509,6 +509,130 @@ class TestComputeReversibleMmRate:
         assert abs(v_hi - v_lo) < 1e-12
 
 
+def _reversible(reactants, products, stoich, keq, kms):
+    rxn = _make_reaction(
+        reactant_labels=reactants, product_labels=products, stoichiometry=stoich,
+        km=None, kcat=10.0, km_per_substrate=kms,
+    )
+    rxn.template = MagicMock(reversible=True)
+    rxn.thermo = ThermoData(
+        dgr_prime_kJmol=0.0, sigma_kJmol=1.0, keq=keq,
+        kcat_rev=None, irreversible=False, source="equilibrator",
+    )
+    return rxn
+
+
+class TestStandardState:
+    """Keq is dimensionless against a 1 M standard state; model concentrations are mM.
+
+    Each case sits exactly at equilibrium when Q is built from c / 1000 mM, so the
+    net rate must vanish. Using raw mM values misplaces equilibrium by 1000^Δν.
+    """
+
+    ENZ = {"hexokinase": 0.001}
+
+    def test_association_a_plus_b_to_c(self):
+        # [C]/([A][B]) = 10 M^-1 with A = B = 1 mM  =>  C = 1e-5 M = 0.01 mM.
+        rxn = _reversible(["A", "B"], ["C"], {"A": -1, "B": -1, "C": 1}, 10.0,
+                          {"A": 0.1, "B": 0.1, "C": 0.1})
+        v = compute_reversible_mm_rate(rxn, {"a": 1.0, "b": 1.0, "c": 0.01}, self.ENZ)
+        assert v == 0.0
+        v_fwd = compute_reversible_mm_rate(rxn, {"a": 1.0, "b": 1.0, "c": 0.005}, self.ENZ)
+        v_rev = compute_reversible_mm_rate(rxn, {"a": 1.0, "b": 1.0, "c": 0.02}, self.ENZ)
+        assert v_fwd > 0.0 > v_rev
+
+    def test_dissociation_a_to_b_plus_c(self):
+        # [B][C]/[A] = 1e-3 M with A = 1 mM  =>  B = C = 1e-3 M = 1 mM.
+        rxn = _reversible(["A"], ["B", "C"], {"A": -1, "B": 1, "C": 1}, 1e-3,
+                          {"A": 0.1, "B": 0.1, "C": 0.1})
+        v = compute_reversible_mm_rate(rxn, {"a": 1.0, "b": 1.0, "c": 1.0}, self.ENZ)
+        assert v == 0.0
+        v_fwd = compute_reversible_mm_rate(rxn, {"a": 1.0, "b": 0.5, "c": 1.0}, self.ENZ)
+        v_rev = compute_reversible_mm_rate(rxn, {"a": 1.0, "b": 2.0, "c": 1.0}, self.ENZ)
+        assert v_fwd > 0.0 > v_rev
+
+    def test_stoichiometric_power_2a_to_b(self):
+        # [B]/[A]^2 = 5 M^-1 with A = 10 mM = 0.01 M  =>  B = 5e-4 M = 0.5 mM.
+        rxn = _reversible(["A"], ["B"], {"A": -2, "B": 1}, 5.0, {"A": 0.3, "B": 0.7})
+        v = compute_reversible_mm_rate(rxn, {"a": 10.0, "b": 0.5}, self.ENZ)
+        assert v == 0.0
+        assert compute_reversible_mm_rate(rxn, {"a": 10.0, "b": 0.25}, self.ENZ) > 0.0
+        assert compute_reversible_mm_rate(rxn, {"a": 10.0, "b": 1.0}, self.ENZ) < 0.0
+
+    def test_equal_molecularity_unchanged(self):
+        # Δν = 0: the standard concentration cancels, so mM and M give the same Q.
+        rxn = _reversible(["S"], ["P"], {"S": -1, "P": 1}, 10.0, {"S": 1.0, "P": 2.0})
+        assert compute_reversible_mm_rate(rxn, {"s": 1.0, "p": 10.0}, self.ENZ) == 0.0
+
+    @pytest.mark.parametrize("conc", [
+        {"a": 1.0, "b": 1.0, "c": 0.005},
+        {"a": 1.0, "b": 1.0, "c": 0.02},
+        {"a": 0.2, "b": 3.0, "c": 0.0},
+    ])
+    def test_written_formula_matches_simulator(self, conc):
+        rxn = _reversible(["A", "B"], ["C"], {"A": -1, "B": -1, "C": 1}, 10.0,
+                          {"A": 0.1, "B": 0.1, "C": 0.1})
+        form, v_formula = _formula_rate(rxn, conc, self.ENZ)
+        assert form == "reversible"
+        assert v_formula == pytest.approx(_simulator_rate(rxn, conc, self.ENZ), rel=1e-9, abs=1e-18)
+
+
+class TestQuotientSpecies:
+    """Only H2O (solvent), H+ (fixed pH) and Mg2+ (fixed pMg) are left out of Q.
+
+    Pi, CO2, O2, ... are ordinary reactants of the apparent reaction quotient even
+    when they are buffered for kinetics (no Km required).
+    """
+
+    ENZ = {"hexokinase": 0.001}
+
+    def _atp_hydrolysis(self):
+        return _reversible(
+            ["ATP", "H2O"], ["ADP", "Pi", "H+"],
+            {"ATP": -1, "H2O": -1, "ADP": 1, "Pi": 1, "H+": 1}, 1e5,
+            {"ATP": 0.1, "ADP": 0.1},
+        )
+
+    def test_water_and_proton_absent_phosphate_present(self):
+        rxn = self._atp_hydrolysis()
+        base = {"atp": 1.0, "h2o": 55500.0, "adp": 1.0, "pi": 1.0, "h+": 3e-5}
+        v = compute_reversible_mm_rate(rxn, base, self.ENZ)
+        assert compute_reversible_mm_rate(rxn, {**base, "h2o": 1.0}, self.ENZ) == v
+        assert compute_reversible_mm_rate(rxn, {**base, "h+": 1e-3}, self.ENZ) == v
+        # Keq_mM = 1e5 * 1000 = 1e8: equilibrium at [ADP][Pi]/[ATP] = 1e8 mM.
+        at_eq = {**base, "pi": 1e8}
+        assert compute_reversible_mm_rate(rxn, at_eq, self.ENZ) == 0.0
+        assert compute_reversible_mm_rate(rxn, {**base, "pi": 2e8}, self.ENZ) < 0.0
+
+    def test_magnesium_absent(self):
+        rxn = _reversible(["S", "Mg2+"], ["P"], {"S": -1, "Mg2+": -1, "P": 1}, 10.0,
+                          {"S": 1.0, "P": 2.0})
+        conc = {"s": 1.0, "p": 5.0, "mg2+": 1.0}
+        v = compute_reversible_mm_rate(rxn, conc, self.ENZ)
+        assert compute_reversible_mm_rate(rxn, {**conc, "mg2+": 0.01}, self.ENZ) == v
+
+    @pytest.mark.parametrize("gas", ["CO2", "O2"])
+    def test_gas_product_changes_q(self, gas):
+        rxn = _reversible(["S"], ["P", gas], {"S": -1, "P": 1, gas: 1}, 1e-3,
+                          {"S": 1.0, "P": 2.0})
+        # Keq_mM = 1e-3 * 1000 = 1 mM: [P][gas]/[S] = 1 mM is equilibrium.
+        conc = {"s": 1.0, "p": 1.0, gas.lower(): 1.0}
+        assert compute_reversible_mm_rate(rxn, conc, self.ENZ) == 0.0
+        assert compute_reversible_mm_rate(rxn, {**conc, gas.lower(): 0.5}, self.ENZ) > 0.0
+        assert compute_reversible_mm_rate(rxn, {**conc, gas.lower(): 2.0}, self.ENZ) < 0.0
+
+    @pytest.mark.parametrize("conc", [
+        {"atp": 1.0, "h2o": 55500.0, "adp": 1.0, "pi": 1.0, "h+": 3e-5},
+        {"atp": 1.0, "h2o": 55500.0, "adp": 1.0, "pi": 3e8, "h+": 3e-5},
+        {"atp": 0.0, "h2o": 55500.0, "adp": 1.0, "pi": 2.0, "h+": 3e-5},
+    ])
+    def test_written_formula_matches_simulator(self, conc):
+        rxn = self._atp_hydrolysis()
+        form, v_formula = _formula_rate(rxn, conc, self.ENZ)
+        assert form == "reversible"
+        assert v_formula == pytest.approx(_simulator_rate(rxn, conc, self.ENZ), rel=1e-9, abs=1e-18)
+
+
 class TestDispatch:
     """Reversible MM is used only when template.reversible and thermo is not irreversible.
 
@@ -658,6 +782,9 @@ _CONC_POINTS = [
     {"s": 0.2, "p": 0.05},
     {"s": 0.05, "p": 2.0},
     {"a": 0.01, "b": 0.1, "h+": 4e-5, "c": 0.2, "co2": 0.0},
+    # Substrate absent, product present: a reversible reaction must still run backward.
+    {"s": 0.0, "p": 2.0},
+    {"ohacp": 0.0, "enoylacp": 1e-3, "h2o": 55.0},
 ]
 
 

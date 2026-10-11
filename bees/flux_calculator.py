@@ -6,8 +6,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from bees.cofactors import is_rate_law_exempt_cofactor
+from bees.cofactors import is_rate_law_exempt_cofactor, is_thermo_omitted_species
 from bees.reaction_generator import GeneratedReaction
+from bees.thermodynamics import STANDARD_CONCENTRATION_MM
 
 
 @dataclass
@@ -44,7 +45,7 @@ def _product_labels_requiring_km(reaction: GeneratedReaction) -> List[str]:
     """Product labels that must have explicit Kms for CM / reversible MM.
 
     Buffered cofactors (H2O, H+, CO2, …) are omitted — they stay in stoichiometry
-    and Q/Keq but must not gate the rate-law form.
+    (and, except H2O/H+/Mg2+, in Q) but must not gate the rate-law form.
     """
     products = getattr(reaction, "product_labels", None) or []
     return [p for p in products if not is_rate_law_exempt_cofactor(p)]
@@ -284,6 +285,23 @@ def compute_mm_rate_and_den(
 _EQUILIBRIUM_CLAMP = 1e-12
 
 
+def _q_terms(reaction: GeneratedReaction) -> List[Tuple[str, int]]:
+    """(label, signed coefficient) of the species that enter the reaction quotient Q."""
+    return [
+        (lab, c) for lab, c in reaction.stoichiometry.items()
+        if c != 0 and not is_thermo_omitted_species(lab)
+    ]
+
+
+def keq_in_model_units(keq: float, q_terms: List[Tuple[str, float]]) -> float:
+    """Keq (dimensionless, 1 M standard state) expressed for Q built from mM values.
+
+    Q_mM / Keq_mM == Q_M / Keq  with  Keq_mM = Keq · (1000 mM)^Δν, Δν = Σ signed ν over Q.
+    """
+    delta_nu = sum(c for _, c in q_terms)
+    return keq * STANDARD_CONCENTRATION_MM ** delta_nu
+
+
 def _km_for(reaction: GeneratedReaction, label: str) -> Optional[float]:
     """Find Km for a single label using the same lookup rules as compute_mm_rate."""
     kin = reaction.kinetics
@@ -326,8 +344,8 @@ def compute_reversible_mm_rate_and_den(
     Requires reaction.thermo with irreversible=False and a finite Keq.
     Falls back to compute_mm_rate() when thermo is absent/irreversible, or
     when any *non-exempt* product Km is missing. Buffered cofactors (H2O,
-    H+, CO2, …) are omitted from saturation terms but still enter Q via
-    stoichiometry.
+    H+, CO2, …) are omitted from saturation terms; all but H2O, H+ and Mg2+
+    still enter Q.
 
     Full general form with stoichiometric exponents νi:
 
@@ -337,7 +355,9 @@ def compute_reversible_mm_rate_and_den(
         v = Vmax_f · numerator / denominator
 
     Q is computed in log-space from stoichiometry to avoid cancellation near
-    equilibrium. Negative v means net reverse flux (Q > Keq).
+    equilibrium, against Keq in mM units (keq_in_model_units). Negative v means
+    net reverse flux (Q > Keq). With a saturable substrate absent, [S] cancels
+    between Π(S/Km) and Q, leaving the finite reverse term.
     """
     kin = reaction.kinetics
     thermo = reaction.thermo
@@ -368,6 +388,7 @@ def compute_reversible_mm_rate_and_den(
     # legacy MM. Missing Km on a non-exempt substrate → fall back.
     sub_sat_num = 1.0   # ∏ ([S_i]/Km_s,i)^νi
     sub_sat_den = 1.0   # ∏ (1 + [S_i]/Km_s,i)^νi
+    saturable: Dict[str, Tuple[float, float]] = {}  # label → (Km, ν)
     for reactant in reaction.reactant_labels:
         km = _km_for(reaction, reactant)
         if km is None or km <= 0:
@@ -376,6 +397,7 @@ def compute_reversible_mm_rate_and_den(
             return compute_mm_rate_and_den(reaction, concentrations, enzyme_concentrations)
         c = max(concentrations.get(reactant.lower().strip(), 0.0), 0.0)
         nu = abs(stoich.get(reactant, 1))        # stoichiometric exponent
+        saturable[reactant] = (km, nu)
         ratio = c / km
         sub_sat_num *= ratio ** nu
         sub_sat_den *= (1.0 + ratio) ** nu
@@ -395,38 +417,54 @@ def compute_reversible_mm_rate_and_den(
     denom = sub_sat_den + prod_sat_den - 1.0
 
     # ---- Disequilibrium ratio Q/Keq (log-space to avoid cancellation) ------
-    # Q = ∏ [P_j]^νp,j / ∏ [S_i]^νs,i  (stoich coefficients are signed).
-    # Buffered always-available species (H2O, H+, CO2, …) are omitted: their
-    # activities are already baked into the biochemical K'eq from equilibrator.
-    # Including [H2O]=55 (mM pool) would push every dehydration far reverse.
+    # Q = ∏ [P_j]^νp,j / ∏ [S_i]^νs,i  (stoich coefficients are signed), in mM,
+    # against Keq converted to mM units. H2O, H+ and Mg2+ are omitted: solvent
+    # and the pH/pMg-fixed species are already in the transformed K'eq.
+    q_terms = _q_terms(reaction)
+    log_keq = math.log(keq_in_model_units(thermo.keq, q_terms))
     log_q = 0.0
-    finite = True
-    for label, coeff in stoich.items():
-        if is_rate_law_exempt_cofactor(label):
-            continue
+    product_absent = False
+    absent_substrates = []
+    for label, coeff in q_terms:
         c = max(concentrations.get(label.lower().strip(), 0.0), 0.0)
         if c <= 0.0:
             if coeff > 0:
-                # A product is absent → Q = 0 → full forward driving force
-                log_q = float("-inf")
+                product_absent = True
             else:
-                # A substrate is absent → v = 0 (numerator already 0)
-                return 0.0, denom
-            finite = False
-            break
+                absent_substrates.append(label)
+            continue
         log_q += coeff * math.log(c)
 
-    if finite:
-        log_q_over_keq = log_q - math.log(thermo.keq)
-        q_over_keq = math.exp(log_q_over_keq) if log_q_over_keq < 700 else float("inf")
-    else:
-        q_over_keq = 0.0  # Q = 0 → disequilibrium = 1
+    if denom <= 0.0 or not math.isfinite(denom):
+        return 0.0, denom
+    if any(lab not in saturable for lab in absent_substrates):
+        # No saturation term to cancel [S] = 0 against: the law is singular; no flux.
+        return 0.0, denom
+    if product_absent:
+        # Q = 0 → disequilibrium = 1 (zero anyway if a saturable substrate is absent).
+        return vmax_f * sub_sat_num / denom, denom
+    if absent_substrates:
+        # Forward term is 0; reverse term = ∏(S/Km)^ν · Q/Keq with every [S] cancelled.
+        log_rev = -log_keq
+        for label, coeff in q_terms:
+            if coeff < 0 and label in saturable:
+                log_rev -= saturable[label][1] * math.log(saturable[label][0])
+            else:
+                log_rev += coeff * math.log(concentrations[label.lower().strip()])
+        q_labels = {lab for lab, _ in q_terms}
+        for label, (km, nu) in saturable.items():
+            if label in q_labels:
+                continue
+            c = max(concentrations.get(label.lower().strip(), 0.0), 0.0)
+            if c <= 0.0:
+                return 0.0, denom
+            log_rev += nu * math.log(c / km)
+        return -vmax_f * math.exp(min(log_rev, 700.0)) / denom, denom
 
+    log_q_over_keq = log_q - log_keq
+    q_over_keq = math.exp(log_q_over_keq) if log_q_over_keq < 700 else float("inf")
     disequilibrium = 1.0 - q_over_keq
     if abs(disequilibrium) < _EQUILIBRIUM_CLAMP:
-        return 0.0, denom
-
-    if denom <= 0.0 or not math.isfinite(denom):
         return 0.0, denom
 
     return vmax_f * sub_sat_num * disequilibrium / denom, denom
@@ -448,7 +486,8 @@ class RateLawSpec:
     products: List[Tuple[str, float, float]] = field(default_factory=list)  # (label, Km, nu)
     q_substrates: List[Tuple[str, float]] = field(default_factory=list)  # (label, nu)
     q_products: List[Tuple[str, float]] = field(default_factory=list)  # (label, nu)
-    keq: Optional[float] = None
+    keq: Optional[float] = None  # in mM^delta_nu, for Q written in mM (keq_in_model_units)
+    delta_nu: float = 0.0
 
 
 def _vmax_source(reaction: GeneratedReaction, e_conc: float) -> Tuple[Optional[float], Optional[float]]:
@@ -512,10 +551,13 @@ def _reversible_spec(reaction: GeneratedReaction, e_conc: float) -> Optional[Rat
         if km_p is None or km_p <= 0:
             return None
         products.append((product, float(km_p), float(abs(stoich.get(product, 1)))))
-    q_s = [(lab, float(-c)) for lab, c in stoich.items() if c < 0 and not is_rate_law_exempt_cofactor(lab)]
-    q_p = [(lab, float(c)) for lab, c in stoich.items() if c > 0 and not is_rate_law_exempt_cofactor(lab)]
+    q_terms = _q_terms(reaction)
+    q_s = [(lab, float(-c)) for lab, c in q_terms if c < 0]
+    q_p = [(lab, float(c)) for lab, c in q_terms if c > 0]
     return RateLawSpec("reversible", kcat=kin.kcat, substrates=substrates, products=products,
-                       q_substrates=q_s, q_products=q_p, keq=float(keq))
+                       q_substrates=q_s, q_products=q_p,
+                       keq=float(keq_in_model_units(keq, q_terms)),
+                       delta_nu=float(sum(c for _, c in q_terms)))
 
 
 def rate_law_spec(reaction: GeneratedReaction, enzyme_concentrations: Dict[str, float]) -> RateLawSpec:

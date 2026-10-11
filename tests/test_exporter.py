@@ -550,6 +550,35 @@ def test_sbml_kinetic_laws_evaluate_like_simulator(mock_bees_object, output_dir)
     assert m.getReaction(1).getReversible() is False
 
 
+def test_sbml_reversible_law_uses_1_molar_standard_state(mock_bees_object, output_dir):
+    """A + B <=> C with Keq = 10 (1 M standard state) is at equilibrium at
+    A = B = 1 mM, C = 0.01 mM. The SBML law must vanish there and match the
+    simulator away from it."""
+    libsbml = pytest.importorskip("libsbml")
+    from bees.flux_calculator import compute_reversible_mm_rate
+
+    rxn = _make_reaction_with_thermo(
+        enzyme_label="EnzymeR", reactant_labels=("A", "B"), product_labels=("C",),
+        stoichiometry={"A": -1, "B": -1, "C": 1}, keq=10.0, kcat=6.5, kcat_rev=None,
+    )
+    rxn.kinetics.km_per_substrate = {"A": 0.1, "B": 0.1, "C": 0.1}
+    path = _export_sbml_with_reactions([rxn], output_dir, mock_bees_object, strict_invariant=False)
+    m = libsbml.SBMLReader().readSBMLFromFile(path).getModel()
+    formula = libsbml.formulaToL3String(m.getReaction(0).getKineticLaw().getMath()).replace("^", "**")
+    enz = {"enzymer": 0.01}
+    for conc in ({"a": 1.0, "b": 1.0, "c": 0.01}, {"a": 1.0, "b": 1.0, "c": 0.02},
+                 {"a": 0.3, "b": 2.0, "c": 0.0}):
+        ns = {p.getId(): p.getValue() for p in m.getListOfParameters()}
+        ns["compartment1"] = 1.0
+        for s in m.getListOfSpecies():
+            ns[s.getId()] = conc.get(s.getName().lower(), 0.01)
+        v = eval(formula, {"__builtins__": {}}, ns)
+        expected = compute_reversible_mm_rate(rxn, conc, enz)
+        assert v == pytest.approx(expected, rel=1e-9, abs=1e-15), (conc, formula)
+    at_eq = {"a": 1.0, "b": 1.0, "c": 0.01}
+    assert compute_reversible_mm_rate(rxn, at_eq, enz) == 0.0
+
+
 class _StrictLogger:
     """Mimics bees.logger.Logger: every level takes a single message string.
 

@@ -44,6 +44,16 @@ COFACTORS_ALWAYS_AVAILABLE = {
     'ca2+', 'calcium',
 }
 
+# Species absent from the apparent reaction quotient Q′ (IUBMB 1994; Alberty 2003):
+# water is the solvent, H+ and Mg2+ are fixed by pH and pMg, which eQuilibrator's
+# transformed ΔG°′ already accounts for. Every other species, including buffered
+# ones such as Pi, CO2 or O2, stays in Q.
+THERMO_OMITTED_SPECIES = {
+    'h2o', 'water',
+    'h+', 'proton',
+    'mg2+', 'magnesium',
+}
+
 # High-energy phosphate carriers — strict matching, used separately from the
 # general cofactor filter.
 ENERGY_CARRIERS = {
@@ -60,20 +70,31 @@ assert COFACTORS_ALWAYS_AVAILABLE <= GENERAL_COFACTORS, (
 assert ENERGY_CARRIERS <= GENERAL_COFACTORS, (
     "ENERGY_CARRIERS contains entries absent from GENERAL_COFACTORS"
 )
+assert THERMO_OMITTED_SPECIES <= COFACTORS_ALWAYS_AVAILABLE, (
+    "THERMO_OMITTED_SPECIES contains entries absent from COFACTORS_ALWAYS_AVAILABLE"
+)
 
 
 def is_rate_law_exempt_cofactor(label: str) -> bool:
     """True for buffered / always-available cofactors (H2O, H+, CO2, metals, …).
 
-    These species participate in stoichiometry and Q/Keq but must not gate the
-    reversible-MM product-Km completeness check — requiring a
-    CatPred Km for H2O or CO2 silently collapses nearly every FAS reaction onto
-    the legacy forward-only rate law. Regulatory cofactors (CoA, NAD, NADP,
-    ATP, …) are NOT exempt: they need explicit product Kms for back-pressure.
+    These species must not gate the reversible-MM product-Km completeness
+    check — requiring a CatPred Km for H2O or CO2 silently collapses nearly
+    every FAS reaction onto the legacy forward-only rate law. Regulatory
+    cofactors (CoA, NAD, NADP, ATP, …) are NOT exempt: they need explicit
+    product Kms for back-pressure. Whether a species enters Q/Keq is a separate
+    question: see is_thermo_omitted_species.
     """
     if not label:
         return False
     return label.lower().strip() in COFACTORS_ALWAYS_AVAILABLE
+
+
+def is_thermo_omitted_species(label: str) -> bool:
+    """True for species left out of the reaction quotient (H2O, H+, Mg2+)."""
+    if not label:
+        return False
+    return label.lower().strip() in THERMO_OMITTED_SPECIES
 
 # ---------------------------------------------------------------------------
 # ACP/CoA thioester chemistry
