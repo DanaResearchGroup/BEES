@@ -19,6 +19,7 @@ from bees.common import R
 
 from bees.rules.physics_rules import compute_haldane_reverse_kcat
 from bees.thermodynamics import (
+    CompoundSubstitutor,
     ThermoEngine,
     _DiskCache,
 )
@@ -221,6 +222,33 @@ class TestThermoEngineWithMockedCC:
         engine.compute_keq(**self._kwargs())
         # _compute_dgr_prime called only once; second call served from cache.
         assert engine._compute_dgr_prime.call_count == 1
+
+    def test_cache_keyed_by_substituted_chemistry(self, tmp_path: Path):
+        """Same raw SMILES, different substitutions: the second engine must not reuse
+        the first engine's ΔG, which was computed for different effective compounds."""
+
+        class _Sub(CompoundSubstitutor):
+            def __init__(self, smiles):
+                self.smiles = smiles
+
+            def substitute(self, label, smiles):
+                return self.smiles if label == "S" else None
+
+        first = self._engine(tmp_path, dgr_kJmol=-10.0)
+        first.substitutor = _Sub("CC")
+        second = self._engine(tmp_path, dgr_kJmol=5.0)  # same cache directory
+        second.substitutor = _Sub("CCC")
+
+        assert first.compute_keq(**self._kwargs()).dgr_prime_kJmol == pytest.approx(-10.0)
+        td = second.compute_keq(**self._kwargs())
+        assert second._compute_dgr_prime.call_count == 1
+        assert td.dgr_prime_kJmol == pytest.approx(5.0)
+
+        # An identical substitution still hits the cache.
+        third = self._engine(tmp_path, dgr_kJmol=99.0)
+        third.substitutor = _Sub("CCC")
+        assert third.compute_keq(**self._kwargs()).dgr_prime_kJmol == pytest.approx(5.0)
+        assert third._compute_dgr_prime.call_count == 0
 
     def test_fallback_when_dgr_is_none(self, tmp_path: Path):
         engine = ThermoEngine(pH=7.4, T_K=310.15, cache=_DiskCache(tmp_path))
