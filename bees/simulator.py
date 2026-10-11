@@ -16,11 +16,7 @@ from scipy.sparse import csc_matrix
 
 from bees.common import get_ontology_equivalents
 from bees.core_edge_model import CoreEdgeModel, RateLawOptions
-from bees.enzyme_sharing import (
-    LegacyCompetition,
-    PartitionCompetition,
-    format_sharing_terms,
-)
+from bees.enzyme_sharing import PartitionCompetition, format_sharing_terms
 from bees.flux_calculator import (
     compute_mm_rate_and_den,
     compute_reversible_mm_rate_and_den,
@@ -264,18 +260,12 @@ class _VectorizedRHS:
 
         self.options = options or RateLawOptions()
         self._competition = None
-        self._legacy_competition = None
         if self.options.enzyme_competition:
-            if self.options.competition_form == "legacy":
-                self._legacy_competition = LegacyCompetition(
-                    reactions, self._n_core_reactions, label_to_idx, alias_to_model_label
-                )
-            else:
-                self._competition = PartitionCompetition(
-                    reactions, self._n_core_reactions, species_labels, label_to_idx,
-                    alias_to_model_label, enzyme_conc_map,
-                    include_products=self.options.competition_products,
-                )
+            self._competition = PartitionCompetition(
+                reactions, self._n_core_reactions, species_labels, label_to_idx,
+                alias_to_model_label, enzyme_conc_map,
+                include_products=self.options.competition_products,
+            )
 
     def __call__(self, t: float, y: np.ndarray) -> np.ndarray:
         """Evaluate dydt = S @ v(y)."""
@@ -315,19 +305,14 @@ class _VectorizedRHS:
     def _competition_c(self, y_ext, den, shape) -> np.ndarray:
         if self._competition is not None:
             return self._competition.factor(y_ext, den)
-        if self._legacy_competition is not None:
-            return self._legacy_competition.factor(y_ext, shape)
         return np.ones(shape)
 
     def _rates(
         self, y: np.ndarray, want_den: bool = False, apply_sharing: bool = True
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         is_mat = (y.ndim > 1)
-        sharing = apply_sharing and (
-            self._competition is not None
-            or self._legacy_competition is not None
-        )
-        want_den = want_den or (sharing and self._competition is not None)
+        sharing = apply_sharing and self._competition is not None
+        want_den = want_den or sharing
 
         # NEVER clip y globally (breaks S@v mass balance). Dummy 1.0 is the pad sentinel.
         if is_mat:
@@ -1064,7 +1049,7 @@ class ODESimulator:
         lines.append("-" * 80)
 
         _ode_sharing = None
-        if self.options.enzyme_competition and self.options.competition_form == "partition":
+        if self.options.enzyme_competition:
             _ode_sharing = PartitionCompetition(
                 reactions,
                 len(self.model.core_reactions),
@@ -1105,11 +1090,7 @@ class ODESimulator:
                 else:
                     vf = "0"
                 others, k_of = None, {}
-                if (
-                    self.options.enzyme_competition
-                    and self.options.competition_form == "partition"
-                    and _ode_sharing is not None
-                ):
+                if _ode_sharing is not None:
                     terms = _ode_sharing.other_terms(r_idx - 1)
                     k_of = {lab: k for _, ligands in terms for lab, _, k in ligands}
                     enzyme = rxn.enzyme_label

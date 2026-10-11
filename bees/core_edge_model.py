@@ -18,21 +18,10 @@ class RateLawOptions:
 
     enzyme_competition: reactions of one enzyme share its free enzyme
         (rapid-equilibrium partition function over the reactions' CM bound forms).
-    competition_form / competition_products: verification-only switches, not settable
-        from YAML ("legacy" = the earlier acyl-substrate-only patch formula).
     """
 
     enzyme_competition: bool = False
-    competition_form: str = "partition"
     competition_products: bool = True
-
-    def __post_init__(self):
-        if self.competition_form not in ("partition", "legacy"):
-            raise ValueError(f"Unknown competition_form: {self.competition_form!r}")
-
-    @property
-    def any_on(self) -> bool:
-        return self.enzyme_competition
 
 
 @dataclass

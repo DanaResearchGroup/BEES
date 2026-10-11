@@ -181,14 +181,6 @@ class TestCompetition:
             c = rhs.competition_factor(rng.uniform(0, 5, size=len(sp)))
             assert np.all(c <= 1.0 + 1e-15) and np.all(c > 0)
 
-    def test_legacy_form_equals_patch_formula(self):
-        sp = ["butanoyl-[ACP]", "hexanoyl-[ACP]", "P1", "P2"]
-        rxns = [_rxn("FabI", [sp[0]], ["P1"], {sp[0]: 1.0}), _rxn("FabI", [sp[1]], ["P2"], {sp[1]: 1.0})]
-        x1, x2 = 2.0, 3.0
-        v = _rhs(rxns, sp, options=RateLawOptions(enzyme_competition=True, competition_form="legacy"),
-                 enz={"fabi": E}).compute_v(_y(sp, {sp[0]: x1, sp[1]: x2}))
-        np.testing.assert_allclose(v[:2], [VMAX * x1 / (1 + x1 + x2), VMAX * x2 / (1 + x1 + x2)], rtol=1e-14)
-
     def test_contributions_name_complexes(self):
         rxns = [_rxn("E1", ["A"], ["P"], {"A": 1.0, "P": 0.5}), _rxn("E1", ["B"], ["Q"], {"B": 2.0, "Q": 0.25})]
         rhs = _rhs(rxns, SP2)
@@ -232,10 +224,6 @@ class TestPlumbing:
         monkeypatch.setenv("BEES_ENZYME_COMPETITION", "0")
         with pytest.raises(RuntimeError, match="settings.enzyme_competition"):
             ODESimulator(_model())
-
-    def test_unknown_form_rejected(self):
-        with pytest.raises(ValueError):
-            RateLawOptions(enzyme_competition=True, competition_form="other")
 
     def test_settings_default_off(self):
         from bees.schema import Settings

@@ -585,7 +585,7 @@ class EnlargerExporter:
         }
 
         sharing = None
-        if options.enzyme_competition and options.competition_form == "partition":
+        if options.enzyme_competition:
             labels = [sd.label for sd in species_list]
             sharing = PartitionCompetition(
                 reactions,
