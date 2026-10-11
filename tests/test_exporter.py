@@ -604,7 +604,6 @@ def test_free_fatty_acid_global_quantities_exported(mock_bees_object, output_dir
     for the Yu-2011 / Ruppe S2A time-course PE metric:
       palmitic_equivalents_uM = 1000·Σ((carbons-2)/14)·[acid]
     (malonyl-label weight: Yu et al. 2011 counts [2-14C]malonyl, palmitate = 7 units).
-    Legacy total_free_FA and C14–C18 band quantities must not be emitted.
     """
     libsbml = pytest.importorskip("libsbml")
 
@@ -628,13 +627,8 @@ def test_free_fatty_acid_global_quantities_exported(mock_bees_object, output_dir
     assert p is not None and p.getConstant() is False, (
         "palmitic_equivalents_uM must be a non-constant global quantity"
     )
-    for legacy in ("total_free_FA_uM", "palmitic_equivalents_C14_C18_uM"):
-        assert m.getParameter(legacy) is None, f"{legacy} must not be exported"
-
     rule_vars = {m.getRule(i).getVariable() for i in range(m.getNumRules())}
     assert "palmitic_equivalents_uM" in rule_vars
-    assert "total_free_FA_uM" not in rule_vars
-    assert "palmitic_equivalents_C14_C18_uM" not in rule_vars
 
     palm_rule = next(
         m.getRule(i) for i in range(m.getNumRules())

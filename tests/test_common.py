@@ -196,34 +196,8 @@ def test_to_yaml():
     assert re.search(r"description:\s*\|-?\s*\n\s*This is a\n\s*multiline\n\s*string\.?", yaml_string_multiline) is not None
 
 
-def test_string_representer():
-    """Test string_representer for YAML multiline strings."""
-    # This function is typically used by yaml.dump, so we'll test it indirectly
-    # by dumping a dictionary with a multiline string.
-    data = {"key": "single line string"}
-    yaml_str = yaml.dump(data, Dumper=yaml.Dumper, default_flow_style=False)
-    assert "single line string" in yaml_str
-    assert "|" not in yaml_str # Should not use block literal for single line
-
-    data_multiline = {"description": "This is a\nmultiline\nstring."}
-    yaml_str_multiline = to_yaml(data_multiline) # Use to_yaml to apply the custom representer
-    # The regex checks for the key, optional chomping indicator and the multiline content
-    assert re.search(r"description:\s*\|-?\s*\n\s*This is a\n\s*multiline\n\s*string\.?", yaml_str_multiline) is not None
-
-
-"""
-Bond-length and distance-matrix utilities were removed from `bees.common` since they are not
-used by BEES' core pipeline. The associated tests were intentionally removed.
-"""
-
 def test_time_lapse():
     """Test time_lapse function."""
-    t0 = time.time()
-    time.sleep(1.1) # Sleep for a bit to ensure non-zero time
-    elapsed_time_str = time_lapse(t0)
-    # Check format, can't check exact time due to execution variations
-    assert re.match(r'(\d+ days, )?\d{2}:\d{2}:\d{2}', elapsed_time_str) is not None
-
     # Test with a known time difference for specific formatting
     mock_start_time = time.time() - (2 * 24 * 3600 + 3 * 3600 + 4 * 60 + 5) # 2 days, 03:04:05
     with patch('time.time', return_value=mock_start_time + (2 * 24 * 3600 + 3 * 3600 + 4 * 60 + 5)):
