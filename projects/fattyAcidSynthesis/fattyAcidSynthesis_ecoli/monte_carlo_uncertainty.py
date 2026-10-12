@@ -12,9 +12,17 @@ Sources (``--sources``):
     dg         equilibrator ΔG°′, multivariate normal with the joint covariance
     fabi_kcat  FabI kcat 15 ± 0.27 s⁻¹ (Rafi 2006 Table 2 fit error), normal
     fabh_ki    FabH feedback Ki, log10-normal SD 0.350218 (CatPred C16 SD_total)
+    fabi_kcat_3x  FabI kcat log-uniform over 15/3..15×3 s⁻¹ (measured on C12-ACP only,
+                  applied to every chain length)
+    fabh_ki_10x   FabH feedback Ki log-uniform over ×0.1..×10 (Fig. 8 range)
+    fabi_ki_10x   FabI feedback Ki log-uniform over ×0.1..×10 (no reported error)
+fabi_kcat/fabi_kcat_3x and fabh_ki/fabh_ki_10x set the same parameter: use one of each pair.
 
 Draw i is seeded from SeedSequence(seed, spawn_key=(i, source)), so a sample's draws do not
 depend on N, worker count, or which other sources are on.
+
+Every sample also records the free-acid chain-length distribution at 12 min and at the end
+of the run (120 min), for the product-distribution band.
 
 Run (repo root, bees_env):
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/monte_carlo_uncertainty.py --zero-variance
@@ -23,6 +31,7 @@ Run (repo root, bees_env):
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/monte_carlo_uncertainty.py --n 500 --sources kcat
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/monte_carlo_uncertainty.py --n 500 --scheme shared
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/monte_carlo_uncertainty.py --scenario fabi_ki_x2 --zero-variance
+    python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/monte_carlo_uncertainty.py --suite review
 """
 
 from __future__ import annotations
@@ -33,11 +42,17 @@ import csv
 import math
 import multiprocessing as mp
 import os
+import signal
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
+
+# One BLAS thread per worker: with one OpenBLAS pool per core in every forked worker the
+# machine is oversubscribed and each draw runs ~10x slower. Must precede the numpy import.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _PROJECT_DIR)
@@ -53,7 +68,13 @@ from bees.rules.helpers import _ec_norm  # noqa: E402
 
 OUT_DIR = os.path.join(_PROJECT_DIR, "output", "uncertainty")
 
-SOURCES = ("kcat", "km", "dg", "fabi_kcat", "fabh_ki")
+# Append only: the index of a source seeds its draws.
+SOURCES = ("kcat", "km", "dg", "fabi_kcat", "fabh_ki", "fabi_kcat_3x", "fabh_ki_10x",
+           "fabi_ki_10x")
+DEFAULT_SOURCES = ("kcat", "km", "dg", "fabi_kcat", "fabh_ki")
+ESTIMATOR_SOURCES = ("kcat", "km", "dg")
+WIDE_CORRECTED_SOURCES = ("fabi_kcat_3x", "fabh_ki_10x", "fabi_ki_10x")
+EXCLUSIVE_SOURCES = (("fabi_kcat", "fabi_kcat_3x"), ("fabh_ki", "fabh_ki_10x"))
 SCENARIOS = ("none", "fabi_ki_x0.5", "fabi_ki_x2", "tesa_off")
 
 FABI_EC = "1.3.1.9"
@@ -62,6 +83,13 @@ TESA_RULE = "tesa_long_chain_preference"
 FABI_KCAT_MEAN = 15.0     # s⁻¹; Rafi 2006 
 FABI_KCAT_SD = 16.0 / 60.0
 FABH_KI_LOG10_SD = 0.350218  # CatPred SD_total, hexadecanoate vs FabH (SI_CatPred_FabH_Ki_table.csv)
+WIDE_FABI_KCAT_FOLD = 3.0
+WIDE_KI_FOLD = 10.0
+
+# Fig. 6 bins: (chain carbons, double bonds).
+CHAIN_KEYS = ((4, 0), (6, 0), (8, 0), (10, 0), (12, 0), (12, 1), (14, 0), (14, 1),
+              (16, 0), (16, 1), (18, 0), (18, 1), (20, 0), (20, 1))
+CHAIN_TIMES_MIN = (12.0, 120.0)
 
 T_END_S = 7200.0          # same horizon as the production S2A script (exact baseline match)
 GRID_DT_S = 6.0
@@ -100,6 +128,9 @@ class Inventory:
             "dg": self.dg_chol.shape[1] if self.dg else 0,
             "fabi_kcat": 1,
             "fabh_ki": 1,
+            "fabi_kcat_3x": 1,
+            "fabh_ki_10x": 1,
+            "fabi_ki_10x": 1,
         }[source]
 
 
@@ -251,14 +282,29 @@ def draw_sample(inv: Inventory, seed: int, i: int, sources: Sequence[str],
     if "fabi_kcat" in sources:
         z = _sample_rng(seed, i, "fabi_kcat").standard_normal()
         out["fabi_kcat"] = np.array(max(1e-6, FABI_KCAT_MEAN + FABI_KCAT_SD * z))
+    elif "fabi_kcat_3x" in sources:
+        out["fabi_kcat"] = np.array(
+            FABI_KCAT_MEAN * _log_uniform(seed, i, "fabi_kcat_3x", WIDE_FABI_KCAT_FOLD))
     else:
         out["fabi_kcat"] = np.array(FABI_KCAT_MEAN)
     if "fabh_ki" in sources:
         z = _sample_rng(seed, i, "fabh_ki").standard_normal()
         out["fabh_ki_factor"] = np.array(10.0 ** (FABH_KI_LOG10_SD * z))
+    elif "fabh_ki_10x" in sources:
+        out["fabh_ki_factor"] = np.array(_log_uniform(seed, i, "fabh_ki_10x", WIDE_KI_FOLD))
     else:
         out["fabh_ki_factor"] = np.array(1.0)
+    if "fabi_ki_10x" in sources:
+        out["fabi_ki_factor"] = np.array(_log_uniform(seed, i, "fabi_ki_10x", WIDE_KI_FOLD))
+    else:
+        out["fabi_ki_factor"] = np.array(1.0)
     return out
+
+
+def _log_uniform(seed: int, i: int, source: str, fold: float) -> float:
+    """Factor drawn log-uniformly from [1/fold, fold]."""
+    u = _sample_rng(seed, i, source).uniform(-1.0, 1.0)
+    return float(fold ** u)
 
 
 def perturbed_snapshots(base_snaps, inv: Inventory, values: Dict[str, np.ndarray], T_K: float):
@@ -330,10 +376,10 @@ def apply_sample(enlarger, base_model, base_snaps, inv, values, T_K, scenario="n
     f = float(values["fabh_ki_factor"])
     if f != 1.0:
         _scale_feedback(model.core_reactions, "FabH", f)
-    if scenario == "fabi_ki_x0.5":
-        _scale_feedback(model.core_reactions, "FabI", 0.5)
-    elif scenario == "fabi_ki_x2":
-        _scale_feedback(model.core_reactions, "FabI", 2.0)
+    fi = float(values["fabi_ki_factor"])
+    fi *= {"fabi_ki_x0.5": 0.5, "fabi_ki_x2": 2.0}.get(scenario, 1.0)
+    if fi != 1.0:
+        _scale_feedback(model.core_reactions, "FabI", fi)
     return model
 
 
@@ -348,17 +394,59 @@ def _metrics(sim, grid_t):
         "pe_tstar": float(np.interp(T_STAR_S, sim.t, pe)),
         "rmse": rmse,
         "bees_at_exp": bees_at,
+        "chains": _chain_profile(sim),
     }
+
+
+def _fa_key(label: str):
+    """(carbons, double bonds) of a free fatty acid label, else None."""
+    if sa._fa_carbons(label) is None:
+        return None
+    n = label.lower()
+    for stem, c in sa._FA_STEMS:
+        if stem in n:
+            return c, int(stem.endswith("en"))
+    return None
+
+
+def _chain_profile(sim) -> np.ndarray:
+    """Free-acid µM per CHAIN_KEYS bin at each CHAIN_TIMES_MIN, shape (times, bins)."""
+    col = {k: j for j, k in enumerate(CHAIN_KEYS)}
+    out = np.zeros((len(CHAIN_TIMES_MIN), len(CHAIN_KEYS)))
+    t_s = np.array(CHAIN_TIMES_MIN) * 60.0
+    for i, lab in enumerate(sim.species_labels):
+        j = col.get(_fa_key(lab))
+        if j is not None:
+            out[:, j] += 1000.0 * np.interp(t_s, sim.t, sim.y[i])
+    return out
 
 
 # Fork workers inherit these from the parent.
 _W: Dict[str, object] = {}
 
+STATUS_CONVERGED = "converged"
+STATUS_TIMEOUT = "timeout"
+STATUS_FAILED = "solver_failure"
+
+
+class SampleTimeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise SampleTimeout()
+
 
 def _run_sample(i: int):
+    """(i, metrics or None, irreversible flags, status, message, wall seconds)."""
     enl = _W["enlarger"]
     values = {k: v[i] for k, v in _W["values"].items()}
+    timeout = float(_W.get("timeout") or 0.0)
+    irrev = None
     t0 = time.time()
+    if timeout > 0:
+        signal.signal(signal.SIGALRM, _on_alarm)
+        signal.setitimer(signal.ITIMER_REAL, timeout)
     try:
         model = apply_sample(enl, _W["model"], _W["snaps"], _W["inv"], values,
                              _W["T_K"], _W["scenario"])
@@ -367,10 +455,18 @@ def _run_sample(i: int):
                           for r in model.core_reactions])
         sim = sa._simulate(enl, model, end_time=T_END_S)
         if not sim.success or sim.t.size == 0 or sim.t[-1] < T_END_S - 1e-6:
-            return i, None, irrev, f"solver: {sim.message}", time.time() - t0
-        return i, _metrics(sim, _W["grid_t"]), irrev, "", time.time() - t0
+            return (i, None, irrev, STATUS_FAILED, f"solver: {sim.message}",
+                    time.time() - t0)
+        return i, _metrics(sim, _W["grid_t"]), irrev, STATUS_CONVERGED, "", time.time() - t0
+    except SampleTimeout:
+        return (i, None, irrev, STATUS_TIMEOUT, f"exceeded {timeout:g} s wall-clock",
+                time.time() - t0)
     except (ValueError, FloatingPointError, np.linalg.LinAlgError, ArithmeticError) as exc:
-        return i, None, None, f"{type(exc).__name__}: {exc}", time.time() - t0
+        return (i, None, irrev, STATUS_FAILED, f"{type(exc).__name__}: {exc}",
+                time.time() - t0)
+    finally:
+        if timeout > 0:
+            signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def _global_smiles_maps(enlarger, reactions):
@@ -445,6 +541,15 @@ def write_inventory(inv: Inventory, model, out_dir: str) -> None:
                     f"{FABI_KCAT_SD:.6g}", "1/s", "sampled (normal)"])
         w.writerow(["fabh_ki", "FabH feedback (all inhibitors)", "FabH", "", "",
                     f"{inv.fabh_ki_mM:.6g}", FABH_KI_LOG10_SD, "log10", "sampled"])
+        w.writerow(["fabi_kcat_3x", "FabI (all reactions)", "FabI", "", "", FABI_KCAT_MEAN,
+                    f"x1/{WIDE_FABI_KCAT_FOLD:g}..x{WIDE_FABI_KCAT_FOLD:g}", "fold",
+                    "sampled (log-uniform)"])
+        w.writerow(["fabh_ki_10x", "FabH feedback (all inhibitors)", "FabH", "", "",
+                    f"{inv.fabh_ki_mM:.6g}", f"x1/{WIDE_KI_FOLD:g}..x{WIDE_KI_FOLD:g}", "fold",
+                    "sampled (log-uniform)"])
+        w.writerow(["fabi_ki_10x", "FabI feedback (all inhibitors)", "FabI", "", "", "",
+                    f"x1/{WIDE_KI_FOLD:g}..x{WIDE_KI_FOLD:g}", "fold",
+                    "sampled (log-uniform)"])
         for src, lab, why in inv.excluded:
             w.writerow([src, lab, "", "", "", "", "", "", f"fixed: {why}"])
     print(f"wrote {path}")
@@ -501,7 +606,7 @@ def run(args, ctx):
     values = {k: np.stack([d[k] for d in draws]) for k in draws[0]}
 
     _W.update(enlarger=enlarger, model=model, snaps=snaps, inv=inv, values=values,
-              T_K=T_K, scenario=args.scenario, grid_t=grid_t)
+              T_K=T_K, scenario=args.scenario, grid_t=grid_t, timeout=args.timeout)
 
     if not args.sources and args.scenario == "none":
         zm = apply_sample(enlarger, model, snaps, inv, {k: v[0] for k, v in values.items()},
@@ -521,7 +626,11 @@ def run(args, ctx):
             for k, res in enumerate(ex.map(_run_sample, range(n), chunksize=1)):
                 results[res[0]] = res
                 if (k + 1) % max(1, n // 10) == 0:
-                    print(f"  {k + 1}/{n} done ({time.time() - t0:.0f} s)", flush=True)
+                    done = [r for r in results if r is not None]
+                    n_to = sum(r[3] == STATUS_TIMEOUT for r in done)
+                    n_fail = sum(r[3] == STATUS_FAILED for r in done)
+                    print(f"  {k + 1}/{n} done ({time.time() - t0:.0f} s; "
+                          f"timeouts {n_to}, solver failures {n_fail})", flush=True)
     print(f"Samples finished in {time.time() - t0:.0f} s", flush=True)
     save_outputs(args, inv, model, values, results, base, base_irrev, grid_t)
 
@@ -563,12 +672,15 @@ def save_outputs(args, inv, model, values, results, base, base_irrev, grid_t):
     pe_tstar = np.full(n, np.nan)
     rmse = np.full(n, np.nan)
     at_exp = np.full((n, sa.S2A_EXP_T_MIN.size), np.nan)
+    chains = np.full((n, len(CHAIN_TIMES_MIN), len(CHAIN_KEYS)), np.nan)
     irrev = np.zeros((n, len(base_irrev)), dtype=bool)
-    msgs = []
-    for i, m, ir, msg, _dt in results:
+    msgs = [""] * n
+    status = np.array([r[3] for r in results])
+    wall_s = np.array([r[5] for r in results], dtype=float)
+    for i, m, ir, _st, msg, _dt in results:
         if ir is not None:
             irrev[i] = ir
-        msgs.append(msg)
+        msgs[i] = msg
         if m is None:
             continue
         pe[i] = m["pe_grid"]
@@ -576,14 +688,18 @@ def save_outputs(args, inv, model, values, results, base, base_irrev, grid_t):
         pe_tstar[i] = m["pe_tstar"]
         rmse[i] = m["rmse"]
         at_exp[i] = m["bees_at_exp"]
+        chains[i] = m["chains"]
     flips = (irrev != base_irrev[None, :]).sum(axis=1)
 
     npz = os.path.join(OUT_DIR, f"mc_{tag}.npz")
     np.savez_compressed(
-        npz, t_s=grid_t, pe=pe, ok=ok, pe12=pe12, pe_tstar=pe_tstar, rmse=rmse,
+        npz, t_s=grid_t, pe=pe, ok=ok, status=status, wall_s=wall_s,
+        timeout_s=float(args.timeout), pe12=pe12, pe_tstar=pe_tstar, rmse=rmse,
         pe_at_exp=at_exp, irreversible=irrev, baseline_irreversible=base_irrev,
         baseline_pe=base["pe_grid"], baseline_pe12=base["pe12"], baseline_rmse=base["rmse"],
         exp_t_min=sa.S2A_EXP_T_MIN, exp_um=sa.S2A_EXP_UM,
+        chains=chains, baseline_chains=base["chains"],
+        chain_keys=np.array(CHAIN_KEYS), chain_times_min=np.array(CHAIN_TIMES_MIN),
         **{f"draw_{k}": v for k, v in values.items()},
     )
     print(f"wrote {npz}")
@@ -607,17 +723,20 @@ def save_outputs(args, inv, model, values, results, base, base_irrev, grid_t):
     path = os.path.join(OUT_DIR, f"mc_{tag}_draws.csv")
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["i", "ok", "pe12_uM", "rmse_uM", "n_reversibility_flips", "fabi_kcat",
-                    "fabh_ki_factor", "median_log10_kcat_ratio", "median_log10_km_ratio",
-                    "message"])
+        w.writerow(["i", "ok", "status", "wall_s", "pe12_uM", "rmse_uM",
+                    "n_reversibility_flips", "fabi_kcat",
+                    "fabh_ki_factor", "fabi_ki_factor", "median_log10_kcat_ratio",
+                    "median_log10_km_ratio", "message"])
         km_mean = np.array([d.mean for d in inv.km]) if inv.km else None
         kc_mean = np.array([d.mean for d in inv.kcat]) if inv.kcat else None
         for i in range(n):
             mk = (np.median(np.log10(values["kcat"][i] / kc_mean)) if kc_mean is not None else 0.0)
             mm = (np.median(np.log10(values["km"][i] / km_mean)) if km_mean is not None else 0.0)
-            w.writerow([i, int(ok[i]), f"{pe12[i]:.4f}", f"{rmse[i]:.4f}", int(flips[i]),
+            w.writerow([i, int(ok[i]), status[i], f"{wall_s[i]:.1f}", f"{pe12[i]:.4f}",
+                        f"{rmse[i]:.4f}", int(flips[i]),
                         f"{float(values['fabi_kcat'][i]):.5f}",
-                        f"{float(values['fabh_ki_factor'][i]):.5f}", f"{mk:+.4f}",
+                        f"{float(values['fabh_ki_factor'][i]):.5f}",
+                        f"{float(values['fabi_ki_factor'][i]):.5f}", f"{mk:+.4f}",
                         f"{mm:+.4f}", msgs[i]])
     print(f"wrote {path}")
 
@@ -627,14 +746,21 @@ def save_outputs(args, inv, model, values, results, base, base_irrev, grid_t):
         f"seed={args.seed} N={n}",
         f"sampled dims: kcat={len(inv.kcat)} km={len(inv.km)} dg={len(inv.dg)} "
         f"fabi_kcat=1 fabh_ki=1 (inactive sources held at mean)",
-        f"successful={int(ok.sum())} failed={int((~ok).sum())} "
-        f"({100.0 * (~ok).mean():.1f}%)",
+        f"convergence: {int(ok.sum())}/{n} draws converged ({100.0 * ok.mean():.1f}%); "
+        f"timeouts {int((status == STATUS_TIMEOUT).sum())} "
+        f"(limit {args.timeout:g} s per draw), "
+        f"solver failures {int((status == STATUS_FAILED).sum())}",
+        "wall time per draw (s): " + "  ".join(
+            f"p{q}={v:.1f}" for q, v in zip((50, 90, 99), np.percentile(wall_s, [50, 90, 99]))
+        ) + f"  max={wall_s.max():.1f}",
+        "all percentiles below use converged draws only",
         f"baseline: RMSE={base['rmse']:.3f} µM  PE@12={base['pe12']:.2f} µM",
     ]
     if ok.any():
         p = np.percentile(pe12[ok], PERCENTILES)
         lines += [
             "PE@12 min (µM): " + "  ".join(f"p{q}={v:.2f}" for q, v in zip(PERCENTILES, p)),
+            f"PE@12 5-95% band width = {p[4] - p[0]:.2f} µM",
             f"PE@12 median - baseline = {p[2] - base['pe12']:+.2f} µM",
             f"PE@12 ratio p95/p5 = {p[4] / p[0]:.2f}" if p[0] > 0 else "PE@12 p5 <= 0",
             "RMSE (µM): " + "  ".join(
@@ -694,16 +820,23 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=20261001)
     p.add_argument("--scheme", choices=("independent", "shared"), default="independent",
                    help="shared: one CatPred factor per enzyme and parameter class (SI only)")
-    p.add_argument("--sources", nargs="*", default=list(SOURCES), choices=SOURCES)
+    p.add_argument("--sources", nargs="*", default=list(DEFAULT_SOURCES), choices=SOURCES)
     p.add_argument("--scenario", choices=SCENARIOS, default="none")
     p.add_argument("--pilot", action="store_true", help="N=30")
     p.add_argument("--zero-variance", action="store_true",
                    help="N=1, no sources; must reproduce the production baseline")
     p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
-    p.add_argument("--suite", choices=("pilot", "full"), default=None,
+    p.add_argument("--timeout", type=float, default=600.0,
+                   help="wall-clock seconds per draw before it is recorded as a timeout "
+                   "(0 = no limit). With 27 workers, sampled draws take ~90 s median and "
+                   "~200 s at p99; a tighter limit drops valid stiff draws and biases the band")
+    p.add_argument("--suite", choices=("pilot", "full", "review"), default=None,
                    help="pilot: zero-variance + N=30 CatPred-only + N=30 all sources. "
                    "full: zero-variance, main run, single-source runs, shared scheme, "
-                   "and the three fixed scenarios (one network build).")
+                   "and the three fixed scenarios (one network build). "
+                   "review: zero-variance, estimators only (kcat, km, dg; corrected "
+                   "parameters at nominal), estimators + wide corrected ranges, and "
+                   "each estimator source alone.")
     args = p.parse_args(argv)
     if args.pilot:
         args.n = 30
@@ -711,6 +844,9 @@ def main(argv=None):
         args.n = 1
         args.sources = []
     args.sources = [s for s in SOURCES if s in args.sources]
+    for a, b in EXCLUSIVE_SOURCES:
+        if a in args.sources and b in args.sources:
+            p.error(f"--sources: {a} and {b} set the same parameter; pick one")
 
     def cfg(**kw):
         c = argparse.Namespace(**vars(args))
@@ -722,13 +858,23 @@ def main(argv=None):
     if args.suite == "pilot":
         configs = [zero,
                    cfg(n=30, sources=["kcat", "km"], scheme="independent", scenario="none"),
-                   cfg(n=30, sources=list(SOURCES), scheme="independent", scenario="none")]
+                   cfg(n=30, sources=list(DEFAULT_SOURCES), scheme="independent",
+                       scenario="none")]
     elif args.suite == "full":
-        configs = [zero, cfg(sources=list(SOURCES), scheme="independent", scenario="none")]
-        configs += [cfg(sources=[s], scheme="independent", scenario="none") for s in SOURCES]
-        configs.append(cfg(sources=list(SOURCES), scheme="shared", scenario="none"))
+        configs = [zero, cfg(sources=list(DEFAULT_SOURCES), scheme="independent",
+                             scenario="none")]
+        configs += [cfg(sources=[s], scheme="independent", scenario="none")
+                    for s in DEFAULT_SOURCES]
+        configs.append(cfg(sources=list(DEFAULT_SOURCES), scheme="shared", scenario="none"))
         configs += [cfg(n=1, sources=[], scheme="independent", scenario=s)
                     for s in SCENARIOS if s != "none"]
+    elif args.suite == "review":
+        configs = [zero,
+                   cfg(sources=list(ESTIMATOR_SOURCES), scheme="independent", scenario="none"),
+                   cfg(sources=list(ESTIMATOR_SOURCES + WIDE_CORRECTED_SOURCES),
+                       scheme="independent", scenario="none")]
+        configs += [cfg(sources=[s], scheme="independent", scenario="none")
+                    for s in ESTIMATOR_SOURCES]
     else:
         configs = [args]
     ctx = setup()
