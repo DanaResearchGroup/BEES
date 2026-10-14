@@ -24,6 +24,13 @@ depend on N, worker count, or which other sources are on.
 Every sample also records the free-acid chain-length distribution at 12 min and at the end
 of the run (120 min), for the product-distribution band.
 
+A Km that is one CatPred prediction (same enzyme, compound, value and SD) repeated across
+reactions is a single parameter and gets a single draw (e.g. FabG-NADPH in all 14 FabG
+reactions). Scheme "independent" draws every remaining parameter independently; "shared"
+uses one factor per enzyme and parameter class, the fully correlated bound. CatPred SD_total
+is an uncalibrated model uncertainty, so the band is a range under that uncertainty, not a
+calibrated prediction interval.
+
 Run (repo root, bees_env):
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/monte_carlo_uncertainty.py --zero-variance
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/monte_carlo_uncertainty.py --pilot
@@ -110,6 +117,11 @@ class Dim:
     role: str = ""
     # Every reaction whose snapshot must carry this value (reactions sharing one kinetics object).
     rxns: tuple = ()
+    # Km only: every (reaction index, Km label) that carries this one prediction.
+    targets: tuple = ()
+
+    def km_targets(self) -> tuple:
+        return self.targets or tuple((k, self.key) for k in (self.rxns or (self.rxn,)))
 
 
 @dataclass
@@ -219,6 +231,8 @@ def build_inventory(reactions, snaps, n_core, thermo_engine=None, smiles_maps=No
         elif ts is not None:
             excluded.append(("dg", label, f"thermo source={ts.get('source')}"))
 
+    km_dims = tie_identical_km(km_dims)
+
     dg_chol = np.zeros((0, 0))
     if dg_dims and thermo_engine is not None and smiles_maps is not None:
         stoichs = [reactions[d.rxn].stoichiometry for d in dg_dims]
@@ -242,6 +256,35 @@ def build_inventory(reactions, snaps, n_core, thermo_engine=None, smiles_maps=No
     elif dg_dims:
         dg_chol = np.diag([d.sd for d in dg_dims])
     return Inventory(kcat_dims, km_dims, dg_dims, dg_chol, float(fabh_ki_mM), excluded)
+
+
+def tie_identical_km(dims: List[Dim]) -> List[Dim]:
+    """Merge Km dims that are one CatPred prediction repeated across reactions.
+
+    A per-substrate Km depends only on (enzyme sequence, compound), so the same enzyme and
+    compound with the identical value and SD is one physical parameter: it gets one draw.
+    """
+    merged: Dict[tuple, Dim] = {}
+    out: List[Dim] = []
+    for d in dims:
+        if d.key is None:
+            out.append(d)
+            continue
+        # SD went through a log10 -> linear -> log10 round trip: compare at 9 significant digits.
+        k = (d.enzyme.lower().strip(), d.key.lower().strip(), f"{d.mean:.9g}", f"{d.sd:.9g}")
+        first = merged.get(k)
+        if first is None:
+            merged[k] = Dim(d.source, d.rxn, d.key, d.mean, d.sd, d.enzyme, d.label, d.role,
+                            rxns=d.rxns, targets=d.km_targets())
+            out.append(merged[k])
+            continue
+        first.targets = first.targets + d.km_targets()
+        roles = set(first.role.split("/")) | {d.role}
+        first.role = "/".join(sorted(r for r in roles if r))
+    for d in out:
+        if len(d.targets) > 1:
+            d.label = f"{d.enzyme} [{d.key}] ({len(d.targets)} reactions)"
+    return out
 
 
 def _sample_rng(seed: int, i: int, source: str) -> np.random.Generator:
@@ -317,15 +360,15 @@ def perturbed_snapshots(base_snaps, inv: Inventory, values: Dict[str, np.ndarray
     for d, v in zip(inv.km, values["km"]):
         if v == d.mean:
             continue
-        for k in d.rxns or (d.rxn,):
+        for k, key in d.km_targets():
             ks = snaps[k]["kinetics"]
-            if d.key is None:
+            if key is None:
                 ks["km"] = float(v)
                 continue
             per = ks["km_per_substrate"]
-            if ks.get("km") == per.get(d.key) and next(iter(per)) == d.key:
+            if ks.get("km") == per.get(key) and next(iter(per)) == key:
                 ks["km"] = float(v)
-            per[d.key] = float(v)
+            per[key] = float(v)
     for d, v in zip(inv.dg, values["dg"]):
         if v != d.mean:
             th = snaps[d.rxn]["thermo"]
@@ -527,13 +570,13 @@ def write_inventory(inv: Inventory, model, out_dir: str) -> None:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["source", "reaction", "enzyme", "key", "role", "pre_rule_mean",
-                    "sd", "sd_units", "status"])
+                    "sd", "sd_units", "status", "n_reactions"])
         for d in inv.kcat:
             w.writerow(["kcat", d.label, d.enzyme, "", "", f"{d.mean:.6g}", f"{d.sd:.6g}",
-                        "log10", "sampled"])
+                        "log10", "sampled", len(d.rxns or (d.rxn,))])
         for d in inv.km:
             w.writerow(["km", d.label, d.enzyme, d.key or "", d.role, f"{d.mean:.6g}",
-                        f"{d.sd:.6g}", "log10", "sampled"])
+                        f"{d.sd:.6g}", "log10", "sampled", len(d.km_targets())])
         for d in inv.dg:
             w.writerow(["dg", d.label, d.enzyme, "", "", f"{d.mean:.6g}", f"{d.sd:.6g}",
                         "kJ/mol", "sampled (joint covariance)"])
@@ -580,7 +623,9 @@ def setup():
     os.makedirs(OUT_DIR, exist_ok=True)
     enlarger, model, snaps, inv, T_K = prepare()
     print(
-        f"Inventory: kcat={len(inv.kcat)} km={len(inv.km)} dg={len(inv.dg)} "
+        f"Inventory: kcat={len(inv.kcat)} km={len(inv.km)} "
+        f"(covering {sum(len(d.km_targets()) for d in inv.km)} reaction Km entries) "
+        f"dg={len(inv.dg)} "
         f"(rank {inv.dg_chol.shape[1] if inv.dg else 0}) fabi_kcat=1 fabh_ki=1; "
         f"fixed={len(inv.excluded)}; FabH Ki={inv.fabh_ki_mM * 1000:.3g} µM",
         flush=True,
@@ -835,8 +880,8 @@ def main(argv=None):
                    "full: zero-variance, main run, single-source runs, shared scheme, "
                    "and the three fixed scenarios (one network build). "
                    "review: zero-variance, estimators only (kcat, km, dg; corrected "
-                   "parameters at nominal), estimators + wide corrected ranges, and "
-                   "each estimator source alone.")
+                   "parameters at nominal) independent and enzyme-correlated, estimators "
+                   "+ wide corrected ranges (stress test), and each estimator source alone.")
     args = p.parse_args(argv)
     if args.pilot:
         args.n = 30
@@ -871,6 +916,7 @@ def main(argv=None):
     elif args.suite == "review":
         configs = [zero,
                    cfg(sources=list(ESTIMATOR_SOURCES), scheme="independent", scenario="none"),
+                   cfg(sources=list(ESTIMATOR_SOURCES), scheme="shared", scenario="none"),
                    cfg(sources=list(ESTIMATOR_SOURCES + WIDE_CORRECTED_SOURCES),
                        scheme="independent", scenario="none")]
         configs += [cfg(sources=[s], scheme="independent", scenario="none")
