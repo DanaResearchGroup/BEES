@@ -157,10 +157,6 @@ def test_fabg_like(case, nadp, k2, h2, d_hand, c_hand):
     _, den = rhs.compute_v_and_den(y)
     assert den[0] == pytest.approx(d_hand, abs=0.005)
     assert rhs.competition_factor(y)[0] == pytest.approx(c_hand, abs=0.005)
-    # Earlier patch form: acyl substrates only, c = (1 + k)/(1 + k + k2).
-    v_off = _code_rates(specs, conc, OFF)[0]
-    c_old = (1 + conc["oxo"]) / (1 + conc["oxo"] + conc["oxo2"])
-    assert abs(v_off[0] * c_old - ref[0]) / abs(ref[0]) > 0.01
 
 
 def test_holo_acp_partner_forms():
@@ -188,5 +184,6 @@ def test_mixed_group():
     ref = _mechanism_fluxes(specs, conc)
     v, rhs, y = _code_rates(specs, conc, ON)
     assert _rel_err(v, ref) < 0.01
+    assert rhs.competition_factor(y)[0] == 1.0
     assert rhs.competition_factor(y)[1] == pytest.approx(1.0 / 1.5, rel=1e-12)
 

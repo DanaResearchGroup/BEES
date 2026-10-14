@@ -15,9 +15,7 @@ from bees.common import InputError  # raised by read_yaml_file on missing file
 
 
 def _get_parse_and_load_input():
-    """Lazy import to avoid BEES.py env check during test collection."""
-    if "bees_env" not in sys.executable:
-        sys.executable = sys.executable + "bees_env"
+    """Import inside the test so BEES.py's .env.bees loading happens after the path patches."""
     from BEES import parse_and_load_input
     return parse_and_load_input
 
@@ -32,9 +30,6 @@ def patch_paths_and_deps(tmp_path, monkeypatch):
     - Create projects/minimal/ for the parser's default path.
     - Stub git helpers for deterministic logs.
     """
-    if "bees_env" not in sys.executable:
-        monkeypatch.setattr(sys, "executable", sys.executable + "bees_env")
-
     bees_path = tmp_path / "bees_path"
 
     (bees_path / 'projects' / 'minimal').mkdir(parents=True)

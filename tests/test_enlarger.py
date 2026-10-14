@@ -52,6 +52,21 @@ def _make_reaction(
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def _interrupt_result(interrupted: bool, edge_label: str = "p") -> SimulationResult:
+    """Minimal SimulationResult: interrupted with flux into ``edge_label``, or a full pass."""
+    return SimulationResult(
+        t=np.array([0.0, 1.0]),
+        y=np.zeros((1, 2)),
+        species_labels=["x"],
+        success=True,
+        max_char_rate=1.0,
+        final_char_rate=1.0,
+        simulation_interrupted=interrupted,
+        interrupt_char_rate=1.0 if interrupted else 0.0,
+        interrupt_edge_rates={edge_label: 1.0} if interrupted else {},
+    )
+
+
 @pytest.fixture
 def mock_bees_object():
     """Minimal bees_object with settings for iterative mode."""
@@ -89,9 +104,9 @@ def mock_bees_object():
 
 @pytest.fixture
 def mock_reaction_generator():
-    """ReactionGenerator that returns a canned reaction on generate_reactions()."""
+    """ReactionGenerator whose per-enzyme discovery (_generate_reactions) returns S -> P."""
     mg = MagicMock()
-    mg.generate_reactions.return_value = [
+    mg._generate_reactions.return_value = [
         _make_reaction(
             enzyme_label="Enzyme",
             substrate_label="S",
@@ -102,7 +117,6 @@ def mock_reaction_generator():
             kcat=10.0,
         ),
     ]
-    mg._generate_reactions.return_value = []
     return mg
 
 
@@ -201,6 +215,48 @@ class TestIterativeEnlarger:
         assert result.iterations >= 1
         assert result.final_core_species >= 1
 
+    def test_unmatched_feedback_inhibitor_warns(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        """A misspelled inhibitor silently disables feedback; the final model must warn."""
+        logger = MagicMock()
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=logger,
+            output_directory=output_dir,
+        )
+        enlarger._initialise_model()
+        rxn = _make_reaction(enzyme_label="Enzyme")
+        rxn.feedback_inhibitors = {"s": (0.02, 1.0), "dodecanaote": (0.02, 1.0)}
+        enlarger.model.core_reactions.append(rxn)
+
+        enlarger._warn_unmatched_feedback_inhibitors()
+
+        warnings = [c.args[0] for c in logger.warning.call_args_list]
+        assert len(warnings) == 1
+        assert "Enzyme" in warnings[0] and "dodecanaote" in warnings[0]
+        assert "'s'" not in warnings[0]
+
+    def test_matched_feedback_inhibitors_do_not_warn(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        logger = MagicMock()
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=logger,
+            output_directory=output_dir,
+        )
+        enlarger._initialise_model()
+        rxn = _make_reaction(enzyme_label="Enzyme")
+        rxn.feedback_inhibitors = {"s": (0.02, 1.0)}
+        enlarger.model.core_reactions.append(rxn)
+
+        enlarger._warn_unmatched_feedback_inhibitors()
+
+        logger.warning.assert_not_called()
+
     def test_iterations_count_simulation_passes(
         self, mock_bees_object, mock_reaction_generator, output_dir
     ):
@@ -237,30 +293,13 @@ class TestIterativeEnlarger:
             kcat=10.0,
         )
 
-        def _gen_rxns(labels, r_char_ref=None):
-            # First call (initial discovery) seeds "p" into the edge; subsequent
-            # calls (for promoted species) are no-ops for this test.
-            return [seed_rxn_p, seed_rxn_q] if r_char_ref is None else []
-
-        enlarger._generate_reactions_for_species = MagicMock(side_effect=_gen_rxns)
-
-        def _sr(interrupted: bool, edge_label: str = "p") -> SimulationResult:
-            # Minimal SimulationResult satisfying enlarger fields.
-            sr = SimulationResult(
-                t=np.array([0.0, 1.0]),
-                y=np.zeros((1, 2)),
-                species_labels=["x"],
-                success=True,
-                max_char_rate=1.0,
-                final_char_rate=1.0,
-                simulation_interrupted=interrupted,
-                interrupt_char_rate=1.0 if interrupted else 0.0,
-                interrupt_edge_rates={edge_label: 1.0} if interrupted else {},
-            )
-            return sr
+        # Initial discovery seeds "p" and "q" into the edge; later calls (promoted species) find nothing.
+        enlarger._generate_reactions_for_species = MagicMock(
+            side_effect=[[seed_rxn_p, seed_rxn_q]] + [[]] * 10
+        )
 
         # Two interrupted passes then one non-interrupted (converged).
-        sims = [_sr(True, "p"), _sr(True, "q"), _sr(False)]
+        sims = [_interrupt_result(True, "p"), _interrupt_result(True, "q"), _interrupt_result(False)]
 
         with patch("bees.enlarger.ODESimulator") as SimCls:
             inst = SimCls.return_value
@@ -275,8 +314,8 @@ class TestIterativeEnlarger:
         assert len(enlarger._iteration_summaries) == 1 + 3
 
     def test_max_iterations_termination(self, mock_bees_object, mock_reaction_generator, output_dir):
-        """If we set max_iterations=1, it should stop after 1 iteration."""
-        mock_bees_object.settings.max_iterations = 1
+        """Every pass still promotes something: the loop must stop at max_iterations, unconverged."""
+        mock_bees_object.settings.max_iterations = 2
         logger = MagicMock()
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
@@ -284,8 +323,22 @@ class TestIterativeEnlarger:
             logger=logger,
             output_directory=output_dir,
         )
-        result = enlarger.run()
-        assert result.iterations <= 1
+        seeds = [
+            _make_reaction(product_labels=[lab], stoichiometry={"S": -1, lab: 1})
+            for lab in ("p", "q", "r")
+        ]
+        enlarger._generate_reactions_for_species = MagicMock(side_effect=[seeds] + [[]] * 10)
+
+        with patch("bees.enlarger.ODESimulator") as SimCls:
+            inst = SimCls.return_value
+            inst.simulate.side_effect = [_interrupt_result(True, lab) for lab in ("p", "q", "r")]
+            inst.export_ode_equations = MagicMock()
+            result = enlarger.run()
+
+        assert result.iterations == 2
+        assert inst.simulate.call_count == 2
+        assert not result.converged
+        assert result.convergence_reason == "Reached max_iterations (2)."
 
     @patch("bees.enlarger.ODESimulator")
     def test_sub_iteration_restart_calls_simulate_twice(
@@ -463,7 +516,7 @@ class TestIterativeEnlarger:
         mock_reaction_generator,
         output_dir,
     ):
-        """If interrupt cannot promote (no matching edge species), only one simulate call."""
+        """An interrupted pass never prunes the edge, even when nothing is promotable and it resumes."""
         mock_bees_object.settings.toleranceKeepInEdge = 0.01
         mock_bees_object.settings.minEdgeIterationsForPrune = 0
         mock_reaction_generator.ensure_estimator_initialized = MagicMock()

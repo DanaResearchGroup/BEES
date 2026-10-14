@@ -1,4 +1,4 @@
-"""Stage 3a — acyl-chain-length detector validation corpus.
+"""Acyl-chain-length detector validation corpus.
 
 Gates the HydrophobicChainLengthKm rule: the detector must return the correct
 carbon count for every acyl species the rule will encounter, and None for

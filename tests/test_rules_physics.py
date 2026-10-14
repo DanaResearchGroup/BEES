@@ -1,9 +1,7 @@
-"""Regression tests for the physics rule layer.
+"""Tests for the rule layer (physics laws and FAS calibrations).
 
-Each rule is tested in isolation against hand-built fake reactions; the goal
-is to assert each rule's `apply()` reproduces the input/output pairs that
-the old inline logic in bees.thermodynamics and bees.reaction_generator
-produced before the refactor.
+Each rule is tested in isolation against hand-built fake reactions, plus
+registry-level tests for ordering and idempotence across repeated apply_all.
 
 The tests intentionally use plain dataclasses for `kinetics` and `thermo`,
 not the BEES production classes, so a refactor of those classes does not
@@ -120,6 +118,16 @@ class TestComputeHaldane:
     def test_returns_large_finite_values(self):
         result = compute_haldane_reverse_kcat(1e6, 1e-6, [1.0], [1.0])
         assert result == pytest.approx(1e12)
+
+    def test_multi_substrate_multi_product(self):
+        # 2 Km on each side: c° cancels. kcat_rev = 50 * (1.0 * 2.0) / (4.0 * 0.1 * 0.2)
+        result = compute_haldane_reverse_kcat(50.0, 4.0, [0.1, 0.2], [1.0, 2.0])
+        assert result == pytest.approx(50.0 * 2.0 / (4.0 * 0.02))
+
+    def test_no_product_kms_returns_finite(self):
+        # Empty product Km list: Π(Km_p/c°) = 1. Result = 100 / (10 * 0.5 mM / 1000 mM) = 2e4.
+        result = compute_haldane_reverse_kcat(100.0, 10.0, [0.5], [])
+        assert result == pytest.approx(2e4)
 
     def test_km_scaled_by_1_molar_standard_state(self):
         # A + B -> C, Kms in mM, Keq dimensionless (1 M standard state):
@@ -536,8 +544,12 @@ class TestTesALongChainPreference:
         assert rxn.kinetics.kcat > 10.0 * 0.5  # C16 mostly retained
 
     def test_monotonic_increasing_with_chain(self):
-        f = self._expected_factor
-        assert f(4) < f(8) < f(12) < f(16)
+        kcats = []
+        for n in (4, 8, 12, 16):
+            rxn = self._tesa_rxn(n, kcat0=10.0)
+            self._rule().apply(rxn)
+            kcats.append(rxn.kinetics.kcat)
+        assert kcats == sorted(kcats) and len(set(kcats)) == 4
 
     def test_does_not_touch_km(self):
         # Orthogonal to HydrophobicChainLengthKm: this rule only scales kcat.
@@ -745,16 +757,8 @@ class TestRegistryOrderingAndIdempotence:
 # ---------------------------------------------------------------------------
 
 class TestProductionRegistry:
-    def test_load_rules_registers_all(self):
-        from bees.rules import load_rules
-        rules = load_rules()
-        names = [r.name for r in rules]
-        assert "dgr_irreversibility" in names
-        assert "decarboxylation_irreversible" in names
-        assert "hydrophobic_chain_length_km" in names
-        assert "haldane_reverse_kcat" in names
-
     def test_rule_order_flags_and_km_before_haldane(self):
+        """All four laws are registered (index() raises otherwise) and run before Haldane."""
         from bees.rules import load_rules
         rules = list(load_rules())
         names = [r.name for r in rules]

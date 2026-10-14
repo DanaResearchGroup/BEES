@@ -95,7 +95,7 @@ def mock_bees_object():
 @pytest.fixture
 def mock_reaction_generator():
     mg = MagicMock()
-    mg.generate_reactions.return_value = [
+    mg._generate_reactions.return_value = [
         _make_reaction(
             enzyme_label="Enzyme",
             substrate_label="S",
@@ -106,7 +106,6 @@ def mock_reaction_generator():
             kcat=10.0,
         ),
     ]
-    mg._generate_reactions.return_value = []
     return mg
 
 
@@ -154,8 +153,7 @@ class TestEnlargerExporter:
         enlarger.run()
         exporter = self._make_exporter(enlarger, mock_bees_object, output_dir, logger)
         path = exporter.export_simulation_profiles()
-        if path is not None:
-            assert os.path.exists(path)
+        assert path is not None and os.path.exists(path)
 
     def test_export_flux_analysis(self, mock_bees_object, mock_reaction_generator, output_dir):
         """Ensure export_flux_analysis writes a file."""
@@ -193,6 +191,7 @@ class TestEnlargerExporter:
         with open(paths["core"], "r", newline="") as f:
             rows = list(csv.reader(f))
         assert rows[0][:5] == ["index", "reaction_id", "template", "ec_number", "family"]
+        assert rows[1][1] == "R1" and rows[1][-2:] == ["S", "P"]
         assert any(row and row[0] == "core species" for row in rows)
 
         with open(paths["edge"], "r", newline="") as f:
@@ -305,7 +304,7 @@ def test_fallback_thermo_reaction_is_irreversible_in_sbml(
     mock_bees_object, output_dir
 ):
     """
-    Phase 1, Step 2 verification: a reaction whose thermo is `source="fallback"`
+    A reaction whose thermo is `source="fallback"`
     (eQuilibrator could not resolve it) must be exported with
     `reversible="false"`, because the kinetic law emitted is forward-only MM.
     SBML attribute and kinetic-law form must agree, or COPASI raises
@@ -396,7 +395,7 @@ def _walk_ast_ci_names(ast_node):
 def test_feedback_inhibition_exported_to_kinetic_law(mock_bees_object, output_dir):
     """
     A reaction carrying `feedback_inhibitors` (Enzyme.feedback_inhibition, the
-    simulator's Overlay 3) must export the multiplier 1/(1+Σ([I]/Ki)^h) into its
+    simulator's shared-site factor) must export the multiplier 1/(1+Σ([I]/Ki)^h) into its
     kineticLaw, declare each inhibitor as a modifier, and emit Ki/hill parameters.
     Without this the SBML shows the baseline shape, not the feedback shape.
     """

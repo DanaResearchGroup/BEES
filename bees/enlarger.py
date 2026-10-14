@@ -508,8 +508,23 @@ class IterativeEnlarger:
         self.logger.info("=" * 60)
 
         self._log_thermo_fallback_prevalence()
+        self._warn_unmatched_feedback_inhibitors()
 
         return result
+
+    def _warn_unmatched_feedback_inhibitors(self) -> None:
+        """Warn about feedback inhibitors that never became model species (checked once, on the final model)."""
+        missing = ODESimulator(self.model).unmatched_feedback_inhibitors()
+        if not missing:
+            return
+        parts = "; ".join(
+            f"{enzyme}: {', '.join(repr(lab) for lab in labels)}"
+            for enzyme, labels in missing.items()
+        )
+        self.logger.warning(
+            f"Feedback inhibition: inhibitor(s) not found among model species, so their "
+            f"terms are inactive — {parts}. Check the names in enzymes[].feedback_inhibition."
+        )
 
     def _log_thermo_fallback_prevalence(self) -> None:
         """Log the fraction of core reactions that used a thermodynamic fallback.

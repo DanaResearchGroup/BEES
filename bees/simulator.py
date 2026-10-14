@@ -1257,6 +1257,28 @@ class ODESimulator:
                 alias_to_model[equiv.lower().strip()] = model_lc
         return alias_to_model
 
+    def unmatched_feedback_inhibitors(self) -> Dict[str, List[str]]:
+        """{enzyme: [inhibitor labels]} of core reactions whose inhibitor is not a model species.
+
+        The RHS drops such inhibitors from the feedback term, so the run would otherwise
+        proceed with that feedback silently off.
+        """
+        species_labels = self.model.get_all_species_labels()
+        label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
+        alias = self._build_alias_to_model_label(species_labels)
+        missing: Dict[str, List[str]] = {}
+        for rxn in self.model.core_reactions:
+            inh = getattr(rxn, "feedback_inhibitors", None)
+            if not isinstance(inh, dict):
+                continue
+            for label_lc in inh:
+                if alias.get(label_lc, label_lc) in label_to_idx or label_lc in label_to_idx:
+                    continue
+                labels = missing.setdefault(str(rxn.enzyme_label), [])
+                if label_lc not in labels:
+                    labels.append(label_lc)
+        return missing
+
     def _build_enzyme_concentration_map(self) -> Dict[str, float]:
         """Return enzyme label (lc) -> concentration (mM) for all enzyme core species."""
         enzyme_map: Dict[str, float] = {}

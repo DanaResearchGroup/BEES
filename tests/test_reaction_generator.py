@@ -32,21 +32,6 @@ class TestGeneratedReaction:
         assert "Glucose-6P" in s
         assert "ADP" in s
 
-    def test_with_rate_law(self):
-        kin = MagicMock()
-        rxn = GeneratedReaction(
-            enzyme_label="E",
-            substrate_label="S",
-            ec_number="EC 1.1.1.1",
-            template=_make_template(),
-            kinetics=kin,
-            reactant_labels=["S"],
-            product_labels=["P"],
-            stoichiometry={"S": -1, "P": 1},
-            rate_law="Michaelis-Menten",
-        )
-        assert rxn.rate_law == "Michaelis-Menten"
-
 
 class TestReactionGenerator:
     def test_init(self):

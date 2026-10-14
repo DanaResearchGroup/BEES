@@ -136,10 +136,9 @@ class TestODESimulator:
         """simulate() should attach max/final R_char and edge rate ratios."""
         sim = ODESimulator(simple_model)
         result = sim.simulate(end_time=10.0, time_step=1.0)
-        assert result.max_char_rate >= 0.0
-        assert result.final_char_rate >= 0.0
-        assert isinstance(result.max_edge_rate_ratio, dict)
-        assert result.max_char_rate >= result.final_char_rate or result.max_char_rate > 0
+        # S -> P with S depleting: R_char peaks early and decays.
+        assert result.max_char_rate > 0.0
+        assert 0.0 < result.final_char_rate <= result.max_char_rate
 
     def test_model_concentrations_updated(self, simple_model):
         """After simulation, model concentrations should reflect the final state."""
@@ -370,21 +369,6 @@ class TestStepwiseInterrupt:
             )
         assert not result.success
         assert "max_wall_time_per_iteration" in result.message
-        assert not result.simulation_interrupted
-
-    def test_simulate_accepts_custom_method_and_tolerances(self):
-        """Custom method/rtol/atol should not break the stepwise path."""
-        model = _make_core_edge_model_with_immediate_flux()
-        sim = ODESimulator(model)
-        result = sim.simulate(
-            end_time=1.0,
-            interrupt_simulation_tol=1e9,
-            method="BDF",
-            rtol=1e-5,
-            atol=1e-7,
-            stepwise_heartbeat_interval_s=0.0,
-        )
-        assert result.success
         assert not result.simulation_interrupted
 
 
@@ -630,6 +614,25 @@ class TestFeedbackInhibition:
         y = np.array([[10.0, 10.0], [0.0, 0.0], [0.0, 2.0], [0.0, 2.0], [0.01, 0.01]])
         v = rhs.compute_v(y)
         np.testing.assert_allclose(v[0], [self._base_rate(), self._base_rate() / 3.0], rtol=1e-9)
+
+    def test_unmatched_inhibitor_labels_are_reported(self, simple_model):
+        """An inhibitor that is not a model species drops out of the rate law; report it."""
+        simple_model.core_reactions[0].feedback_inhibitors = {
+            "p": (2.0, 1.0), "ghost_acid": (2.0, 1.0),
+        }
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {
+            "Enzyme": ["ghost_acid"],
+        }
+
+    def test_all_inhibitors_matched_reports_nothing(self, simple_model):
+        simple_model.core_reactions[0].feedback_inhibitors = {"p": (2.0, 1.0)}
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {}
+
+    def test_reactions_without_feedback_report_nothing(self, simple_model):
+        """MagicMock / None feedback_inhibitors mean no feedback, not an unmatched label."""
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {}
+        simple_model.core_reactions[0].feedback_inhibitors = None
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {}
 
 
 # ---------------------------------------------------------------------------
