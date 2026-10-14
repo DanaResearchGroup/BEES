@@ -20,7 +20,7 @@ import bees.common as common
 @ pytest.fixture(autouse=True)
 def reset_logger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
-    Reset the Logger singleton and the global 'BEES' logger before each test.
+    Strip handlers from the global 'BEES' logger and stub git/time helpers before each test.
     """
     # 1) remove any existing handlers from the module-level logger
     for handler in list(global_logger.handlers):

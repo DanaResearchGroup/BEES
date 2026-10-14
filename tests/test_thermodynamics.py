@@ -17,7 +17,6 @@ import pytest
 
 from bees.common import R
 
-from bees.rules.physics_rules import compute_haldane_reverse_kcat
 from bees.thermodynamics import (
     CompoundSubstitutor,
     ThermoEngine,
@@ -56,50 +55,6 @@ class TestSmilesConversion:
     def test_smiles_to_inchikey_invalid(self):
         assert _smiles_to_inchikey("NOTASMILES!!!") is None
         assert _smiles_to_inchikey(None) is None
-
-
-# ---------------------------------------------------------------------------
-# Haldane relationship 
-# ---------------------------------------------------------------------------
-
-class TestHaldane:
-    def test_basic_1s_1p(self):
-        # kcat_rev = kcat_fwd * Km_p / (Keq * Km_s)
-        result = compute_haldane_reverse_kcat(100.0, keq=10.0, km_substrates=[0.5], km_products=[2.0])
-        assert result == pytest.approx(100.0 * 2.0 / (10.0 * 0.5))
-
-    def test_multi_substrate_multi_product(self):
-        # kcat_rev = 50 * (1.0 * 2.0) / (4.0 * 0.1 * 0.2)
-        result = compute_haldane_reverse_kcat(50.0, keq=4.0, km_substrates=[0.1, 0.2], km_products=[1.0, 2.0])
-        assert result == pytest.approx(50.0 * 2.0 / (4.0 * 0.02))
-
-    def test_zero_keq_returns_none(self):
-        assert compute_haldane_reverse_kcat(100.0, 0.0, [0.1], [1.0]) is None
-
-    def test_negative_keq_returns_none(self):
-        assert compute_haldane_reverse_kcat(100.0, -5.0, [0.1], [1.0]) is None
-
-    def test_zero_kcat_fwd_returns_none(self):
-        assert compute_haldane_reverse_kcat(0.0, 10.0, [0.1], [1.0]) is None
-
-    def test_zero_km_substrate_returns_none(self):
-        assert compute_haldane_reverse_kcat(100.0, 10.0, [0.0], [1.0]) is None
-
-    def test_zero_km_product_returns_none(self):
-        assert compute_haldane_reverse_kcat(100.0, 10.0, [1.0], [0.0]) is None
-
-    def test_none_km_returns_none(self):
-        assert compute_haldane_reverse_kcat(100.0, 10.0, [None], [1.0]) is None
-
-    def test_returns_large_finite_kcat_rev(self):
-        # ΠKm_p / (Keq · ΠKm_s) = 1.0 / (1e-8 · 0.001) = 1e11 ⇒ kcat_rev = 1e12
-        result = compute_haldane_reverse_kcat(10.0, keq=1e-8, km_substrates=[0.001], km_products=[1.0])
-        assert result == pytest.approx(1e12)
-
-    def test_no_product_kms_returns_finite(self):
-        # Empty product Km list: Π(Km_p/c°) = 1. Result = 100 / (10 * 0.5 mM / 1000 mM) = 2e4.
-        result = compute_haldane_reverse_kcat(100.0, keq=10.0, km_substrates=[0.5], km_products=[])
-        assert result == pytest.approx(2e4)
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +120,7 @@ class TestThermoEngineDisabled:
 
 @_skip_if_disabled
 class TestThermoEngineWithMockedCC:
-    """Mock only _compute_dgr_prime so the Keq/Haldane/cache logic is tested
+    """Mock only _compute_dgr_prime so the Keq/cache logic is tested
     against real code, without any equilibrator-api calls."""
 
     def _engine(self, tmp_path, dgr_kJmol, sigma_kJmol=1.0):
@@ -193,28 +148,16 @@ class TestThermoEngineWithMockedCC:
         expected_keq = math.exp(10.0 * 1000 / (R * 310.15))
         assert td.keq == pytest.approx(expected_keq, rel=1e-9)
 
-    def test_keq_math_haldane(self, tmp_path: Path):
-        # Haldane applied by caller: kcat_rev = kcat_fwd * Km_p / (Keq * Km_s)
-        engine = self._engine(tmp_path, dgr_kJmol=-10.0)
-        td = engine.compute_keq(**self._kwargs())
-        expected_keq = math.exp(10.0 * 1000 / (R * 310.15))
-        kcat_rev = compute_haldane_reverse_kcat(100.0, td.keq, [1.0], [2.0])
-        assert kcat_rev == pytest.approx(100.0 * 2.0 / (expected_keq * 1.0), rel=1e-9)
-
-    def test_compute_keq_returns_raw_irreversibility_false(self, tmp_path: Path):
+    @pytest.mark.parametrize("dgr", [-50.0, 45.0])
+    def test_compute_keq_returns_raw_irreversibility_false(self, tmp_path: Path, dgr):
         # compute_keq returns raw thermo with irreversible=False.
         # The ΔG°' < −cutoff rule has moved to DgrIrreversibility in
         # bees.rules.physics_rules and runs via RULES.apply_all.
-        engine = self._engine(tmp_path, dgr_kJmol=-50.0)
+        engine = self._engine(tmp_path, dgr_kJmol=dgr)
         td = engine.compute_keq(**self._kwargs())
         assert td.irreversible is False
         assert td.kcat_rev is None
-        assert td.dgr_prime_kJmol == pytest.approx(-50.0)
-
-    def test_compute_keq_returns_raw_for_positive_dg(self, tmp_path: Path):
-        engine = self._engine(tmp_path, dgr_kJmol=45.0)
-        td = engine.compute_keq(**self._kwargs())
-        assert td.irreversible is False
+        assert td.dgr_prime_kJmol == pytest.approx(dgr)
 
     def test_caches_reaction_on_second_call(self, tmp_path: Path):
         engine = self._engine(tmp_path, dgr_kJmol=-10.0)

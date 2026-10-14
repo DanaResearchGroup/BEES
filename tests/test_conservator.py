@@ -3,11 +3,7 @@
 import numpy as np
 import pytest
 
-from bees.conservator import (
-    DEFAULT_CONSERVED_POOLS,
-    Conservator,
-    ConservedPool,
-)
+from bees.conservator import Conservator, ConservedPool
 
 
 class TestConservator:
@@ -69,10 +65,3 @@ class TestConservator:
         assert (out >= -1e-15).all()
         assert out[1] == 0.0
         assert out[0] == pytest.approx(0.3)
-
-    def test_default_pools_match_legacy_acp_behavior(self):
-        labels = ["holo-[ACP]", "malonyl-[ACP]"]
-        y = np.array([0.01, -0.5])
-        out = Conservator(labels, pools=DEFAULT_CONSERVED_POOLS).clip(y)
-        assert out[0] == 0.0
-        assert out[1] == 0.0

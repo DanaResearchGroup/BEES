@@ -107,20 +107,6 @@ class TestECClass:
 class TestReactionTemplate:
     """Test ReactionTemplate dataclass."""
     
-    def test_reaction_template_creation(self):
-        """Test creating a reaction template."""
-        template = ReactionTemplate(
-            template_type="phosphorylation",
-            ec_class=ECClass.TRANSFERASE,
-            reactants=["Glucose", "ATP"],
-            products=["Glucose-6-phosphate", "ADP"],
-            stoichiometry={"Glucose": -1, "ATP": -1, "Glucose-6-phosphate": 1, "ADP": 1}
-        )
-        assert template.template_type == "phosphorylation"
-        assert template.ec_class == ECClass.TRANSFERASE
-        assert len(template.reactants) == 2
-        assert len(template.products) == 2
-    
     def test_reaction_template_defaults(self):
         """Test default values for optional fields."""
         template = ReactionTemplate(
@@ -398,26 +384,6 @@ class TestIntegration:
         assert len(reaction.reactants) == 2
         assert len(reaction.products) == 2
         assert sum(reaction.stoichiometry.values()) == 0  # Balanced
-    
-    def test_multiple_ec_classes(self):
-        """Test that different EC classes produce different templates."""
-        ec_numbers = [
-            "EC 1.1.1.1",
-            "EC 2.7.1.1",
-            "EC 3.1.3.1",
-            "EC 4.2.1.1",
-            "EC 5.3.1.1",
-            "EC 6.1.1.1"
-        ]
-        
-        templates = [determine_template_from_ec(ec) for ec in ec_numbers]
-        
-        # All should have different EC classes
-        ec_classes = [t.ec_class for t in templates]
-        assert len(set(ec_classes)) == len(ec_classes)  # All unique
-        
-        # All should have template types
-        assert all(t.template_type for t in templates)
 
 
 

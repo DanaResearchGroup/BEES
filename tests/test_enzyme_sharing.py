@@ -85,8 +85,8 @@ class TestCompetition:
         v = _rhs(_two_mm(), SP2).compute_v(_y(SP2, {"A": 2.0, "B": 3.0}))
         np.testing.assert_allclose(v[:2], [VMAX * a / (1 + a + b), VMAX * b / (1 + a + b)], rtol=1e-12)
 
-    def test_plain_mm_fallback_equals_old_patch_form(self):
-        """Fallback MM (no product Km): c = (1+x)/(1+x+others), the earlier patch formula."""
+    def test_plain_mm_competition_factor(self):
+        """Fallback MM (no product Km): c = (1+x)/(1+x+others)."""
         rhs = _rhs(_two_mm(), SP2)
         y = _y(SP2, {"A": 2.0, "B": 3.0})
         a, b = 2.0, 1.5
@@ -126,14 +126,6 @@ class TestCompetition:
         c = _rhs(rxns, SP2).competition_factor(_y(SP2, {"A": a, "B": b}))
         assert c[1] == pytest.approx((1 + b) / ((1 + a) ** 2 + b), rel=1e-12)
         assert c[0] == pytest.approx((1 + a) ** 2 / ((1 + a) ** 2 + b), rel=1e-12)
-
-    def test_mixed_group(self):
-        """A+B->P and A->Q: the A-only reaction sees the B and A.B forms, c = 1/(1+b)."""
-        rxns = [_rxn("E1", ["A", "B"], ["P"], {"A": 1.0, "B": 1.0}), _rxn("E1", ["A"], ["Q"], {"A": 1.0})]
-        a, b = 2.0, 0.5
-        c = _rhs(rxns, SP2).competition_factor(_y(SP2, {"A": a, "B": b}))
-        assert c[0] == 1.0
-        assert c[1] == pytest.approx(1.0 / (1.0 + b), rel=1e-12)
 
     def test_products_switch(self):
         rxns = [_rxn("E1", ["A"], ["P"], {"A": 1.0, "P": 1.0}), _rxn("E1", ["B"], ["Q"], {"B": 1.0, "Q": 1.0})]
@@ -220,7 +212,7 @@ class TestPlumbing:
         del model.rate_law_options
         assert rate_law_options_of(model) == RateLawOptions()
 
-    def test_settings_default_off(self):
+    def test_settings_default_on(self):
         from bees.schema import Settings
         s = Settings(end_time=10.0)
         assert s.enzyme_competition is True

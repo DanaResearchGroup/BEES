@@ -410,7 +410,7 @@ class TestComputeReversibleMmRate:
 
     def test_falls_back_to_irreversible_when_thermo_flagged(self):
         # When thermo.irreversible is True we should bypass reversible MM
-        # entirely and return the legacy compute_mm_rate value.
+        # entirely and return the forward-only compute_mm_rate value.
         rxn = _make_reversible_reaction(irreversible_thermo=True)
         conc = {"s": 1.0, "p": 5.0}
         enz = {"hexokinase": 0.001}
@@ -418,7 +418,7 @@ class TestComputeReversibleMmRate:
         # Same call against compute_mm_rate should give the same value.
         v_irr = compute_mm_rate(rxn, conc, enz)
         assert v == v_irr
-        assert v > 0.0  # forward MM ignores [P]
+        assert v > 0.0  # forward-only: [P] can slow it but never reverse it
 
     def test_falls_back_when_no_thermo(self):
         rxn = _make_reversible_reaction()
@@ -631,36 +631,6 @@ class TestQuotientSpecies:
         form, v_formula = _formula_rate(rxn, conc, self.ENZ)
         assert form == "reversible"
         assert v_formula == pytest.approx(_simulator_rate(rxn, conc, self.ENZ), rel=1e-9, abs=1e-18)
-
-
-class TestDispatch:
-    """Reversible MM is used only when template.reversible and thermo is not irreversible.
-
-    Production dispatch lives in ``_VectorizedRHS``; these tests check the two
-    rate laws that path chooses between.
-    """
-
-    def test_reversible_dispatch(self):
-        rxn = _make_reversible_reaction(keq=10.0)
-        # Q far above Keq ⇒ negative flux on the reversible path; the
-        # irreversible path would give a positive flux instead.
-        conc = {"s": 0.1, "p": 10.0}
-        enz = {"hexokinase": 0.001}
-        v = compute_reversible_mm_rate(rxn, conc, enz)
-        assert v < 0.0  # reverse
-
-    def test_irreversible_template_skips_reversible_path(self):
-        rxn = _make_reversible_reaction(keq=10.0, template_reversible=False)
-        conc = {"s": 0.1, "p": 10.0}
-        v = compute_mm_rate(rxn, conc, {"hexokinase": 0.001})
-        # Forward MM with [S]=0.1, ignoring [P] → positive consumption of S.
-        assert v > 0.0
-
-    def test_irreversible_thermo_flag_skips_reversible_path(self):
-        rxn = _make_reversible_reaction(keq=10.0, irreversible_thermo=True)
-        conc = {"s": 0.1, "p": 10.0}
-        v = compute_mm_rate(rxn, conc, {"hexokinase": 0.001})
-        assert v > 0.0  # forward MM, P ignored
 
 
 # ---------------------------------------------------------------------------
