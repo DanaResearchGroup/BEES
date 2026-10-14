@@ -14,8 +14,8 @@ class Species(BaseModel):
   
     model_config = ConfigDict(extra="forbid")
 
-    @classmethod
     @field_validator('concentration')
+    @classmethod
     def check_concentration_range_order(cls, value, info: ValidationInfo):
         label = info.data.get('label')
         if value is None:
@@ -34,16 +34,16 @@ class Species(BaseModel):
             return value
         return value
 
-    @classmethod
     @field_validator('constant')
+    @classmethod
     def check_constant_species(cls, value, info: ValidationInfo):
         if value:
             if info.data.get('concentration') and isinstance(info.data['concentration'], tuple):
                 raise ValueError("Constant species cannot have a concentration range")
         return value
 
-    @classmethod
     @field_validator('smiles')
+    @classmethod
     def validate_smiles(cls, value):
         if value:
             try:
@@ -67,15 +67,15 @@ class Enzyme(Species):
     amino_acid_sequence: Optional[str] = None
     feedback_inhibition: Optional[FeedbackInhibition] = None
 
-    @classmethod
     @field_validator('label')
+    @classmethod
     def check_label_not_empty(cls, value):
         if not value.strip():
             raise ValueError("Label cannot be empty")
         return value
 
-    @classmethod
     @field_validator('ecnumber')
+    @classmethod
     def validate_ecnumber(cls, value):
         if value is None:
             return value
@@ -85,8 +85,8 @@ class Enzyme(Species):
                 raise ValueError("Invalid EC number: must start with 'EC '")
         return value
 
-    @classmethod
     @field_validator('amino_acid_sequence')
+    @classmethod
     def validate_amino_acid_sequence(cls, value):
         if value is None:
             return value
@@ -110,8 +110,8 @@ class Environment(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @classmethod
     @field_validator('temperature')
+    @classmethod
     def validate_temperature_range(cls, value):
         if isinstance(value, tuple) and len(value) != 2:
             raise ValueError("Temperature as list must have exactly 2 values (min, max)")
@@ -119,8 +119,8 @@ class Environment(BaseModel):
             raise ValueError("Temperature range min value cannot be greater than max value")
         return value
 
-    @classmethod
     @field_validator('pH')
+    @classmethod
     def validate_pH_range(cls, value):
         if isinstance(value, tuple) and len(value) != 2:
             raise ValueError("pH as list must have exactly 2 values (min, max)")
@@ -177,16 +177,16 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @classmethod
     @field_validator('time_step')
+    @classmethod
     def validate_time_step(cls, value, info: ValidationInfo):
         end_time = info.data.get('end_time')
         if end_time is not None and value >= end_time:
             raise ValueError(f"'time_step' must be smaller than 'end_time' ({end_time}). Got: {value}")
         return value
 
-    @classmethod
     @field_validator('termination_conversion')
+    @classmethod
     def validate_termination_conversion(cls, value):
         if value:
             for species, frac in value.items():
@@ -194,8 +194,8 @@ class Settings(BaseModel):
                     raise ValueError(f"termination_conversion values must be between 0 and 1. Got: {species}: {frac}")
         return value
 
-    @classmethod
     @field_validator('termination_rate_ratio')
+    @classmethod
     def validate_rate_ratio(cls, value):
         if value and not (0 < value < 1):
             raise ValueError("termination_rate_ratio must be between 0 and 1 (exclusive).")
@@ -216,8 +216,8 @@ class Settings(BaseModel):
             )
         return self
 
-    @classmethod
     @field_validator('verbose')
+    @classmethod
     def validate_verbose_level(cls, value):
         if value is not None and value not in [10, 20, 30, 40, 50]:
             raise ValueError("Verbose level must be 10, 20, 30, 40, or 50")
@@ -228,8 +228,8 @@ class Database(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @classmethod
     @field_validator('name')
+    @classmethod
     def check_name_not_empty(cls, value):
         if not value.strip():
             raise ValueError("Name cannot be empty")
@@ -246,22 +246,22 @@ class InputBase(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @classmethod
     @field_validator('project')
+    @classmethod
     def check_project_not_empty(cls, value):
         if not value.strip():
             raise ValueError("Project name cannot be empty")
         return value
 
-    @classmethod
     @field_validator('species')
+    @classmethod
     def check_species_list_not_empty(cls, value):
         if not value:
             raise ValueError("Species list cannot be empty")
         return value
 
-    @classmethod
     @field_validator('enzymes')
+    @classmethod
     def check_enzymes_list_not_empty(cls, value):
         if not value:
             raise ValueError("Enzymes list cannot be empty")

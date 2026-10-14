@@ -74,7 +74,6 @@ def test_Species():
     assert species_with_range.smiles == "C(C1C(C(C(C(O1)CO)O)O)O)O"
 
     # Test validators
-    # Note: validators using @classmethod @field_validator do not trigger in Pydantic V2.
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
         Species(label="NegativeConcentration", concentration=-0.1, smiles="C")
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
@@ -133,7 +132,6 @@ def test_Enzyme():
     assert enzyme_missing_seq.amino_acid_sequence is None
     
     # Test validators
-    # Note: validators using @classmethod @field_validator do not trigger in Pydantic V2.
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
         Enzyme(label="NegativeConcentration", concentration=-0.1, amino_acid_sequence="ACDEFGHIKLMNPQRSTVWY")
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
@@ -427,8 +425,6 @@ def test_InputBase():
             database=Database(name="enzyme_catalysis")
         )
 
-    # Note: time_step >= end_time does not raise (validator not triggering in Pydantic V2).
-
     with pytest.raises(ValidationError):
         InputBase(
             project="TestProject",
@@ -438,6 +434,44 @@ def test_InputBase():
             settings=Settings(end_time=100.0, time_step=1.0),
             database=Database(name="")
         )
+
+
+def _input(**overrides):
+    base = dict(
+        project="P",
+        species=[{"label": "Glucose", "concentration": 0.1}],
+        enzymes=[{"label": "E", "concentration": 0.01}],
+        environment={"temperature": 298.15, "pH": 7.0},
+        settings={"end_time": 100.0},
+        database={"name": "db"},
+    )
+    base.update(overrides)
+    return base
+
+
+# Custom @field_validator checks (beyond the field-type constraints). Pydantic V2 ignores
+# validators stacked under @classmethod, so each row guards the decorator order too.
+@pytest.mark.parametrize("model, kwargs, message", [
+    (Species, dict(label="S", concentration=0.1, smiles="not_a_smiles((("), "Invalid SMILES"),
+    (Species, dict(label="S", concentration=(0.5, 0.5)), "identical values"),
+    (Species, dict(label="S", concentration=(1.0, 0.5)), "cannot be greater than max"),
+    (Species, dict(label="S", concentration=(0.1, 0.5), constant=True), "Constant species cannot have a concentration range"),
+    (Enzyme, dict(label="  ", concentration=0.1), "Label cannot be empty"),
+    (Enzyme, dict(label="E", concentration=0.1, amino_acid_sequence="acde"), "capital letters"),
+    (Enzyme, dict(label="E", concentration=0.1, amino_acid_sequence="ACDXZ"), "invalid characters"),
+    (Environment, dict(temperature=(310.0, 300.0), pH=7.0), "Temperature range min value"),
+    (Environment, dict(temperature=298.15, pH=(8.0, 7.0)), "pH range min value"),
+    (Settings, dict(end_time=10.0, time_step=10.0), "must be smaller than 'end_time'"),
+    (Settings, dict(end_time=10.0, verbose=15), "Verbose level must be"),
+    (Database, dict(name="   "), "Name cannot be empty"),
+    (InputBase, _input(project="   "), "Project name cannot be empty"),
+    (InputBase, _input(species=[]), "Species list cannot be empty"),
+    (InputBase, _input(enzymes=[]), "Enzymes list cannot be empty"),
+])
+def test_custom_validators_reject_bad_input(model, kwargs, message):
+    with pytest.raises(ValidationError, match=message):
+        model(**kwargs)
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
