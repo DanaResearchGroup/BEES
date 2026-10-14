@@ -19,6 +19,7 @@ import pytest
 
 import math
 
+from bees.cofactors import ACYL_CHAIN_SMILES, ACYL_FREE_ACID_SMILES, PPANT_HANDLE
 from bees.rules import RuleRegistry
 from bees.rules.physics_rules import (
     DecarboxylationIrreversible,
@@ -66,6 +67,18 @@ class FakeReaction:
     stoichiometry: dict = field(default_factory=dict)
     kinetics: Optional[FakeKinetics] = None
     thermo: Optional[FakeThermo] = None
+
+
+def _structures(*labels) -> dict:
+    """SMILES for test labels '<acyl>-[ACP]' (thioester) and '<acyl>oate' (free acid)."""
+    out = {}
+    for lab in labels:
+        low = lab.lower()
+        if low.endswith("-[acp]"):
+            out[lab] = ACYL_CHAIN_SMILES[low[: -len("-[acp]")]] + PPANT_HANDLE
+        elif low.endswith("oate"):
+            out[lab] = ACYL_FREE_ACID_SMILES[low[: -len("ate")] + "yl"]
+    return out
 
 
 def _rule(cls, **kwargs):
@@ -260,7 +273,9 @@ class TestHydrophobicChainLengthKm:
             enzyme_label="TesA",
             stoichiometry={"tetradecanoyl-[ACP]": -1, "h2o": -1,
                            "tetradecanoate": 1, "holo-[ACP]": 1},
-            kinetics=FakeKinetics(kcat=3.0, km_per_substrate={"tetradecanoyl-[ACP]": km0}),
+            kinetics=FakeKinetics(kcat=3.0, km_per_substrate={"tetradecanoyl-[ACP]": km0},
+                                  compound_smiles=_structures("tetradecanoyl-[ACP]",
+                                                              "tetradecanoate")),
             thermo=FakeThermo(),
         )
 
@@ -292,19 +307,16 @@ class TestHydrophobicChainLengthKm:
         )
         assert self._rule().applies_to(rxn) is False
 
-    def test_does_not_apply_below_reference_chain(self):
-        # With n_ref=2, an acetyl (C2) substrate is exactly at ref → no length
-        # strictly greater is required for applies; n>=n_ref qualifies but the
-        # factor is 1.0. A sub-ref species can't exist (acetyl is the shortest),
-        # so test a non-acyl-only reaction instead is covered above. Here verify
-        # acetyl qualifies (n==n_ref) but produces no change (see apply test).
+    def test_applies_at_reference_chain(self):
+        # n == n_ref qualifies; its factor is 1.0 (test_reference_length_unchanged).
         rxn = FakeReaction(
             enzyme_label="FabH",
             stoichiometry={"acetyl-[ACP]": -1, "malonyl-[ACP]": -1},
-            kinetics=FakeKinetics(kcat=5.0, km_per_substrate={"acetyl-[ACP]": 0.01}),
+            kinetics=FakeKinetics(kcat=5.0, km_per_substrate={"acetyl-[ACP]": 0.01},
+                                  compound_smiles=_structures("acetyl-[ACP]", "malonyl-[ACP]")),
             thermo=FakeThermo(),
         )
-        assert self._rule().applies_to(rxn) is True  # n==n_ref still "applies"
+        assert self._rule().applies_to(rxn) is True
 
     # -- apply -------------------------------------------------------------
     def test_scaling_is_baseline_relative_and_tighter(self):
@@ -321,30 +333,121 @@ class TestHydrophobicChainLengthKm:
         rxn = FakeReaction(
             enzyme_label="FabH",
             stoichiometry={"acetyl-[ACP]": -1},
-            kinetics=FakeKinetics(kcat=5.0, km_per_substrate={"acetyl-[ACP]": km0}),
+            kinetics=FakeKinetics(kcat=5.0, km_per_substrate={"acetyl-[ACP]": km0},
+                                  compound_smiles=_structures("acetyl-[ACP]")),
             thermo=FakeThermo(),
         )
         self._rule().apply(rxn)
         assert rxn.kinetics.km_per_substrate["acetyl-[ACP]"] == pytest.approx(km0)
 
-    def test_cofactor_and_product_km_untouched(self):
+    def test_cofactor_km_untouched(self):
         km0 = 0.005
         rxn = FakeReaction(
             enzyme_label="TesA",
-            stoichiometry={"tetradecanoyl-[ACP]": -1, "h2o": -1,
-                           "tetradecanoate": 1},
+            stoichiometry={"tetradecanoyl-[ACP]": -1, "h2o": -1, "tetradecanoate": 1},
             kinetics=FakeKinetics(
                 kcat=3.0,
-                km_per_substrate={"tetradecanoyl-[ACP]": km0, "h2o": 55.0,
-                                  "tetradecanoate": 0.7},
+                km_per_substrate={"tetradecanoyl-[ACP]": km0, "h2o": 55.0},
+                compound_smiles=_structures("tetradecanoyl-[ACP]", "tetradecanoate"),
             ),
             thermo=FakeThermo(),
         )
         self._rule().apply(rxn)
         km = rxn.kinetics.km_per_substrate
         assert km["tetradecanoyl-[ACP]"] == pytest.approx(km0 * self._expected_factor(14))
-        assert km["h2o"] == 55.0          # cofactor untouched
-        assert km["tetradecanoate"] == 0.7  # product (positive coeff) untouched
+        assert km["h2o"] == 55.0
+
+    def test_product_without_matching_substrate_not_scaled(self):
+        rxn = FakeReaction(
+            enzyme_label="FabI",
+            stoichiometry={"nadh": -1, "hexadecanoyl-[ACP]": 1},
+            kinetics=FakeKinetics(kcat=1.0, km_per_substrate={"hexadecanoyl-[ACP]": 0.01},
+                                  compound_smiles=_structures("hexadecanoyl-[ACP]")),
+            thermo=FakeThermo(),
+        )
+        assert self._rule().applies_to(rxn) is False
+
+    # Thioester carrier stand-in (N-acetylcysteamine); carriers are read from structure only.
+    _SNAC = "SCCNC(C)=O"
+
+    def test_same_carrier_same_chain_product_scaled(self):
+        rule = self._rule()
+        rxn = FakeReaction(
+            enzyme_label="E1",
+            stoichiometry={"enoyl-x": -1, "nadh": -1, "acyl-x": 1, "nad": 1},
+            kinetics=FakeKinetics(
+                kcat=1.0,
+                km_per_substrate={"enoyl-x": 0.01, "acyl-x": 0.02},
+                compound_smiles={"enoyl-x": "CCCCCCCCCCCCC/C=C/C(=O)" + self._SNAC,
+                                 "acyl-x": "CCCCCCCCCCCCCCCC(=O)" + self._SNAC},
+            ),
+            thermo=FakeThermo(),
+        )
+        rule.apply(rxn)
+        km = rxn.kinetics.km_per_substrate
+        assert km["enoyl-x"] == pytest.approx(0.01 * self._expected_factor(16))
+        assert km["acyl-x"] == pytest.approx(0.02 * self._expected_factor(16))
+
+    def test_product_without_structure_not_scaled(self):
+        rxn = FakeReaction(
+            enzyme_label="E1",
+            stoichiometry={"enoyl-x": -1, "acyl-x": 1},
+            kinetics=FakeKinetics(
+                kcat=1.0,
+                km_per_substrate={"enoyl-x": 0.01, "acyl-x": 0.02},
+                compound_smiles={"enoyl-x": "CCCCCCCCCCCCC/C=C/C(=O)" + self._SNAC},
+            ),
+            thermo=FakeThermo(),
+        )
+        self._rule().apply(rxn)
+        assert rxn.kinetics.km_per_substrate["acyl-x"] == 0.02
+
+    def test_same_carrier_longer_product_scaled_by_own_chain(self):
+        rxn = FakeReaction(
+            enzyme_label="E2",
+            stoichiometry={"acyl-x": -1, "oxoacyl-x": 1},
+            kinetics=FakeKinetics(
+                kcat=5.0,
+                km_per_substrate={"acyl-x": 0.01, "oxoacyl-x": 0.03},
+                compound_smiles={"acyl-x": "CCCCCCCC(=O)" + self._SNAC,
+                                 "oxoacyl-x": "CCCCCCCC(=O)CC(=O)" + self._SNAC},
+            ),
+            thermo=FakeThermo(),
+        )
+        self._rule().apply(rxn)
+        km = rxn.kinetics.km_per_substrate
+        assert km["acyl-x"] == pytest.approx(0.01 * self._expected_factor(8))
+        assert km["oxoacyl-x"] == pytest.approx(0.03 * self._expected_factor(10))
+
+    def test_carrier_change_product_not_scaled(self):
+        from bees.cofactors import COA_TAIL
+        rule = self._rule()
+        hydrolysis = FakeReaction(
+            enzyme_label="E1",
+            stoichiometry={"acyl-x": -1, "h2o": -1, "acid": 1},
+            kinetics=FakeKinetics(
+                kcat=3.0,
+                km_per_substrate={"acyl-x": 0.005, "acid": 0.7},
+                compound_smiles={"acyl-x": "CCCCCCCCCCCCCC(=O)" + self._SNAC,
+                                 "acid": "CCCCCCCCCCCCCC(=O)[O-]"},
+            ),
+            thermo=FakeThermo(),
+        )
+        transfer = FakeReaction(
+            enzyme_label="E3",
+            stoichiometry={"acyl-coa": -1, "acyl-x": 1},
+            kinetics=FakeKinetics(
+                kcat=5.0,
+                km_per_substrate={"acyl-coa": 0.05, "acyl-x": 0.04},
+                compound_smiles={"acyl-coa": "CCCCCCCC(=O)" + COA_TAIL,
+                                 "acyl-x": "CCCCCCCC(=O)" + self._SNAC},
+            ),
+            thermo=FakeThermo(),
+        )
+        for rxn in (hydrolysis, transfer):
+            rule.apply(rxn)
+        assert hydrolysis.kinetics.km_per_substrate["acid"] == 0.7
+        assert transfer.kinetics.km_per_substrate["acyl-x"] == 0.04
 
     def test_multiple_acyl_substrates_each_own_factor(self):
         rxn = FakeReaction(
@@ -354,6 +457,7 @@ class TestHydrophobicChainLengthKm:
             kinetics=FakeKinetics(
                 kcat=5.0,
                 km_per_substrate={"octanoyl-[ACP]": 0.01, "malonyl-[ACP]": 0.02},
+                compound_smiles=_structures("octanoyl-[ACP]", "malonyl-[ACP]"),
             ),
             thermo=FakeThermo(),
         )
@@ -404,7 +508,8 @@ class TestTesALongChainPreference:
         return FakeReaction(
             enzyme_label="TesA", ec_number="EC 3.1.2.14",
             stoichiometry={acyl: -1, "h2o": -1, acid: 1, "holo-[ACP]": 1},
-            kinetics=FakeKinetics(kcat=kcat0, km_per_substrate={acyl: km0}),
+            kinetics=FakeKinetics(kcat=kcat0, km_per_substrate={acyl: km0},
+                                  compound_smiles=_structures(acyl, acid)),
             thermo=FakeThermo(),
         )
 
@@ -525,7 +630,8 @@ class TestHaldaneReverseKcat:
         # Registered after hydrophobic_chain_length_km: the scaled Km is the one simulated.
         rxn = FakeReaction(
             stoichiometry={"decanoyl-[ACP]": -1, "decanoate": 1},
-            kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"decanoyl-[ACP]": 0.5, "decanoate": 2.0}),
+            kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"decanoyl-[ACP]": 0.5, "decanoate": 2.0},
+                                  compound_smiles=_structures("decanoyl-[ACP]", "decanoate")),
             thermo=FakeThermo(dgr_prime_kJmol=-1.0, keq=10.0),
         )
         reg = RuleRegistry()

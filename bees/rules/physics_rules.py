@@ -12,6 +12,7 @@ from bees.cofactors import COFACTORS_ALWAYS_AVAILABLE
 from bees.rules.base import RULES, Reference, Rule
 from bees.thermodynamics import STANDARD_CONCENTRATION_MM
 from bees.rules.helpers import (  # noqa: F401  — re-export detect_acyl_chain_length
+    detect_acyl_carrier,
     detect_acyl_chain_length,
     _CO2_LABELS,
     _CO2_SMILES,
@@ -134,45 +135,49 @@ class DecarboxylationIrreversible(Rule):
         reaction.thermo.kcat_rev = None
 
 class HydrophobicChainLengthKm(Rule):
-    """Scale acyl-substrate Km by chain length."""
+    """Scale acyl Km by chain length.
 
-    def applies_to(self, reaction) -> bool:
+    Binding, so both sides: every acyl substrate by its own chain length, and an acyl
+    product by its own chain length when a substrate has the same carrier (the group
+    bound to the acyl carbonyl, from SMILES). Products whose carrier changes (thioester
+    hydrolysis to a free acid, transfer between carriers) or whose carrier is unknown
+    are not scaled.
+    """
+
+    def _targets(self, reaction):
+        """(label, chain length) of every Km the rule scales."""
         kin = getattr(reaction, "kinetics", None)
-        if kin is None:
-            return False
-        km_per = getattr(kin, "km_per_substrate", None)
+        km_per = getattr(kin, "km_per_substrate", None) if kin is not None else None
         if not km_per:
-            return False
+            return []
         n_ref = int(self.params["reference_chain_length"])
         stoich = getattr(reaction, "stoichiometry", None) or {}
         smiles_map = getattr(kin, "compound_smiles", None) or {}
+        subs, prods = [], []
         for lab in km_per:
-            if stoich.get(lab, 0) >= 0:
-                continue
-            if lab.lower().strip() in COFACTORS_ALWAYS_AVAILABLE:
+            coeff = stoich.get(lab, 0)
+            if coeff == 0 or lab.lower().strip() in COFACTORS_ALWAYS_AVAILABLE:
                 continue
             n = detect_acyl_chain_length(lab, smiles_map.get(lab))
             if n is not None and n >= n_ref:
-                return True
-        return False
+                (subs if coeff < 0 else prods).append((lab, n))
+        def key(lab):
+            return detect_acyl_carrier(smiles_map.get(lab))
+
+        sub_keys = {key(lab) for lab, _n in subs} - {None}
+        return subs + [(lab, n) for lab, n in prods if key(lab) in sub_keys]
+
+    def applies_to(self, reaction) -> bool:
+        return bool(self._targets(reaction))
 
     def apply(self, reaction) -> None:
-        kin = reaction.kinetics
-        km_per = kin.km_per_substrate
-        stoich = getattr(reaction, "stoichiometry", None) or {}
-        smiles_map = getattr(kin, "compound_smiles", None) or {}
+        km_per = reaction.kinetics.km_per_substrate
         dG = float(self.params["dG_per_CH2_kJmol"])
         n_ref = int(self.params["reference_chain_length"])
         rt = _R_KJ * float(self.params["temperature_K"])
-        for lab, km in list(km_per.items()):
+        for lab, n in self._targets(reaction):
+            km = km_per[lab]
             if km is None or km <= 0:
-                continue
-            if stoich.get(lab, 0) >= 0:
-                continue
-            if lab.lower().strip() in COFACTORS_ALWAYS_AVAILABLE:
-                continue
-            n = detect_acyl_chain_length(lab, smiles_map.get(lab))
-            if n is None or n < n_ref:
                 continue
             km_per[lab] = km * math.exp(dG * (n - n_ref) / rt)
 
@@ -296,7 +301,10 @@ RULES.register(
 RULES.register(
     HydrophobicChainLengthKm(
         name="hydrophobic_chain_length_km",
-        description="Scale acyl-substrate Km by exp(ΔG_CH2·(n−n_ref)/RT); ΔG_CH2≈−1.0 kJ/mol.",
+        description=(
+            "Scale acyl Km by exp(ΔG_CH2·(n−n_ref)/RT), ΔG_CH2≈−1.0 kJ/mol: substrates, and "
+            "products that keep the substrate's carrier."
+        ),
         reference=_tanford_1980,
         reference_type="textbook",
         params={
