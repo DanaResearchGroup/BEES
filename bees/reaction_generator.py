@@ -595,8 +595,6 @@ class ReactionGenerator:
                     substrate=substrate_label,
                     enzyme_label=enzyme_label,
                     ec_number=matched_ec,
-                    cofactor=None,
-                    database_products=None,
                 )
                 
                 if kinetic_data.stoichiometry:
