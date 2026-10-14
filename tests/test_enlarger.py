@@ -201,6 +201,48 @@ class TestIterativeEnlarger:
         assert result.iterations >= 1
         assert result.final_core_species >= 1
 
+    def test_unmatched_feedback_inhibitor_warns(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        """A misspelled inhibitor silently disables feedback; the final model must warn."""
+        logger = MagicMock()
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=logger,
+            output_directory=output_dir,
+        )
+        enlarger._initialise_model()
+        rxn = _make_reaction(enzyme_label="Enzyme")
+        rxn.feedback_inhibitors = {"s": (0.02, 1.0), "dodecanaote": (0.02, 1.0)}
+        enlarger.model.core_reactions.append(rxn)
+
+        enlarger._warn_unmatched_feedback_inhibitors()
+
+        warnings = [c.args[0] for c in logger.warning.call_args_list]
+        assert len(warnings) == 1
+        assert "Enzyme" in warnings[0] and "dodecanaote" in warnings[0]
+        assert "'s'" not in warnings[0]
+
+    def test_matched_feedback_inhibitors_do_not_warn(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        logger = MagicMock()
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=logger,
+            output_directory=output_dir,
+        )
+        enlarger._initialise_model()
+        rxn = _make_reaction(enzyme_label="Enzyme")
+        rxn.feedback_inhibitors = {"s": (0.02, 1.0)}
+        enlarger.model.core_reactions.append(rxn)
+
+        enlarger._warn_unmatched_feedback_inhibitors()
+
+        logger.warning.assert_not_called()
+
     def test_iterations_count_simulation_passes(
         self, mock_bees_object, mock_reaction_generator, output_dir
     ):

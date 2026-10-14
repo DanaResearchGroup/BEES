@@ -631,6 +631,25 @@ class TestFeedbackInhibition:
         v = rhs.compute_v(y)
         np.testing.assert_allclose(v[0], [self._base_rate(), self._base_rate() / 3.0], rtol=1e-9)
 
+    def test_unmatched_inhibitor_labels_are_reported(self, simple_model):
+        """An inhibitor that is not a model species drops out of the rate law; report it."""
+        simple_model.core_reactions[0].feedback_inhibitors = {
+            "p": (2.0, 1.0), "ghost_acid": (2.0, 1.0),
+        }
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {
+            "Enzyme": ["ghost_acid"],
+        }
+
+    def test_all_inhibitors_matched_reports_nothing(self, simple_model):
+        simple_model.core_reactions[0].feedback_inhibitors = {"p": (2.0, 1.0)}
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {}
+
+    def test_reactions_without_feedback_report_nothing(self, simple_model):
+        """MagicMock / None feedback_inhibitors mean no feedback, not an unmatched label."""
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {}
+        simple_model.core_reactions[0].feedback_inhibitors = None
+        assert ODESimulator(simple_model).unmatched_feedback_inhibitors() == {}
+
 
 # ---------------------------------------------------------------------------
 # RMG-style edge isolation: edge species are not integrated, edge reactions
