@@ -57,6 +57,8 @@ class EnlargerExporter:
     plot_exclude_cofactors: bool = True
 
     bees_object: Optional[Any] = None
+    # label_lc -> (peak |R_edge|/R_char, iteration), from IterativeEnlarger._edge_peak_rr
+    edge_peak_rate_ratio: Optional[Dict[str, Tuple[float, int]]] = None
 
     def export_flux_analysis(self, filename: str = "flux_analysis.csv") -> Optional[str]:
         """Write per-iteration core/edge counts and reaction history CSVs."""
@@ -152,6 +154,7 @@ class EnlargerExporter:
             reactions: List[GeneratedReaction],
             species: List[SpeciesData],
             section_name: str,
+            peak_rr: Optional[Dict[str, Tuple[float, int]]] = None,
         ) -> None:
             with open(path, "w", newline="") as f:
                 writer = csv.writer(f)
@@ -194,16 +197,22 @@ class EnlargerExporter:
 
                 writer.writerow([])
                 writer.writerow([f"{section_name} species"])
-                writer.writerow(["index", "label", "is_enzyme", "constant"])
+                header = ["index", "label", "is_enzyme", "constant"]
+                if peak_rr is not None:
+                    header += ["peak_rate_ratio", "peak_iteration"]
+                writer.writerow(header)
                 for idx, sp in enumerate(species, start=1):
-                    writer.writerow(
-                        [
-                            idx,
-                            str(getattr(sp, "label", "") or ""),
-                            bool(getattr(sp, "is_enzyme", False)),
-                            bool(getattr(sp, "constant", False)),
-                        ]
-                    )
+                    label = str(getattr(sp, "label", "") or "")
+                    row = [
+                        idx,
+                        label,
+                        bool(getattr(sp, "is_enzyme", False)),
+                        bool(getattr(sp, "constant", False)),
+                    ]
+                    if peak_rr is not None:
+                        peak = peak_rr.get(label.lower().strip())
+                        row += [f"{peak[0]:.6e}", peak[1]] if peak else ["", ""]
+                    writer.writerow(row)
 
         core_path = os.path.join(self.output_directory, "core_reactions_species.csv")
         edge_path = os.path.join(self.output_directory, "edge_reactions_species.csv")
@@ -219,6 +228,7 @@ class EnlargerExporter:
             list(self.model.edge_reactions),
             list(self.model.edge_species),
             section_name="edge",
+            peak_rr=self.edge_peak_rate_ratio or {},
         )
 
         self.logger.info(f"Exported core reactions/species CSV to {core_path}")

@@ -447,6 +447,30 @@ class TestIterativeEnlarger:
         assert result.converged
         assert enlarger.model.is_core_species("prodx") is expect_promoted
         assert sim_inst.simulate.call_count == (2 if expect_promoted else 1)
+        if expect_promoted:
+            assert "prodx" not in enlarger._edge_peak_rr
+        else:
+            assert enlarger._edge_peak_rr["prodx"] == (peak_rr, 1)
+
+    def test_record_edge_peaks_keeps_largest(self, mock_bees_object, mock_reaction_generator, output_dir):
+        """The recorded edge peak is the max over growth simulations, with its iteration."""
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+
+        def _res(ratios, success=True):
+            return SimulationResult(
+                t=np.array([0.0]), y=np.zeros((1, 1)), species_labels=["x"],
+                success=success, max_edge_rate_ratio=ratios,
+            )
+
+        enlarger._record_edge_peaks(_res({"a": 2e-3, "b": 1e-4}), 1)
+        enlarger._record_edge_peaks(_res({"a": 5e-3, "b": 5e-5}), 2)
+        enlarger._record_edge_peaks(_res({"a": 9.0}, success=False), 3)
+        assert enlarger._edge_peak_rr == {"a": (5e-3, 2), "b": (1e-4, 1)}
 
     @patch("bees.enlarger.ODESimulator")
     def test_terminated_growth_run_is_replaced_by_full_length_profile(
