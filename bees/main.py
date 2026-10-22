@@ -252,6 +252,7 @@ class BEES():
                     plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
                     plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
                     bees_object=self.bees_object,
+                    edge_peak_rate_ratio=enlarger._edge_peak_rr,
                 )
                 profiles_path = exporter.export_simulation_profiles()
 
@@ -273,6 +274,7 @@ class BEES():
                         plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
                         plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
                         bees_object=self.bees_object,
+                        edge_peak_rate_ratio=enlarger._edge_peak_rr,
                     )
                 exporter.export_simulation_plots()
 
@@ -293,6 +295,7 @@ class BEES():
                     plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
                     plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
                     bees_object=self.bees_object,
+                    edge_peak_rate_ratio=enlarger._edge_peak_rr,
                 )
             flux_path = exporter.export_flux_analysis()
             core_edge_csv_paths = exporter.export_core_edge_reaction_species_csvs()

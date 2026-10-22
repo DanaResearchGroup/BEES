@@ -199,6 +199,38 @@ class TestEnlargerExporter:
         assert rows[0][:5] == ["index", "reaction_id", "template", "ec_number", "family"]
         assert any(row and row[0] == "edge species" for row in rows)
 
+    def test_edge_species_csv_has_peak_rate_ratio(self, output_dir):
+        """Edge species section carries the peak |R|/R_char and its iteration (blank if unknown)."""
+        edge = [
+            SimpleNamespace(label="Butanoyl-CoA", is_enzyme=False, constant=False),
+            SimpleNamespace(label="acetate", is_enzyme=False, constant=False),
+        ]
+        model = SimpleNamespace(core_reactions=[], edge_reactions=[], core_species=[], edge_species=edge)
+        exporter = EnlargerExporter(
+            model=model,
+            profiles=[],
+            output_directory=output_dir,
+            logger=MagicMock(),
+            reaction_id_by_sig={},
+            reaction_first_seen_iter={},
+            reaction_core_enter_iter={},
+            reaction_obj_by_sig={},
+            iteration_summaries=[],
+            edge_peak_rate_ratio={"butanoyl-coa": (3.1e-3, 42)},
+        )
+        paths = exporter.export_core_edge_reaction_species_csvs()
+
+        with open(paths["edge"], "r", newline="") as f:
+            rows = list(csv.reader(f))
+        start = next(i for i, row in enumerate(rows) if row and row[0] == "edge species")
+        assert rows[start + 1] == ["index", "label", "is_enzyme", "constant", "peak_rate_ratio", "peak_iteration"]
+        assert rows[start + 2] == ["1", "Butanoyl-CoA", "False", "False", "3.100000e-03", "42"]
+        assert rows[start + 3] == ["2", "acetate", "False", "False", "", ""]
+
+        with open(paths["core"], "r", newline="") as f:
+            rows = list(csv.reader(f))
+        assert ["index", "label", "is_enzyme", "constant"] in rows
+
 # ---------------------------------------------------------------------------
 # COPASI-compatibility: SBML `reversible` must match the kinetic law emitted
 # (fallback-thermo reactions must be reversible="false").

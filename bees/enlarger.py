@@ -115,6 +115,8 @@ class IterativeEnlarger:
         self._reaction_obj_by_sig: Dict[Tuple[str, Tuple[str, ...], Tuple[str, ...]], GeneratedReaction] = {}
         self._next_reaction_id: int = 1
         self._iteration_summaries: List[Dict[str, int]] = []
+        # label_lc -> (peak |R_edge|/R_char over growth simulations while on the edge, iteration)
+        self._edge_peak_rr: Dict[str, Tuple[float, int]] = {}
 
         # Caches / backoff to avoid repeated slow no-hit searches.
         self._rxn_nohit_cache: Set = set()
@@ -188,6 +190,7 @@ class IterativeEnlarger:
                 termination_conversion=self.termination_conversion,
             )
             self._profiles.append(sim_result)
+            self._record_edge_peaks(sim_result, iteration)
 
             if self.save_ode_equations and sim_result.success:
                 ode_path = os.path.join(
@@ -276,6 +279,7 @@ class IterativeEnlarger:
                             sim_result = sim_result2
                         elif sim_result2.simulation_interrupted:
                             sim_result = sim_result2
+                        self._record_edge_peaks(sim_result2, iteration)
                         if not sim_result.success:
                             result.convergence_reason = f"ODE failure on resume: {sim_result.message}"
                             if self.logger:
@@ -375,6 +379,8 @@ class IterativeEnlarger:
                     sp = self.model.promote_species_to_core(sp_label)
                     if sp is not None and sp.label not in batch_promoted:
                         batch_promoted.append(sp.label)
+                for label in batch_promoted:
+                    self._edge_peak_rr.pop(label.lower().strip(), None)
                 if not batch_promoted:
                     result.convergence_reason = (
                         "Interrupt: significant flux reported but no edge species "
@@ -505,12 +511,28 @@ class IterativeEnlarger:
         self.logger.info(f"  Core species:    {result.final_core_species}")
         self.logger.info(f"  Edge species:    {result.final_edge_species}")
         self.logger.info(f"  Core reactions:  {result.final_core_reactions}")
+        for sp in self.model.edge_species:
+            peak = self._edge_peak_rr.get(sp.label.lower().strip())
+            if peak is not None:
+                self.logger.info(
+                    f"  Edge peak |R|/R_char: {sp.label} = {peak[0]:.4e} "
+                    f"(iteration {peak[1]}, tol={self.tol_move_to_core})"
+                )
         self.logger.info("=" * 60)
 
         self._log_thermo_fallback_prevalence()
         self._warn_unmatched_feedback_inhibitors()
 
         return result
+
+    def _record_edge_peaks(self, sim_result: SimulationResult, iteration: int) -> None:
+        """Keep, per edge species, the largest peak |R_edge|/R_char seen in any growth simulation."""
+        if not sim_result.success:
+            return
+        for label, rr in sim_result.max_edge_rate_ratio.items():
+            best = self._edge_peak_rr.get(label)
+            if best is None or rr > best[0]:
+                self._edge_peak_rr[label] = (float(rr), iteration)
 
     def _warn_unmatched_feedback_inhibitors(self) -> None:
         """Warn about feedback inhibitors that never became model species (checked once, on the final model)."""
