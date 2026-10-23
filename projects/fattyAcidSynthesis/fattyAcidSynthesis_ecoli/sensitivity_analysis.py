@@ -612,20 +612,47 @@ _CHAIN_STEMS = (
 _CARRIER_ONLY = ("malonyl-[acp]", "holo-[acp]")
 
 
-def _chain(species):
-    """'C12:1' for (5Z)-dodecenoyl-[ACP]; cis (Z) double bond -> ':1'."""
+def _chain(species, unsat_suffix=True):
+    """'C12:1' for (5Z)-dodecenoyl-[ACP], 'C12:0' for dodecanoyl-[ACP].
+
+    Only cis (Z) double bonds count: the trans-2 enoyl of the cycle is still the
+    saturated branch.
+    """
     n = species.lower()
     for stem, c in _CHAIN_STEMS:
         if stem in n:
-            return f"C{c}:1" if re.search(r"\d+Z\b", species) else f"C{c}"
+            if not unsat_suffix:
+                return f"C{c}"
+            return f"C{c}:1" if re.search(r"\d+Z\b", species) else f"C{c}:0"
     return None
 
 
-def short_reaction_label(label):
-    """Enzyme + step + chain length (no cofactors), e.g. 'FabI: C4 enoyl reduction'.
+def _sbml_reaction_ids(model_xml=None):
+    """Full reaction label ('Enzyme: A + B -> C') -> SBML id ('R6') from output/model.xml."""
+    import html
+
+    path = model_xml or os.path.join(_PROJECT_DIR, "output", "model.xml")
+    if not os.path.isfile(path):
+        print(f"  ! {path} not found; figure labels without reaction ids", flush=True)
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    return {
+        html.unescape(m.group(2)).replace(" <=> ", " -> "): m.group(1)
+        for m in re.finditer(r'<reaction id="(R\d+)" name="([^"]+)"', text)
+    }
+
+
+def short_reaction_label(label, rid=None):
+    """'R6 FabI: C4:0 enoyl reduction': SBML id + enzyme + step + chain (no cofactors).
 
     Falls back to the full label for anything it does not recognise.
     """
+    short = _short_step_label(label)
+    return f"{rid} {short}" if rid else short
+
+
+def _short_step_label(label):
     m = re.match(r"^(\w+): (.+?) -> (.+?)( \(\d+\))?$", label)
     if not m:
         return label
@@ -654,7 +681,7 @@ def short_reaction_label(label):
         elif e in ("faba", "fabz") and "H2O" in products:
             step = f"{c} dehydration"
         elif e == "faba":
-            step = f"{c} isomerization"
+            step = f"{_chain(acyl, unsat_suffix=False)} trans→cis isomerization"
         elif e == "fabi":
             step = f"{c} enoyl reduction"
         elif e == "tesa":
@@ -664,10 +691,11 @@ def short_reaction_label(label):
     return f"{enz}: {step}{dup}"
 
 
-def _tornado(ax, rows, xlabel, title, panel_letter=None):
+def _tornado(ax, rows, xlabel, title, panel_letter=None, rids=None):
+    rids = rids or {}
     data = sorted(rows, key=lambda r: abs(r[1]), reverse=True)[:TOP_N]
     data = list(reversed(data))
-    labels = [short_reaction_label(r[0]) for r in data]
+    labels = [short_reaction_label(r[0], rids.get(r[0])) for r in data]
     vals = [r[1] for r in data]
     colors = ["#c0392b" if v >= 0 else "#2c7fb8" for v in vals]
     y = np.arange(len(labels))
@@ -694,21 +722,30 @@ def _tornado(ax, rows, xlabel, title, panel_letter=None):
     return panel_letter
 
 
-def _save_label_key(stem, rows_by_class):
-    """SI key: short figure label -> full reaction equation, for every scored reaction."""
+def _save_label_key(stem, rows_by_class, rids):
+    """SI key: SBML id + short figure label -> full reaction equation, every scored reaction."""
     seen = {}
     for rows in rows_by_class:
         for lab, _ in rows:
-            seen.setdefault(lab, short_reaction_label(lab))
+            seen.setdefault(lab, _short_step_label(lab))
     shorts = list(seen.values())
     dupes = {s for s in shorts if shorts.count(s) > 1}
     if dupes:
         raise ValueError(f"short labels are not unique: {sorted(dupes)}")
+    missing = [lab for lab in seen if lab not in rids]
+    if rids and missing:
+        print(f"  ! {len(missing)} reactions not found in model.xml: {missing[:3]}", flush=True)
+
+    def _rnum(lab):
+        rid = rids.get(lab, "")
+        return int(rid[1:]) if rid[1:].isdigit() else 10**9
+
     path = f"{stem}.csv"
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write("short_label,reaction\n")
-        for full, short in sorted(seen.items(), key=lambda kv: kv[1]):
-            fh.write(f'"{short}","{full.replace(chr(34), chr(39))}"\n')
+        fh.write("reaction_id,short_label,reaction\n")
+        for full in sorted(seen, key=lambda lab: (_rnum(lab), seen[lab])):
+            safe = full.replace('"', "'")
+            fh.write(f'{rids.get(full, "")},"{seen[full]}","{safe}"\n')
     print(f"wrote {path}")
 
 
@@ -763,18 +800,19 @@ def make_figure(kcat_rows, km_rows, dg_rows, t_star, write_csv=True):
     title_km = f"Km sensitivity at fixed t*={t_star:.0f}s"
     title_dg = f"Thermodynamic sensitivity at fixed t*={t_star:.0f}s"
 
-    _save_label_key(f"{OUT_STEM}_label_key", (kcat_rows, km_rows, dg_rows))
+    rids = _sbml_reaction_ids()
+    _save_label_key(f"{OUT_STEM}_label_key", (kcat_rows, km_rows, dg_rows), rids)
 
     # Drawn at final print width (~6.5 in) so 9 pt labels stay 9 pt.
     fig, axes = plt.subplots(2, 1, figsize=(6.5, 7.5), sharex=False)
-    _tornado(axes[0], kcat_rows, xlabel_kcat, title_kcat, panel_letter="A")
-    _tornado(axes[1], km_rows, xlabel_km, title_km, panel_letter="B")
-    fig.subplots_adjust(left=0.36, right=0.97, top=0.95, bottom=0.07, hspace=0.38)
+    _tornado(axes[0], kcat_rows, xlabel_kcat, title_kcat, panel_letter="A", rids=rids)
+    _tornado(axes[1], km_rows, xlabel_km, title_km, panel_letter="B", rids=rids)
+    fig.subplots_adjust(left=0.40, right=0.97, top=0.95, bottom=0.07, hspace=0.38)
     _save_tornado_png_pdf(fig, f"{OUT_STEM}_kcat_km")
 
     fig, ax = plt.subplots(figsize=(6.5, 3.8))
-    _tornado(ax, dg_rows, xlabel_dg, title_dg)
-    fig.subplots_adjust(left=0.36, right=0.97, top=0.93, bottom=0.14)
+    _tornado(ax, dg_rows, xlabel_dg, title_dg, rids=rids)
+    fig.subplots_adjust(left=0.40, right=0.97, top=0.93, bottom=0.14)
     _save_tornado_png_pdf(fig, f"{OUT_STEM}_dgr")
 
 
