@@ -880,8 +880,13 @@ class ReactionGenerator:
         filename="reactions_summary.txt",
         n_core: Optional[int] = None,
         core_rxn_ids: Optional[set] = None,
+        reaction_id_by_sig: Optional[dict] = None,
     ) -> str:
-        """Export human-readable summary of generated reactions."""
+        """Export human-readable summary of generated reactions.
+
+        ``reaction_id_by_sig`` (the enlarger's stable IDs) makes "Reaction N" / "RN" match
+        the SBML reaction ids; without it reactions are numbered by list position.
+        """
         output_path = os.path.join(self.output_directory, filename)
         n = len(self.reactions)
 
@@ -897,6 +902,12 @@ class ReactionGenerator:
                 total_line = f"Total Reactions: {n} ({n_core} core, {n_edge} edge)\n"
             else:
                 total_line = f"Total Reactions: {n}\n"
+
+        id_by_sig = reaction_id_by_sig or {}
+        rxn_num = {
+            id(r): id_by_sig.get(reaction_signature(r), i)
+            for i, r in enumerate(list(core_rxns) + list(edge_rxns), 1)
+        }
 
         with open(output_path, 'w') as f:
             f.write("=" * 80 + "\n")
@@ -932,7 +943,8 @@ class ReactionGenerator:
             species_as_reactant: dict = {}
             species_as_product: dict = {}
             
-            for i, rxn in enumerate(self.reactions, 1):
+            for rxn in self.reactions:
+                i = rxn_num[id(rxn)]
                 for reactant in rxn.reactant_labels:
                     all_species.add(reactant)
                     if reactant not in species_as_reactant:
@@ -961,9 +973,9 @@ class ReactionGenerator:
             
             f.write("\n" + "-" * 80 + "\n\n")
 
-            def _write_reactions(rxn_list, start_idx):
-                for i, rxn in enumerate(rxn_list, start_idx):
-                    f.write(f"Reaction {i}:\n")
+            def _write_reactions(rxn_list):
+                for rxn in sorted(rxn_list, key=lambda r: rxn_num[id(r)]):
+                    f.write(f"Reaction {rxn_num[id(rxn)]}:\n")
                     f.write(f"  Enzyme: {rxn.enzyme_label}\n")
                     f.write(f"  EC Number: {rxn.ec_number or 'N/A'}\n")
                     f.write(f"  EC Class: {rxn.template.ec_class.name}\n")
@@ -1034,14 +1046,14 @@ class ReactionGenerator:
                 f.write("=" * 80 + "\n")
                 f.write(f"CORE REACTIONS ({len(core_rxns)})\n")
                 f.write("=" * 80 + "\n\n")
-                _write_reactions(core_rxns, 1)
+                _write_reactions(core_rxns)
                 if edge_rxns:
                     f.write("=" * 80 + "\n")
                     f.write(f"EDGE REACTIONS ({len(edge_rxns)})\n")
                     f.write("=" * 80 + "\n\n")
-                    _write_reactions(edge_rxns, len(core_rxns) + 1)
+                    _write_reactions(edge_rxns)
             else:
-                _write_reactions(core_rxns, 1)
+                _write_reactions(core_rxns)
 
         self.logger.info(f"Exported reactions summary to {output_path}")
         return output_path

@@ -258,3 +258,30 @@ def test_concrete_alias_matched_row_still_generates(tmp_path):
     assert rxns
     assert all(c in (-1, 1) for r in rxns for c in r.stoichiometry.values())
     assert not any(lab.lower().startswith(("a ", "an ")) for r in rxns for lab in r.stoichiometry)
+
+
+def test_reactions_summary_uses_stable_reaction_ids(tmp_path):
+    """With reaction_id_by_sig, summary numbers match the SBML ids, not list position."""
+    from bees.reaction_generator import reaction_signature
+
+    def _rxn(enz, a, b):
+        return GeneratedReaction(
+            enzyme_label=enz, substrate_label=a, ec_number="EC 2.7.1.1",
+            template=_make_template(), kinetics=None,
+            reactant_labels=[a], product_labels=[b], stoichiometry={a: -1, b: 1},
+        )
+
+    r_late, r_early = _rxn("E1", "A", "B"), _rxn("E2", "B", "C")
+    bees_obj = MagicMock()
+    bees_obj.project = "p"
+    gen = ReactionGenerator(bees_obj, MagicMock(), str(tmp_path))
+    gen.reactions = [r_late, r_early]
+    ids = {reaction_signature(r_late): 7, reaction_signature(r_early): 3}
+
+    text = open(gen.export_reactions_summary(
+        core_rxn_ids={id(r_late), id(r_early)}, reaction_id_by_sig=ids,
+    )).read()
+
+    assert text.index("Reaction 3:\n  Enzyme: E2") < text.index("Reaction 7:\n  Enzyme: E1")
+    assert "Reaction 1:" not in text and "Reaction 2:" not in text
+    assert "Consumed in reaction(s): R7" in text  # A is consumed only by E1

@@ -231,7 +231,10 @@ class BEES():
             summary_path = None
             if reaction_generator.reactions:
                 core_ids = {id(r) for r in enlarger_result.model.core_reactions}
-                summary_path = reaction_generator.export_reactions_summary(core_rxn_ids=core_ids)
+                summary_path = reaction_generator.export_reactions_summary(
+                    core_rxn_ids=core_ids,
+                    reaction_id_by_sig=enlarger._reaction_id_by_sig,
+                )
                 self.logger.info(f"Exported reaction summary to: {summary_path}")
 
             # Export simulation profiles if requested
