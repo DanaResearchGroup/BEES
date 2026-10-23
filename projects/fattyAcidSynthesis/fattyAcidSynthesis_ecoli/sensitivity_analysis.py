@@ -604,39 +604,112 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
     return s_ki
 
 
-def _tornado(ax, rows, xlabel, title, panel_letter=None):
-    import textwrap
+# Longest stem first: "dodec" before "dec", "hexadec" before "hex", ...
+_CHAIN_STEMS = (
+    ("icos", 20), ("octadec", 18), ("hexadec", 16), ("tetradec", 14),
+    ("dodec", 12), ("dec", 10), ("oct", 8), ("hex", 6), ("but", 4),
+)
+_CARRIER_ONLY = ("malonyl-[acp]", "holo-[acp]")
 
+
+def _chain(species):
+    """'C12:1' for (5Z)-dodecenoyl-[ACP]; cis (Z) double bond -> ':1'."""
+    n = species.lower()
+    for stem, c in _CHAIN_STEMS:
+        if stem in n:
+            return f"C{c}:1" if re.search(r"\d+Z\b", species) else f"C{c}"
+    return None
+
+
+def short_reaction_label(label):
+    """Enzyme + step + chain length (no cofactors), e.g. 'FabI: C4 enoyl reduction'.
+
+    Falls back to the full label for anything it does not recognise.
+    """
+    m = re.match(r"^(\w+): (.+?) -> (.+?)( \(\d+\))?$", label)
+    if not m:
+        return label
+    enz, lhs, rhs, dup = m.group(1), m.group(2), m.group(3), m.group(4) or ""
+    reactants = [s.strip() for s in lhs.split(" + ")]
+    products = [s.strip() for s in rhs.split(" + ")]
+    acyl = next(
+        (s for s in reactants if "[acp]" in s.lower() and s.lower() not in _CARRIER_ONLY),
+        None,
+    )
+    e = enz.lower()
+    if e == "fabd":
+        step = "malonyl transfer"
+    elif e == "fabh":
+        step = "initiation"
+    elif acyl is None or _chain(acyl) is None:
+        return label
+    else:
+        c = _chain(acyl)
+        if e in ("fabf", "fabb"):
+            prod = next((s for s in products if "[acp]" in s.lower()
+                         and s.lower() not in _CARRIER_ONLY), "")
+            step = f"{c} → {_chain(prod) or '?'} elongation"
+        elif e == "fabg":
+            step = f"{c} 3-oxo reduction"
+        elif e in ("faba", "fabz") and "H2O" in products:
+            step = f"{c} dehydration"
+        elif e == "faba":
+            step = f"{c} isomerization"
+        elif e == "fabi":
+            step = f"{c} enoyl reduction"
+        elif e == "tesa":
+            step = f"{c} release"
+        else:
+            return label
+    return f"{enz}: {step}{dup}"
+
+
+def _tornado(ax, rows, xlabel, title, panel_letter=None):
     data = sorted(rows, key=lambda r: abs(r[1]), reverse=True)[:TOP_N]
     data = list(reversed(data))
-    labels = [
-        "\n".join(textwrap.wrap(r[0], width=70, break_long_words=False))
-        for r in data
-    ]
+    labels = [short_reaction_label(r[0]) for r in data]
     vals = [r[1] for r in data]
     colors = ["#c0392b" if v >= 0 else "#2c7fb8" for v in vals]
     y = np.arange(len(labels))
     ax.barh(y, vals, color=colors, edgecolor="black", linewidth=0.4, height=0.7)
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=9)
-    ax.tick_params(axis="x", labelsize=11)
+    ax.tick_params(axis="x", labelsize=9)
     ax.axvline(0.0, color="black", linewidth=0.8)
     ax.grid(axis="x", linestyle=":", alpha=0.5)
-    ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_xlabel(xlabel, fontsize=10)
     if not BARE:
-        ax.set_title(title, fontsize=12)
+        ax.set_title(title, fontsize=10)
     if panel_letter:
         ax.text(
             -0.02,
-            1.04,
+            1.03,
             f"({panel_letter})",
             transform=ax.transAxes,
-            fontsize=16,
+            fontsize=12,
             fontweight="bold",
             va="bottom",
             ha="left",
         )
     return panel_letter
+
+
+def _save_label_key(stem, rows_by_class):
+    """SI key: short figure label -> full reaction equation, for every scored reaction."""
+    seen = {}
+    for rows in rows_by_class:
+        for lab, _ in rows:
+            seen.setdefault(lab, short_reaction_label(lab))
+    shorts = list(seen.values())
+    dupes = {s for s in shorts if shorts.count(s) > 1}
+    if dupes:
+        raise ValueError(f"short labels are not unique: {sorted(dupes)}")
+    path = f"{stem}.csv"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("short_label,reaction\n")
+        for full, short in sorted(seen.items(), key=lambda kv: kv[1]):
+            fh.write(f'"{short}","{full.replace(chr(34), chr(39))}"\n')
+    print(f"wrote {path}")
 
 
 def _save_tornado_csv(stem, rows):
@@ -690,15 +763,18 @@ def make_figure(kcat_rows, km_rows, dg_rows, t_star, write_csv=True):
     title_km = f"Km sensitivity at fixed t*={t_star:.0f}s"
     title_dg = f"Thermodynamic sensitivity at fixed t*={t_star:.0f}s"
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 13), sharex=False)
+    _save_label_key(f"{OUT_STEM}_label_key", (kcat_rows, km_rows, dg_rows))
+
+    # Drawn at final print width (~6.5 in) so 9 pt labels stay 9 pt.
+    fig, axes = plt.subplots(2, 1, figsize=(6.5, 7.5), sharex=False)
     _tornado(axes[0], kcat_rows, xlabel_kcat, title_kcat, panel_letter="A")
     _tornado(axes[1], km_rows, xlabel_km, title_km, panel_letter="B")
-    fig.subplots_adjust(left=0.48, right=0.98, top=0.96, bottom=0.06, hspace=0.28)
+    fig.subplots_adjust(left=0.36, right=0.97, top=0.95, bottom=0.07, hspace=0.38)
     _save_tornado_png_pdf(fig, f"{OUT_STEM}_kcat_km")
 
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(6.5, 3.8))
     _tornado(ax, dg_rows, xlabel_dg, title_dg)
-    fig.subplots_adjust(left=0.48, right=0.98, top=0.92, bottom=0.12)
+    fig.subplots_adjust(left=0.36, right=0.97, top=0.93, bottom=0.14)
     _save_tornado_png_pdf(fig, f"{OUT_STEM}_dgr")
 
 
