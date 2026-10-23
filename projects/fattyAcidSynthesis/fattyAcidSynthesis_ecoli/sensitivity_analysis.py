@@ -13,7 +13,8 @@ Run (repo root, bees_env):
     python projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli/sensitivity_analysis.py --jobs 16
 
 Feedback Ki panels are per-enzyme: FabH and FabI are swept separately; the
-other enzyme's Ki stays at the production lock.
+other enzyme's Ki stays at the production lock. The shaded band spans Ki x0.1 to
+x10 (KI_BAND); S_Ki is the local ±5% coefficient at t*.
 """
 
 import argparse
@@ -69,6 +70,8 @@ OUT_KI_STEM = OUT_KI_FABH_STEM
 KCAT_LN_STEP = 0.05          # perturb kcat/Km/Ki by exp(+/- h) in ln-space
 KM_LN_STEP = KCAT_LN_STEP
 KI_LN_STEP = KCAT_LN_STEP
+KI_BAND = (0.1, 10.0)        # Ki time-course band (Fig. 8): Ki x0.1 .. x10
+KI_REPORT_MIN = (3.0, 12.0, 50.0, 120.0)
 KJ_PER_KCAL = 4.184
 DG_STEP_KJ = 0.5 * KJ_PER_KCAL  # ±2.092 kJ/mol; same physical step as former ±0.5 kcal
 R_KJ = 8.314462618e-3        # kJ / (mol K)
@@ -487,7 +490,12 @@ def _panel_letter(fig, letter):
 
 
 def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_letter="A"):
-    """PE(t) for baseline Ki, ln-step Ki band (×e^{±h}), and enzyme-feedback-off."""
+    """PE(t) for baseline Ki, Ki band (KI_BAND), and enzyme-feedback-off.
+
+    S_Ki is the local ln-step (±KI_LN_STEP) coefficient at t*. Curves are integrated to
+    max(end_time, last KI_REPORT_MIN) so the printed table covers 2 h; the figure shows
+    only 0..end_time.
+    """
     if out_stem is None:
         out_stem = OUT_KI_FABH_STEM if enzyme.lower() == "fabh" else OUT_KI_FABI_STEM
     fb_rxns = _feedback_reactions(model, enzyme=enzyme)
@@ -500,55 +508,66 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
 
     snap = _snapshot_feedback(fb_rxns)
     ki_uM = _baseline_ki_uM(fb_rxns)
+    t_plot_end = float(enlarger.end_time)
+    t_long = max(t_plot_end, 60.0 * KI_REPORT_MIN[-1])
 
-    sim_base = _simulate(enlarger, model)
-    pe_base = _pe_series(sim_base)
+    def _run(factor):
+        if factor is None:
+            for rxn in fb_rxns:
+                rxn.feedback_inhibitors = None
+        elif factor != 1.0:
+            _scale_feedback_ki(fb_rxns, factor)
+        try:
+            return _simulate(enlarger, model, end_time=t_long)
+        finally:
+            _restore_feedback(fb_rxns, snap)
 
-    _scale_feedback_ki(fb_rxns, math.exp(KI_LN_STEP))
-    sim_p = _simulate(enlarger, model)
-    pe_p = _pe_series(sim_p)
-    _restore_feedback(fb_rxns, snap)
-
-    _scale_feedback_ki(fb_rxns, math.exp(-KI_LN_STEP))
-    sim_m = _simulate(enlarger, model)
-    pe_m = _pe_series(sim_m)
-    _restore_feedback(fb_rxns, snap)
-
-    for rxn in fb_rxns:
-        rxn.feedback_inhibitors = None
-    sim_off = _simulate(enlarger, model)
-    pe_off = _pe_series(sim_off)
-    _restore_feedback(fb_rxns, snap)
+    sim_base = _run(1.0)
+    sim_p = _run(math.exp(KI_LN_STEP))
+    sim_m = _run(math.exp(-KI_LN_STEP))
+    ki_lo_f, ki_hi_f = KI_BAND
+    sim_lo = _run(ki_lo_f)
+    sim_hi = _run(ki_hi_f)
+    sim_off = _run(None)
 
     s_ki = _finite_diff(sim_p, sim_m, t_star, 2.0 * KI_LN_STEP)
     print(
         f"\n=== {enzyme} feedback Ki: S_Ki = dln(PE(t*))/dln(Ki) = {s_ki:.4f} ==="
     )
-    ki_hi = ki_uM * math.exp(KI_LN_STEP)
-    ki_lo = ki_uM * math.exp(-KI_LN_STEP)
     rel_pct = 100.0 * (math.exp(KI_LN_STEP) - 1.0)
     print(f"  baseline Ki = {ki_uM:.3f} uM; t* = {t_star:.1f} s (fixed)")
-    print(
-        f"  ln-step h={KI_LN_STEP}: Ki scaled to {ki_lo:.3f} and {ki_hi:.3f} uM "
-        f"(×e^{{±h}} ≈ ±{rel_pct:.1f}% relative, not ±{KI_LN_STEP} uM)"
+    print(f"  S_Ki ln-step h={KI_LN_STEP} (Ki ×e^{{±h}} ≈ ±{rel_pct:.1f}%)")
+    print(f"  other enzyme Ki held at production lock")
+    curves = (
+        ("baseline", sim_base),
+        (f"Ki x{ki_lo_f:g}", sim_lo),
+        (f"Ki x{ki_hi_f:g}", sim_hi),
+        (f"no {enzyme} feedback", sim_off),
     )
-    print(f"  other enzyme Ki held at production lock", flush=True)
+    print(f"  PE (uM) at t = " + " / ".join(f"{m:g}" for m in KI_REPORT_MIN) + " min:")
+    for name, sim in curves:
+        vals = " / ".join(f"{_pe_at(sim, 60.0 * m):.1f}" for m in KI_REPORT_MIN)
+        print(f"    {name:<22}{vals}", flush=True)
+
+    t_s = sim_base.t[sim_base.t < t_plot_end]
+    t_s = np.append(t_s, t_plot_end)
+    t_min = t_s / 60.0
+    pe_base = np.interp(t_s, sim_base.t, _pe_series(sim_base))
+    pe_lo = np.interp(t_s, sim_lo.t, _pe_series(sim_lo))
+    pe_hi = np.interp(t_s, sim_hi.t, _pe_series(sim_hi))
+    pe_off = np.interp(t_s, sim_off.t, _pe_series(sim_off))
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    t_min = sim_base.t / 60.0
-    pe_p_i = np.interp(sim_base.t, sim_p.t, pe_p)
-    pe_m_i = np.interp(sim_base.t, sim_m.t, pe_m)
-    rel_pct = 100.0 * (math.exp(KI_LN_STEP) - 1.0)
     ax.fill_between(
         t_min,
-        np.minimum(pe_p_i, pe_m_i),
-        np.maximum(pe_p_i, pe_m_i),
+        np.minimum(pe_lo, pe_hi),
+        np.maximum(pe_lo, pe_hi),
         color="#2980b9",
-        alpha=0.40,
+        alpha=0.30,
         linewidth=0,
         edgecolor="none",
         zorder=1,
-        label=rf"Ki $\pm${rel_pct:.0f}%",
+        label=rf"Ki $\times${ki_lo_f:g} to $\times${ki_hi_f:g}",
     )
     ax.plot(
         t_min, pe_base,
@@ -556,16 +575,16 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
         label=f"Ki = {ki_uM:.0f} µM",
     )
     ax.plot(
-        sim_off.t / 60.0, pe_off,
+        t_min, pe_off,
         color="#7f8c8d", linewidth=1.8, linestyle=":",
-        label=f"no {enzyme} feedback",
+        label=f"No {enzyme} feedback",
     )
     ax.scatter(
         S2A_EXP_T_MIN, S2A_EXP_UM,
         color="black", s=28, zorder=5,
         label="Experimental",
     )
-    ax.set_xlabel("time (min)")
+    ax.set_xlabel("Time (min)")
     ax.set_ylabel("PE (µM)")
     if not BARE:
         ax.set_title(
@@ -575,7 +594,7 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
         )
     _style_legend(ax, fontsize=9)
     ax.grid(True, linestyle=":", alpha=0.5)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     _panel_letter(fig, panel_letter)
     for ext in ("png", "pdf"):
         path = f"{out_stem}.{ext}"
@@ -692,9 +711,14 @@ def replot_tornado_from_csv(t_star=None):
 
 
 def _print_table(name, rows):
+    ranked = sorted(rows, key=lambda r: abs(r[1]), reverse=True)
+    total = sum(abs(s) for _, s in ranked)
+    top = sum(abs(s) for _, s in ranked[:TOP_N])
+    share = 100.0 * top / total if total > 0 else float("nan")
     print(f"\n=== {name}: top by |S| at fixed t* ===")
+    print(f"  top-{TOP_N} share of sum|S| within this class: {share:.1f}% ({len(ranked)} parameters)")
     print(f"{'parameter':<48}{'S':>12}")
-    for lab, s in sorted(rows, key=lambda r: abs(r[1]), reverse=True)[:TOP_N]:
+    for lab, s in ranked[:TOP_N]:
         print(f"{lab[:47]:<48}{s:>12.4f}")
 
 
@@ -712,8 +736,9 @@ def main(feedback_only=False, tornado_only=False):
     t_star = float(base.t[reach[0]]) if len(reach) else t_final
     t_sweep = _sweep_end_time(enlarger, t_star)
     print(
-        f"Baseline: final PE = {pe_final:.3f} uM; "
-        f"t*({int(DYNAMIC_FRAC*100)}%) = {t_star:.1f} s (FIXED for all sweeps); "
+        f"Baseline: final PE (t = {t_final:.0f} s) = {pe_final:.3f} uM; "
+        f"t* = first solver point with PE >= {DYNAMIC_FRAC:g} x final = {target:.2f} uM: "
+        f"{t_star:.1f} s (FIXED for all sweeps); "
         f"tornado sims end at {t_sweep:.1f} s; T = {temperature:.1f} K; "
         f"tornado jobs = {N_JOBS}",
         flush=True,
