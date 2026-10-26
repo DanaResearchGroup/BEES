@@ -61,11 +61,9 @@ from bees.simulator import ODESimulator
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_YML = os.path.join(_PROJECT_DIR, "input.yml")
 _OUT_DIR = os.path.join(_PROJECT_DIR, "output", "sensitivity")
-os.makedirs(_OUT_DIR, exist_ok=True)
 OUT_STEM = os.path.join(_OUT_DIR, "sensitivity_analysis")
 OUT_KI_FABH_STEM = os.path.join(_OUT_DIR, "sensitivity_ki_fabh_timecourse")
 OUT_KI_FABI_STEM = os.path.join(_OUT_DIR, "sensitivity_ki_fabi_timecourse")
-OUT_KI_STEM = OUT_KI_FABH_STEM
 
 KCAT_LN_STEP = 0.05          # perturb kcat/Km/Ki by exp(+/- h) in ln-space
 KM_LN_STEP = KCAT_LN_STEP
@@ -89,7 +87,7 @@ _W_TEMPERATURE = None
 
 
 def _load_s2a_experiment():
-    """Ruppe 2018 SI Experimental_Dataset.csv (S2A; min, µM palmitic eq)."""
+    """Ruppe 2018 SI Experimental_Dataset.csv (S2A; min, µM palmitic eq), or None if absent."""
     candidates = (
         os.path.join(
             _REPO_ROOT,
@@ -110,14 +108,17 @@ def _load_s2a_experiment():
     )
     path = next((p for p in candidates if os.path.isfile(p)), None)
     if path is None:
-        raise FileNotFoundError(
-            "Ruppe S2A Experimental_Dataset.csv not found in knowledge/ or docs/deliverables/"
+        print(
+            "Ruppe S2A Experimental_Dataset.csv not found in knowledge/ or docs/deliverables/; "
+            "Ki figures drawn without experimental points",
+            flush=True,
         )
+        return None
     data = np.genfromtxt(path, delimiter=",", skip_header=1)
     return data[:, 0], data[:, 1]
 
 
-S2A_EXP_T_MIN, S2A_EXP_UM = _load_s2a_experiment()
+S2A_EXP_T_MIN, S2A_EXP_UM = _load_s2a_experiment() or (None, None)
 
 _FA_STEMS = [
     ("icosen", 20), ("icosan", 20), ("octadecen", 18), ("octadecan", 18),
@@ -186,15 +187,6 @@ def _simulate(enlarger, model, end_time=None):
         rtol=enlarger.ode_rtol,
         atol=enlarger.ode_atol,
     )
-
-
-def _try_simulate(enlarger, model, end_time=None):
-    """As _simulate, but return None if the stiff solver diverges."""
-    try:
-        return _simulate(enlarger, model, end_time=end_time)
-    except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
-        print(f"    ! solver diverged ({type(exc).__name__}); parameter unscored", flush=True)
-        return None
 
 
 def _sweep_end_time(enlarger, t_star):
@@ -579,11 +571,12 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
         color="#7f8c8d", linewidth=1.8, linestyle=":",
         label=f"No {enzyme} feedback",
     )
-    ax.scatter(
-        S2A_EXP_T_MIN, S2A_EXP_UM,
-        color="black", s=28, zorder=5,
-        label="Experimental",
-    )
+    if S2A_EXP_T_MIN is not None:
+        ax.scatter(
+            S2A_EXP_T_MIN, S2A_EXP_UM,
+            color="black", s=28, zorder=5,
+            label="Experimental",
+        )
     ax.set_xlabel("Time (min)")
     ax.set_ylabel("PE (µM)")
     if not BARE:
@@ -837,6 +830,7 @@ def _print_table(name, rows):
 
 
 def main(feedback_only=False, tornado_only=False):
+    os.makedirs(_OUT_DIR, exist_ok=True)
     print("Building final FAS-II network (CatPred cached)...", flush=True)
     enlarger, model, temperature = build_model()
 
