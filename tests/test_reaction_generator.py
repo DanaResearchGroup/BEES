@@ -34,16 +34,21 @@ class TestGeneratedReaction:
 
 
 class TestReactionGenerator:
-    def test_init(self):
-        bees_obj = MagicMock()
+    def test_warns_when_estimation_on_without_estimator(self):
+        bees_obj = SimpleNamespace(settings=SimpleNamespace(estimate_kinetics=True, kinetics_estimator=None))
         logger = MagicMock()
         gen = ReactionGenerator(bees_obj, logger, "/tmp/out")
-        assert gen.bees_object is bees_obj
-        assert gen.logger is logger
-        assert gen.output_directory == "/tmp/out"
-        assert gen.reactions == []
-        assert gen.kinetic_db is None
+        gen.ensure_estimator_initialized()
         assert gen.kinetics_estimator is None
+        assert "no kinetics_estimator" in logger.warning.call_args.args[0]
+
+    def test_structureless_species_not_merged_through_generic_class(self):
+        """Species without SMILES unify via synonym groups, never via an 'a/an' class."""
+        gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        labels = ["acetyl-CoA", "malonyl-CoA", "hexanoyl-CoA"]  # all in "an acyl-CoA"
+        assert [gen._register_species_label(lab) for lab in labels] == labels
+        assert gen._register_species_label("ATP") == "ATP"
+        assert gen._register_species_label("adenosine triphosphate") == "ATP"
 
     def test_check_heavy_atom_balance_balanced(self):
         """Stoichiometry is balanced if total heavy atoms on both sides match."""

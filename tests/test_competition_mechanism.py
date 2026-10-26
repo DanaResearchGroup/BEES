@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from scipy.integrate import solve_ivp
 
 from bees.core_edge_model import RateLawOptions
 from bees.simulator import _VectorizedRHS
@@ -72,11 +71,11 @@ def _mechanism_fluxes(specs, conc, e_tot=E_TOT):
             edge(full_prod, full_sub, kcat_r)
         steps.append((idx[full_sub], idx[full_prod], s["kcat"], kcat_r))
 
-    x0 = np.zeros(n)
-    x0[idx[frozenset()]] = e_tot
-    sol = solve_ivp(lambda t, x: m @ x, (0.0, 50.0 / KCAT), x0, method="BDF",
-                    rtol=1e-10, atol=1e-16, jac=m)
-    x = sol.y[:, -1]
+    a = m.copy()
+    a[0, :] = 1.0  # m is singular (enzyme conservation); pin total enzyme instead
+    rhs = np.zeros(n)
+    rhs[0] = e_tot
+    x = np.linalg.solve(a, rhs)
     return np.array([kf * x[i] - kr * x[j] for i, j, kf, kr in steps])
 
 

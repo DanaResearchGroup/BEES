@@ -50,6 +50,11 @@ def test_feedback_inhibition_spec():
     assert enz.feedback_inhibition.inhibitors == ["hexadecanoate"]
 
 
+def test_species_requires_concentration():
+    with pytest.raises(ValidationError, match="Concentration must be specified for 'Glucose'"):
+        Species(label="Glucose")
+
+
 def test_Species():
     """Test the Species model."""
     species = Species(
@@ -276,8 +281,6 @@ def test_Settings():
         Settings(end_time=100.0, time_step=1.0, termination_conversion={"A": 1.1})
     with pytest.raises(ValidationError, match=r"Input should be greater than or equal to 10"):
         Settings(end_time=100.0, time_step=1.0, verbose=5)
-    with pytest.raises(ValidationError, match="Input should be greater than 0"):
-        Settings(end_time=100.0, time_step=1.0, toleranceMoveToCore=0)
     with pytest.raises(ValidationError, match="Input should be greater than 0"):
         Settings(end_time=100.0, time_step=1.0, toleranceMoveToCore=0)
     with pytest.raises(ValidationError, match="Input should be greater than 0"):

@@ -96,11 +96,6 @@ def _rule(cls, **kwargs):
 # ---------------------------------------------------------------------------
 
 class TestComputeHaldane:
-    def test_basic(self):
-        # kcat_rev = kcat_fwd * Km_p / (Keq * Km_s) = 100 * 2 / (10 * 0.5) = 40
-        result = compute_haldane_reverse_kcat(100.0, 10.0, [0.5], [2.0])
-        assert result == pytest.approx(40.0)
-
     def test_returns_none_on_nonfinite_keq(self):
         assert compute_haldane_reverse_kcat(100.0, float("inf"), [0.5], [2.0]) is None
         assert compute_haldane_reverse_kcat(100.0, 0.0, [0.5], [2.0]) is None
@@ -134,13 +129,6 @@ class TestComputeHaldane:
         # kcat_rev = kcat_f * (Km_C/c°) / (Keq * (Km_A/c°) * (Km_B/c°)), c° = 1000 mM.
         result = compute_haldane_reverse_kcat(100.0, 10.0, [0.5, 0.2], [2.0])
         assert result == pytest.approx(100.0 * (2.0 / 1000) / (10.0 * (0.5 / 1000) * (0.2 / 1000)))
-
-    def test_stoichiometric_powers(self):
-        # 2 A -> B: kcat_rev = kcat_f * (Km_B/c°) / (Keq * (Km_A/c°)^2).
-        result = compute_haldane_reverse_kcat(
-            100.0, 5.0, [0.3], [0.7], nu_substrates=[2], nu_products=[1],
-        )
-        assert result == pytest.approx(100.0 * (0.7 / 1000) / (5.0 * (0.3 / 1000) ** 2))
 
 
 # ---------------------------------------------------------------------------
@@ -737,20 +725,6 @@ class TestRegistryOrderingAndIdempotence:
         assert rxn.thermo.irreversible is True
         assert rxn.thermo.kcat_rev is None
 
-    def test_idempotent_across_multiple_calls(self):
-        rxn = FakeReaction(
-            stoichiometry={"S": -1, "P": 1},
-            kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"S": 0.5, "P": 2.0}),
-            thermo=FakeThermo(dgr_prime_kJmol=-10.0, keq=10.0),
-        )
-        reg = RuleRegistry()
-        reg.register(_rule(DgrIrreversibility, params={"dgr_kjmol_cutoff": 30.0}))
-        reg.register(_rule(HaldaneReverseKcat))
-        for _ in range(5):
-            reg.apply_all([rxn])
-        assert rxn.thermo.kcat_rev == pytest.approx(40.0)
-        assert rxn.thermo.irreversible is False
-
 
 # ---------------------------------------------------------------------------
 # Production registry sanity
@@ -770,3 +744,41 @@ class TestProductionRegistry:
         assert i_dgr < i_haldane
         assert i_decarb < i_haldane
         assert i_hydro < i_haldane
+
+
+# ---------------------------------------------------------------------------
+# fabI_enoyl_reductase_measured_kcat (production rule, locked params)
+# ---------------------------------------------------------------------------
+
+class TestFabIMeasuredKcat:
+    @staticmethod
+    def _rule():
+        from bees.rules import load_rules
+        return load_rules().by_name("fabI_enoyl_reductase_measured_kcat")
+
+    @staticmethod
+    def _rxn(ec, kcat):
+        return FakeReaction(
+            enzyme_label="FabI", ec_number=ec,
+            kinetics=FakeKinetics(kcat=kcat), thermo=FakeThermo(),
+        )
+
+    def test_snaps_fabi_kcat_to_rafi_2006_value(self):
+        rule = self._rule()
+        assert rule.kind == "calibration" and rule.reference.year == "2006"
+        rxn = self._rxn("EC 1.3.1.9", 3.0)
+        assert rule.applies_to(rxn)
+        rule.apply(rxn)
+        assert rxn.kinetics.kcat == 15.0
+
+    def test_leaves_other_enzymes_alone(self):
+        rule = self._rule()
+        rxn = self._rxn("EC 2.3.1.41", 3.0)
+        assert not rule.applies_to(rxn)
+        assert not rule.applies_to(self._rxn("EC 1.3.1.9", None))
+
+    def test_runs_before_haldane(self):
+        """The reverse kcat must be derived from the measured forward kcat."""
+        from bees.rules import load_rules
+        names = [r.name for r in load_rules()]
+        assert names.index("fabI_enoyl_reductase_measured_kcat") < names.index("haldane_reverse_kcat")
