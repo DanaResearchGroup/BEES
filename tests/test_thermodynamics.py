@@ -21,6 +21,7 @@ from bees.thermodynamics import (
     CompoundSubstitutor,
     ThermoEngine,
     _DiskCache,
+    _is_disabled,
 )
 from bees.common import smiles_to_inchi as _smiles_to_inchi, smiles_to_inchikey as _smiles_to_inchikey
 
@@ -28,7 +29,7 @@ from bees.common import smiles_to_inchi as _smiles_to_inchi, smiles_to_inchikey 
 # Tests that need the real (non-disabled) engine are skipped when the user
 # has set BEES_DISABLE_THERMO=1.
 _skip_if_disabled = pytest.mark.skipif(
-    os.environ.get("BEES_DISABLE_THERMO", "").strip() not in ("", "0", "false", "False"),
+    _is_disabled(),
     reason="BEES_DISABLE_THERMO=1 forces the irreversible fallback path",
 )
 
@@ -242,6 +243,8 @@ class TestCompoundResolution:
         engine._cc = mock_cc
         cpd = engine._resolve_compound("NOTASMILES!!!")
         assert cpd is None
+        mock_cc.get_compound_by_inchi.assert_not_called()
+        mock_cc.search_compound_by_inchi_key.assert_not_called()
 
     def test_cache_miss_is_persisted(self, tmp_path: Path):
         """Negative cache: after a miss, second lookup short-circuits to None.
@@ -264,6 +267,18 @@ class TestCompoundResolution:
         # Second call returns the persisted None without re-hitting CC.
         assert mock_cc.get_compound_by_inchi.call_count == 1
 
+    def test_lookup_error_is_not_persisted(self, tmp_path: Path):
+        """A DB error is possibly transient: retry next time, don't cache a miss."""
+        engine = ThermoEngine(pH=7.4, cache=_DiskCache(tmp_path))
+        mock_cc = MagicMock()
+        mock_cc.get_compound_by_inchi.side_effect = RuntimeError("db locked")
+        engine._cc = mock_cc
+
+        assert engine._resolve_compound("C") is None
+        mock_cc.get_compound_by_inchi.side_effect = None
+        mock_cc.get_compound_by_inchi.return_value = MagicMock()
+        assert engine._resolve_compound("C") is not None
+
     def test_ambiguous_inchikey_uses_first_match(self, tmp_path: Path):
         """Multiple InChIKey hits with no exact match → fall back to first.
         """
@@ -279,3 +294,12 @@ class TestCompoundResolution:
 
         cpd = engine._resolve_compound("C")
         assert cpd is m1
+
+
+@pytest.mark.parametrize("value, disabled", [
+    ("", False), ("0", False), ("false", False), ("off", False), ("OFF", False), ("no", False),
+    ("1", True), ("true", True), ("yes", True),
+])
+def test_disable_thermo_env_parsing(monkeypatch, value, disabled):
+    monkeypatch.setenv("BEES_DISABLE_THERMO", value)
+    assert _is_disabled() is disabled
