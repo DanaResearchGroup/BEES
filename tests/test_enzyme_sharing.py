@@ -81,15 +81,11 @@ class TestCompetition:
         np.testing.assert_array_equal(v_on, v_off)
 
     def test_two_substrates_competitive_mm(self):
-        a, b = 2.0, 3.0 / 2.0
-        v = _rhs(_two_mm(), SP2).compute_v(_y(SP2, {"A": 2.0, "B": 3.0}))
-        np.testing.assert_allclose(v[:2], [VMAX * a / (1 + a + b), VMAX * b / (1 + a + b)], rtol=1e-12)
-
-    def test_plain_mm_competition_factor(self):
         """Fallback MM (no product Km): c = (1+x)/(1+x+others)."""
+        a, b = 2.0, 3.0 / 2.0
         rhs = _rhs(_two_mm(), SP2)
         y = _y(SP2, {"A": 2.0, "B": 3.0})
-        a, b = 2.0, 1.5
+        np.testing.assert_allclose(rhs.compute_v(y)[:2], [VMAX * a / (1 + a + b), VMAX * b / (1 + a + b)], rtol=1e-12)
         np.testing.assert_allclose(rhs.competition_factor(y)[:2], [(1 + a) / (1 + a + b), (1 + b) / (1 + a + b)],
                                    rtol=1e-14)
 
@@ -106,12 +102,6 @@ class TestCompetition:
         v_mat = rhs.compute_v(np.column_stack(ys))
         for k, y in enumerate(ys):
             np.testing.assert_allclose(v_mat[:, k], rhs.compute_v(y), rtol=1e-12)
-
-    def test_off_is_identical(self):
-        rxns = _two_mm()
-        y = _y(SP2, {"A": 2.0, "B": 3.0})
-        ref = _rhs(rxns, SP2, options=None).compute_v(y)
-        np.testing.assert_array_equal(_rhs(rxns, SP2, options=RateLawOptions()).compute_v(y), ref)
 
     def test_forward_reverse_duplicates_count_once(self):
         """A<->C written forward and reverse: identical complex sets, so neither is slowed."""

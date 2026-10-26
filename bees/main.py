@@ -5,9 +5,7 @@ This module provides the BEES class, which orchestrates the kinetic model genera
 The module processes the YAML input files containing, validates inputs against Pydantic schemas, initializes project
 directories and logging, and executes the model generation workflow.
 
-This is probably the most important module in the code.
- run the code by executing this script directly python bees.py --input_file + directory
-(decribed in BEES.py as well)
+Entry point: ``python BEES.py -i <input.yml>`` (see BEES.py).
 """
 
 
@@ -30,7 +28,6 @@ class BEES():
     """
     The main BEES application class.
     Orchestrates: setup, schema validation, logging, execution.
-    Also, here is where the model generation will be started. right now it is just a placeholder.
     """
 
     def __init__(self, input_data: Dict[str, Any]):
@@ -175,12 +172,7 @@ class BEES():
     
         
         # Resolve DB path from database.name (e.g. db -> db/db.csv)
-        db_name = self.bees_object.database.name.strip()
-        db_path_from_name = os.path.join(BEES_PATH, "db", f"{db_name}.csv")
-        default_db = os.path.join(BEES_PATH, "db", "db.csv")
-        db_path = db_path_from_name if os.path.exists(db_path_from_name) else default_db
-        if getattr(self.bees_object, "seed_model", None):
-            self.logger.info(f"Using seed model: {self.bees_object.seed_model}")
+        db_path = resolve_db_path(self.bees_object.database.name, self.logger)
         reaction_generator = ReactionGenerator(
             bees_object=self.bees_object,
             logger=self.logger,
@@ -231,72 +223,40 @@ class BEES():
             summary_path = None
             if reaction_generator.reactions:
                 core_ids = {id(r) for r in enlarger_result.model.core_reactions}
-                summary_path = reaction_generator.export_reactions_summary(core_rxn_ids=core_ids)
+                summary_path = reaction_generator.export_reactions_summary(
+                    core_rxn_ids=core_ids,
+                    reaction_id_by_sig=enlarger._reaction_id_by_sig,
+                )
                 self.logger.info(f"Exported reaction summary to: {summary_path}")
+
+            exporter = EnlargerExporter(
+                model=enlarger_result.model,
+                profiles=enlarger_result.simulation_profiles,
+                output_directory=self.output_directory,
+                logger=self.logger,
+                reaction_id_by_sig=enlarger._reaction_id_by_sig,
+                reaction_first_seen_iter=enlarger._reaction_first_seen_iter,
+                reaction_core_enter_iter=enlarger._reaction_core_enter_iter,
+                reaction_obj_by_sig=enlarger._reaction_obj_by_sig,
+                iteration_summaries=enlarger._iteration_summaries,
+                save_simulation_plots=getattr(settings, "save_simulation_plots", False),
+                plot_max_species=getattr(settings, "plot_max_species", None),
+                plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
+                plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
+                bees_object=self.bees_object,
+                edge_peak_rate_ratio=enlarger._edge_peak_rr,
+            )
 
             # Export simulation profiles if requested
             profiles_path = None
             if getattr(settings, "save_simulation_profiles", False):
-                exporter = EnlargerExporter(
-                    model=enlarger_result.model,
-                    profiles=enlarger_result.simulation_profiles,
-                    output_directory=self.output_directory,
-                    logger=self.logger,
-                    reaction_id_by_sig=enlarger._reaction_id_by_sig,
-                    reaction_first_seen_iter=enlarger._reaction_first_seen_iter,
-                    reaction_core_enter_iter=enlarger._reaction_core_enter_iter,
-                    reaction_obj_by_sig=enlarger._reaction_obj_by_sig,
-                    iteration_summaries=enlarger._iteration_summaries,
-                    save_simulation_plots=getattr(settings, "save_simulation_plots", False),
-                    plot_max_species=getattr(settings, "plot_max_species", None),
-                    plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
-                    plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
-                    bees_object=self.bees_object,
-                    edge_peak_rate_ratio=enlarger._edge_peak_rr,
-                )
                 profiles_path = exporter.export_simulation_profiles()
 
             # Export simulation plots (concentration vs time per iteration) if requested
             if getattr(settings, "save_simulation_plots", False):
-                if 'exporter' not in locals():
-                    exporter = EnlargerExporter(
-                        model=enlarger_result.model,
-                        profiles=enlarger_result.simulation_profiles,
-                        output_directory=self.output_directory,
-                        logger=self.logger,
-                        reaction_id_by_sig=enlarger._reaction_id_by_sig,
-                        reaction_first_seen_iter=enlarger._reaction_first_seen_iter,
-                        reaction_core_enter_iter=enlarger._reaction_core_enter_iter,
-                        reaction_obj_by_sig=enlarger._reaction_obj_by_sig,
-                        iteration_summaries=enlarger._iteration_summaries,
-                        save_simulation_plots=getattr(settings, "save_simulation_plots", False),
-                        plot_max_species=getattr(settings, "plot_max_species", None),
-                        plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
-                        plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
-                        bees_object=self.bees_object,
-                        edge_peak_rate_ratio=enlarger._edge_peak_rr,
-                    )
                 exporter.export_simulation_plots()
 
             # Export flux analysis
-            if 'exporter' not in locals():
-                exporter = EnlargerExporter(
-                    model=enlarger_result.model,
-                    profiles=enlarger_result.simulation_profiles,
-                    output_directory=self.output_directory,
-                    logger=self.logger,
-                    reaction_id_by_sig=enlarger._reaction_id_by_sig,
-                    reaction_first_seen_iter=enlarger._reaction_first_seen_iter,
-                    reaction_core_enter_iter=enlarger._reaction_core_enter_iter,
-                    reaction_obj_by_sig=enlarger._reaction_obj_by_sig,
-                    iteration_summaries=enlarger._iteration_summaries,
-                    save_simulation_plots=getattr(settings, "save_simulation_plots", False),
-                    plot_max_species=getattr(settings, "plot_max_species", None),
-                    plot_exclude_enzymes=getattr(settings, "plot_exclude_enzymes", True),
-                    plot_exclude_cofactors=getattr(settings, "plot_exclude_cofactors", True),
-                    bees_object=self.bees_object,
-                    edge_peak_rate_ratio=enlarger._edge_peak_rr,
-                )
             flux_path = exporter.export_flux_analysis()
             core_edge_csv_paths = exporter.export_core_edge_reaction_species_csvs()
             sbml_path = exporter.export_sbml()
@@ -359,3 +319,14 @@ class BEES():
                 'sbml_path': None,
                 'message': f'Execution completed successfully. Generated {len(reactions)} reaction(s).'
             }
+
+
+def resolve_db_path(db_name: str, logger) -> str:
+    """db/<name>.csv, or db/db.csv (with a warning) when that file does not exist."""
+    db_name = db_name.strip()
+    db_path = os.path.join(BEES_PATH, "db", f"{db_name}.csv")
+    if os.path.exists(db_path):
+        return db_path
+    default_db = os.path.join(BEES_PATH, "db", "db.csv")
+    logger.warning(f"Database '{db_name}' not found at {db_path}; falling back to {default_db}.")
+    return default_db

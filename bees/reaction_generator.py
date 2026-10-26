@@ -29,6 +29,10 @@ from bees.reaction_utils import (
 from bees.kinetics_estimator import build_estimator
 from bees.thermodynamics import ThermoData
 
+# Buffered by the environment; never sent to CatPred as substrates.
+_NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
+
+
 @dataclass
 class GeneratedReaction:
     enzyme_label: str
@@ -117,7 +121,10 @@ class ReactionGenerator:
                 if self.kinetics_estimator:
                     self.logger.info(f"Kinetics estimation enabled: {self.kinetics_estimator.name}")
                 else:
-                    self.logger.info("Kinetics estimation enabled, but no estimator selected.")
+                    self.logger.warning(
+                        "estimate_kinetics is true but no kinetics_estimator is set: reactions "
+                        "without database kinetics will be skipped."
+                    )
             else:
                 self.kinetics_estimator = None
         except Exception as e:
@@ -320,8 +327,11 @@ class ReactionGenerator:
                 return existing_from_smiles
 
         # Skip ontology unify when existing canonical has SMILES (categories mix structures).
+        # Unify through synonym groups only: "a/an ..." classes hold distinct molecules.
         for eq in get_ontology_equivalents(label_clean):
             eq_lc = str(eq).lower().strip()
+            if eq_lc != label_lc and eq_lc.startswith(("a ", "an ")):
+                continue
             existing_from_alias = self._species_alias_to_canonical_label.get(eq_lc)
             if existing_from_alias is not None:
                 existing_smiles = self._species_smiles_to_canonical_label
@@ -521,7 +531,6 @@ class ReactionGenerator:
                         if smi:
                             reactant_smiles[rname] = smi
 
-                    _NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
                     reactant_smiles_normalized: Dict[str, str] = {}
                     for _rname, _smi in reactant_smiles.items():
                         if _rname.lower().strip() in _NON_SUBSTRATE_LABELS:
@@ -723,9 +732,6 @@ class ReactionGenerator:
             if smi:
                 smiles_map[lab] = smi
 
-        td = thermo_engine.compute_keq(stoichiometry=stoich, smiles_map=smiles_map)
-        reaction.thermo = td
-
         # Always reverse-query even if irreversible (product inhibition).
         enzyme_seq: Optional[str] = None
         for enz in getattr(self.bees_object, "enzymes", []):
@@ -777,7 +783,6 @@ class ReactionGenerator:
 
         if enzyme_sequence and self.kinetics_estimator:
             # Skip only buffered cofactors; query CoA/NAD/NADP for product terms.
-            _NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
             rev_reactant_smiles: Dict[str, str] = {}
             for prod_label in reaction.product_labels:
                 prod_lc = prod_label.lower().strip()
@@ -880,8 +885,13 @@ class ReactionGenerator:
         filename="reactions_summary.txt",
         n_core: Optional[int] = None,
         core_rxn_ids: Optional[set] = None,
+        reaction_id_by_sig: Optional[dict] = None,
     ) -> str:
-        """Export human-readable summary of generated reactions."""
+        """Export human-readable summary of generated reactions.
+
+        ``reaction_id_by_sig`` (the enlarger's stable IDs) makes "Reaction N" / "RN" match
+        the SBML reaction ids; without it reactions are numbered by list position.
+        """
         output_path = os.path.join(self.output_directory, filename)
         n = len(self.reactions)
 
@@ -897,6 +907,12 @@ class ReactionGenerator:
                 total_line = f"Total Reactions: {n} ({n_core} core, {n_edge} edge)\n"
             else:
                 total_line = f"Total Reactions: {n}\n"
+
+        id_by_sig = reaction_id_by_sig or {}
+        rxn_num = {
+            id(r): id_by_sig.get(reaction_signature(r), i)
+            for i, r in enumerate(list(core_rxns) + list(edge_rxns), 1)
+        }
 
         with open(output_path, 'w') as f:
             f.write("=" * 80 + "\n")
@@ -932,7 +948,8 @@ class ReactionGenerator:
             species_as_reactant: dict = {}
             species_as_product: dict = {}
             
-            for i, rxn in enumerate(self.reactions, 1):
+            for rxn in self.reactions:
+                i = rxn_num[id(rxn)]
                 for reactant in rxn.reactant_labels:
                     all_species.add(reactant)
                     if reactant not in species_as_reactant:
@@ -961,9 +978,9 @@ class ReactionGenerator:
             
             f.write("\n" + "-" * 80 + "\n\n")
 
-            def _write_reactions(rxn_list, start_idx):
-                for i, rxn in enumerate(rxn_list, start_idx):
-                    f.write(f"Reaction {i}:\n")
+            def _write_reactions(rxn_list):
+                for rxn in sorted(rxn_list, key=lambda r: rxn_num[id(r)]):
+                    f.write(f"Reaction {rxn_num[id(rxn)]}:\n")
                     f.write(f"  Enzyme: {rxn.enzyme_label}\n")
                     f.write(f"  EC Number: {rxn.ec_number or 'N/A'}\n")
                     f.write(f"  EC Class: {rxn.template.ec_class.name}\n")
@@ -1034,14 +1051,14 @@ class ReactionGenerator:
                 f.write("=" * 80 + "\n")
                 f.write(f"CORE REACTIONS ({len(core_rxns)})\n")
                 f.write("=" * 80 + "\n\n")
-                _write_reactions(core_rxns, 1)
+                _write_reactions(core_rxns)
                 if edge_rxns:
                     f.write("=" * 80 + "\n")
                     f.write(f"EDGE REACTIONS ({len(edge_rxns)})\n")
                     f.write("=" * 80 + "\n\n")
-                    _write_reactions(edge_rxns, len(core_rxns) + 1)
+                    _write_reactions(edge_rxns)
             else:
-                _write_reactions(core_rxns, 1)
+                _write_reactions(core_rxns)
 
         self.logger.info(f"Exported reactions summary to {output_path}")
         return output_path

@@ -6,7 +6,9 @@ from rdkit import Chem
 
 class Species(BaseModel):
     label: str
-    concentration: Union[Annotated[float, Field(gt=0)], Tuple[Annotated[float, Field(gt=0)], Annotated[float, Field(gt=0)]]] = None
+    concentration: Union[Annotated[float, Field(gt=0)], Tuple[Annotated[float, Field(gt=0)], Annotated[float, Field(gt=0)]]] = Field(
+        default=None, validate_default=True,
+    )
     smiles: Optional[str] = None
     constant: bool = False
     reactive: bool = True
@@ -14,12 +16,17 @@ class Species(BaseModel):
   
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator('concentration', mode='before')
+    @classmethod
+    def check_concentration_given(cls, value, info: ValidationInfo):
+        if value is None:
+            raise ValueError(f"Concentration must be specified for '{info.data.get('label')}'")
+        return value
+
     @field_validator('concentration')
     @classmethod
     def check_concentration_range_order(cls, value, info: ValidationInfo):
         label = info.data.get('label')
-        if value is None:
-            raise ValueError(f"Concentration must be specified for '{label}'")
         if isinstance(value, float):
             if value < 0:
                 raise ValueError(f"Concentration cannot be negative. Got {value} for '{label}'")

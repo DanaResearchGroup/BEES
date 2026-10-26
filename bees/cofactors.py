@@ -209,13 +209,8 @@ ACYL_CHAIN_SMILES: Dict[str, str] = {
 }
 
 # Free-acid SMILES for each acyl group above (acyl-OH instead of acyl-S-CoA).
-# eQuilibrator's ComponentContribution database covers free fatty acids /
-# 3-oxo / 3-hydroxy / 2-enoyl species far more reliably than synthesised
-# CoA-thioester SMILES, so we prefer this form when computing ΔG°' for
-# acyl-[ACP] substrates. The thioester ΔG°' equals the free-acid ΔG°' up to
-# a constant per thioester bond (~−31 kJ/mol) which cancels for every
-# FAS-cycle reaction (transfer / reduction / dehydration / reduction) because
-# the same number of thioesters appear on both sides.
+# Not used for thermo (AcylACPSubstitutor always builds the acyl-CoA form);
+# kept as a reference table (used by tests).
 ACYL_FREE_ACID_SMILES: Dict[str, str] = {
     "acetyl":                        "CC(O)=O",
     "malonyl":                       "OC(=O)CC(O)=O",

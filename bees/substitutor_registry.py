@@ -13,7 +13,7 @@ To add a new substitutor for a different pathway or carrier system:
 from typing import Dict, Optional
 
 from bees.thermodynamics import CompoundSubstitutor
-from bees.cofactors import ACP_SUFFIX, COA_TAIL, ACYL_CHAIN_SMILES, ACYL_FREE_ACID_SMILES
+from bees.cofactors import ACP_SUFFIX, COA_TAIL, ACYL_CHAIN_SMILES
 
 import logging
 logger = logging.getLogger("BEES")
@@ -39,9 +39,7 @@ class AcylACPSubstitutor(CompoundSubstitutor):
         Order of preference:
           1. User-supplied explicit override (extra_mappings).
           2. Full acyl-CoA thioester (ACYL_CHAIN_SMILES + COA_TAIL).
-          3. Free-acid SMILES (ACYL_FREE_ACID_SMILES) as last-resort fallback
-             for acyl groups missing from ACYL_CHAIN_SMILES.
-          4. None if the acyl fragment is unknown.
+          3. None if the acyl fragment is unknown.
       - For non-ACP labels, do nothing (pass through whatever the caller had).
 
     extra_mappings: label → SMILES dict injected from input YAML field
@@ -82,10 +80,6 @@ class AcylACPSubstitutor(CompoundSubstitutor):
                     label, smiles,
                 )
             return chain + COA_TAIL
-
-        free_acid = ACYL_FREE_ACID_SMILES.get(acyl)
-        if free_acid is not None:
-            return free_acid
 
         logger.debug(
             "AcylACPSubstitutor: no SMILES mapping for acyl group %r (label=%r)",

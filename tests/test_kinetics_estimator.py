@@ -64,3 +64,36 @@ class TestPersistentCache:
         assert key in est2._memo
         assert est2._memo[key].kcat == 3.14
         assert est2._memo[key].km == 0.05
+
+    def test_failed_prediction_not_persisted(self, tmp_path, monkeypatch):
+        """A failed CatPred run is reused within the run but never written to disk."""
+        import subprocess
+
+        from bees.kinetics_estimator import CatPredEstimator
+
+        cache = tmp_path / "catpred.pkl"
+        monkeypatch.setenv("BEES_CATPRED_CACHE", str(cache))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(CatPredEstimator, "CATPRED_DIR", str(tmp_path))
+        calls = []
+
+        def _fail(cmd, **kwargs):
+            calls.append(cmd)
+            raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+        monkeypatch.setattr(subprocess, "run", _fail)
+
+        est = CatPredEstimator()
+        good_key = ("SEQ0", (("X", "C"),), None, False)
+        est._memo[good_key] = EstimatedKinetics(km=1.0, kcat=1.0, source="catpred")
+        kwargs = dict(enzyme_sequence="SEQ", reactant_smiles={"S": "CCO"})
+        first = est.estimate(**kwargs)
+        assert "errors" in first.source
+        n_calls = len(calls)
+        assert est.estimate(**kwargs).source == first.source
+        assert len(calls) == n_calls  # reused in-process, no second subprocess
+
+        est._save_persistent_cache()
+        est2 = CatPredEstimator()
+        assert good_key in est2._memo
+        assert all("errors" not in v.source for v in est2._memo.values())

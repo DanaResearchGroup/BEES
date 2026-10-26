@@ -4,7 +4,8 @@
 ## - This file is meant to be COPY/PASTE friendly, but it must also validate against
 ##   the current BEES input schema (`bees/schema.py`).
 ## - BEES forbids unknown keys in each section. So things like `inchi`, `adjlist`,
-##   `ionic_strength`, etc. are NOT allowed in the YAML (even if they are chemically useful).
+##   `charge`, etc. are NOT allowed in the YAML (even if they are chemically useful).
+## - Every project input is validated by tests/test_project_inputs.py.
 ##
 
 ## --- Project Information ---
@@ -15,51 +16,45 @@ project_directory: projects/commented
 
 ## --- Species Definition ---
 ## `species` (required): list of species in the system.
-## Allowed keys per species (schema): label, concentration, smiles, charge, constant,
-## reactive, observable, solvent.
+## Allowed keys per species (schema): label, concentration, smiles, constant,
+## reactive, solvent.
 species:
   - label: Glucose
     ## concentration (required): float (mM) or a tuple (min, max), both > 0
     concentration: 0.01
     ## smiles (optional but recommended): validated by RDKit if present
     smiles: C(C1C(C(C(C(O1)CO)O)O)O)O
-    ## charge (optional): defaults to 0
-    charge: 0
-    ## constant (optional): if true, species must be non-reactive and non-observable
+    ## constant (optional): hold the concentration fixed (no concentration range allowed)
     constant: false
-    ## reactive (optional): if false, species can be held out of reaction discovery
+    ## reactive (optional): if false, the species is only a cofactor, not a discovery seed
     reactive: true
-    ## observable (optional): whether to include in plots/outputs by default
-    observable: true
-    ## solvent (optional): flag for solvent-like species
+    ## solvent (optional): solvent species are never used as discovery seeds
     solvent: false
 
   - label: ATP
     concentration: 5.0
     smiles: C1=NC(=C2C(=N1)N(C=N2)C3C(C(C(O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O)N
     reactive: true
-    observable: true
 
   - label: H2O
     concentration: 55.5
     smiles: O
     solvent: true
     reactive: false
-    observable: false
 
   - label: NAD+
     concentration: 0.5
     smiles: C1=CC(=C[N+](=C1)[C@H]2[C@@H]([C@@H]([C@H](O2)COP(=O)([O-])OP(=O)([O-])OC[C@@H]3[C@H]([C@H]([C@@H](O3)N4C=NC5=C(N=CN=C54)N)O)O)O)O)C(=O)N
     reactive: true
-    observable: true
 
 ## --- Enzyme Definition ---
 ## `enzymes` (required): enzymes are species + optional enzyme metadata.
-## Allowed keys per enzyme (schema): everything in species + ecnumber + amino_acid_sequence.
+## Allowed keys per enzyme (schema): everything in species + ecnumber +
+## amino_acid_sequence + feedback_inhibition.
 enzymes:
   - label: Hexokinase
     concentration: 1e-6
-    ## ecnumber (optional): must match pattern "EC x.x.x.x"
+    ## ecnumber (optional): "EC x.x.x.x", or a list of them for a multi-function enzyme
     ecnumber: EC 2.7.1.1
     reactive: true
     ## amino_acid_sequence (optional): uppercase 1-letter amino acids only
@@ -69,15 +64,25 @@ enzymes:
     concentration: 5e-7
     ecnumber: EC 2.7.1.11
     reactive: true
+    ## feedback_inhibition (optional): inhibitors (species labels), ki (mM), hill (> 0, default 1)
+    feedback_inhibition:
+      inhibitors:
+        - ATP
+      ki: 1.0
+      hill: 1.0
     amino_acid_sequence: ERRFQDAVRLRGRSFAGNLNTYKRLAIKLPDDQIPKTNCNVAVINVGAPAAGMNAGVRSAVRVGIADGHRMLAIYDGFDGFAKGQIKEIGWTDVGGWTGQGGSILGTKRVLPGKYLEEIATQMRTHSINALLIIGGFEAYLGLLELSAAREKHEEFCVPMVMVPATVSNNVPGSDFSIGADTALNTITDTCDRIKQSASGTKRRVFIIETMGGYCGYLANMGGLAAGADAAYIFEEPFDIRDLQSNVEHLTEKMKTTIQRGLVLRNESCSENYTTDFIYQLYSEEGKGVFDCRKNVLGHMQQGGAPSPFDRNFGTKISARAMEWITEKLKEARGRGKKFTTDDSICVLGISKRNVIFQPVAELKKQTDFEHRIPKEQWWLKLRPLMKILAKYKASYDVSDSGQLEHVQPWSV
 
 ## --- Environment ---
-## Allowed keys per environment (schema): temperature, pH
+## Allowed keys per environment (schema): temperature, pH, ionic_strength_M, pMg
 environment:
   ## temperature: float in K, or tuple (min, max), both > 0
   temperature: 310.15
   ## pH: float in [0, 14], or tuple (min, max)
   pH: 7.4
+  ## ionic_strength_M (optional): ionic strength in M for thermodynamics, [0, 2], default 0.25
+  ionic_strength_M: 0.25
+  ## pMg (optional): -log10[Mg2+] for thermodynamics, [0, 10], default 3.0
+  pMg: 3.0
 
 ## --- Database ---
 ## Allowed keys (schema): name
@@ -105,6 +110,11 @@ settings:
   kinetics_estimator: catpred
   ## kinetics_include_sd: if true, include uncertainty (SD) fields when available
   kinetics_include_sd: true
+  ## calibrations (optional): opt-in system-specific corrections, by name (bees/rules/calibrations/).
+  ## e.g. [fabI_enoyl_reductase_measured_kcat, tesa_long_chain_preference] for the FAS case study
+  calibrations: null
+  ## kinetics_ec_kcat_scale: DEPRECATED per-EC kcat multiplier; use calibrations instead
+  kinetics_ec_kcat_scale: null
   ## smiles_mode: how BEES resolves missing/ambiguous SMILES ('auto' or 'interactive')
   smiles_mode: auto
 
@@ -115,6 +125,9 @@ settings:
   ## toleranceInterruptSimulation: early-stop threshold for ODE pass based on flux ratio
   ## If omitted, BEES uses toleranceMoveToCore (per schema comment in `bees/schema.py`)
   toleranceInterruptSimulation: 0.1
+  ## toleranceMoveEdgeReactionToCore (optional): promote species of edge reactions whose
+  ## accumulated flux (dlnaccum) exceeds this; null disables reaction-level promotion
+  toleranceMoveEdgeReactionToCore: null
 
   ## minEdgeIterationsForPrune: do not prune until edge has existed for at least this many iterations
   minEdgeIterationsForPrune: 2
@@ -144,8 +157,6 @@ settings:
   max_num_objects_per_iter: 10
   ## abs_flux_floor: when core characteristic flux is ~0, promote only if abs flux exceeds this floor (> 0)
   abs_flux_floor: 1.0e-12
-  ## filter_reactions: if true, apply reaction filtering heuristics
-  filter_reactions: true
   ## max_iterations: hard cap on enlargement iterations (> 0)
   max_iterations: 20
 
@@ -180,3 +191,10 @@ settings:
 
   ## save_ode_equations: save ODE equations text export(s)
   save_ode_equations: true
+
+  ## thermo_smiles_substitutions (optional): label -> SMILES used only for the thermodynamics lookup
+  thermo_smiles_substitutions: null
+  ## thermo_irreversible_cutoff_kJmol: reactions with dG'0 < -this (kJ/mol) are irreversible (> 0)
+  thermo_irreversible_cutoff_kJmol: 30.0
+  ## enzyme_competition: reactions of one enzyme share its free enzyme (competitive binding)
+  enzyme_competition: true

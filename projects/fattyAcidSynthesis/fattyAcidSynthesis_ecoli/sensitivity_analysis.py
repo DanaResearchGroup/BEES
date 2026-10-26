@@ -61,11 +61,9 @@ from bees.simulator import ODESimulator
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_YML = os.path.join(_PROJECT_DIR, "input.yml")
 _OUT_DIR = os.path.join(_PROJECT_DIR, "output", "sensitivity")
-os.makedirs(_OUT_DIR, exist_ok=True)
 OUT_STEM = os.path.join(_OUT_DIR, "sensitivity_analysis")
 OUT_KI_FABH_STEM = os.path.join(_OUT_DIR, "sensitivity_ki_fabh_timecourse")
 OUT_KI_FABI_STEM = os.path.join(_OUT_DIR, "sensitivity_ki_fabi_timecourse")
-OUT_KI_STEM = OUT_KI_FABH_STEM
 
 KCAT_LN_STEP = 0.05          # perturb kcat/Km/Ki by exp(+/- h) in ln-space
 KM_LN_STEP = KCAT_LN_STEP
@@ -89,7 +87,7 @@ _W_TEMPERATURE = None
 
 
 def _load_s2a_experiment():
-    """Ruppe 2018 SI Experimental_Dataset.csv (S2A; min, µM palmitic eq)."""
+    """Ruppe 2018 SI Experimental_Dataset.csv (S2A; min, µM palmitic eq), or None if absent."""
     candidates = (
         os.path.join(
             _REPO_ROOT,
@@ -110,14 +108,17 @@ def _load_s2a_experiment():
     )
     path = next((p for p in candidates if os.path.isfile(p)), None)
     if path is None:
-        raise FileNotFoundError(
-            "Ruppe S2A Experimental_Dataset.csv not found in knowledge/ or docs/deliverables/"
+        print(
+            "Ruppe S2A Experimental_Dataset.csv not found in knowledge/ or docs/deliverables/; "
+            "Ki figures drawn without experimental points",
+            flush=True,
         )
+        return None
     data = np.genfromtxt(path, delimiter=",", skip_header=1)
     return data[:, 0], data[:, 1]
 
 
-S2A_EXP_T_MIN, S2A_EXP_UM = _load_s2a_experiment()
+S2A_EXP_T_MIN, S2A_EXP_UM = _load_s2a_experiment() or (None, None)
 
 _FA_STEMS = [
     ("icosen", 20), ("icosan", 20), ("octadecen", 18), ("octadecan", 18),
@@ -186,15 +187,6 @@ def _simulate(enlarger, model, end_time=None):
         rtol=enlarger.ode_rtol,
         atol=enlarger.ode_atol,
     )
-
-
-def _try_simulate(enlarger, model, end_time=None):
-    """As _simulate, but return None if the stiff solver diverges."""
-    try:
-        return _simulate(enlarger, model, end_time=end_time)
-    except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
-        print(f"    ! solver diverged ({type(exc).__name__}); parameter unscored", flush=True)
-        return None
 
 
 def _sweep_end_time(enlarger, t_star):
@@ -579,11 +571,12 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
         color="#7f8c8d", linewidth=1.8, linestyle=":",
         label=f"No {enzyme} feedback",
     )
-    ax.scatter(
-        S2A_EXP_T_MIN, S2A_EXP_UM,
-        color="black", s=28, zorder=5,
-        label="Experimental",
-    )
+    if S2A_EXP_T_MIN is not None:
+        ax.scatter(
+            S2A_EXP_T_MIN, S2A_EXP_UM,
+            color="black", s=28, zorder=5,
+            label="Experimental",
+        )
     ax.set_xlabel("Time (min)")
     ax.set_ylabel("PE (µM)")
     if not BARE:
@@ -604,39 +597,149 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
     return s_ki
 
 
-def _tornado(ax, rows, xlabel, title, panel_letter=None):
-    import textwrap
+# Longest stem first: "dodec" before "dec", "hexadec" before "hex", ...
+_CHAIN_STEMS = (
+    ("icos", 20), ("octadec", 18), ("hexadec", 16), ("tetradec", 14),
+    ("dodec", 12), ("dec", 10), ("oct", 8), ("hex", 6), ("but", 4),
+)
+_CARRIER_ONLY = ("malonyl-[acp]", "holo-[acp]")
 
+
+def _chain(species, unsat_suffix=True):
+    """'C12:1' for (5Z)-dodecenoyl-[ACP], 'C12:0' for dodecanoyl-[ACP].
+
+    Only cis (Z) double bonds count: the trans-2 enoyl of the cycle is still the
+    saturated branch.
+    """
+    n = species.lower()
+    for stem, c in _CHAIN_STEMS:
+        if stem in n:
+            if not unsat_suffix:
+                return f"C{c}"
+            return f"C{c}:1" if re.search(r"\d+Z\b", species) else f"C{c}:0"
+    return None
+
+
+def _sbml_reaction_ids(model_xml=None):
+    """Full reaction label ('Enzyme: A + B -> C') -> SBML id ('R6') from output/model.xml."""
+    import html
+
+    path = model_xml or os.path.join(_PROJECT_DIR, "output", "model.xml")
+    if not os.path.isfile(path):
+        print(f"  ! {path} not found; figure labels without reaction ids", flush=True)
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    return {
+        html.unescape(m.group(2)).replace(" <=> ", " -> "): m.group(1)
+        for m in re.finditer(r'<reaction id="(R\d+)" name="([^"]+)"', text)
+    }
+
+
+def short_reaction_label(label, rid=None):
+    """'R6 FabI: C4:0 enoyl reduction': SBML id + enzyme + step + chain (no cofactors).
+
+    Falls back to the full label for anything it does not recognise.
+    """
+    short = _short_step_label(label)
+    return f"{rid} {short}" if rid else short
+
+
+def _short_step_label(label):
+    m = re.match(r"^(\w+): (.+?) -> (.+?)( \(\d+\))?$", label)
+    if not m:
+        return label
+    enz, lhs, rhs, dup = m.group(1), m.group(2), m.group(3), m.group(4) or ""
+    reactants = [s.strip() for s in lhs.split(" + ")]
+    products = [s.strip() for s in rhs.split(" + ")]
+    acyl = next(
+        (s for s in reactants if "[acp]" in s.lower() and s.lower() not in _CARRIER_ONLY),
+        None,
+    )
+    e = enz.lower()
+    if e == "fabd":
+        step = "malonyl transfer"
+    elif e == "fabh":
+        step = "initiation"
+    elif acyl is None or _chain(acyl) is None:
+        return label
+    else:
+        c = _chain(acyl)
+        if e in ("fabf", "fabb"):
+            prod = next((s for s in products if "[acp]" in s.lower()
+                         and s.lower() not in _CARRIER_ONLY), "")
+            step = f"{c} → {_chain(prod) or '?'} elongation"
+        elif e == "fabg":
+            step = f"{c} 3-oxo reduction"
+        elif e in ("faba", "fabz") and "H2O" in products:
+            step = f"{c} dehydration"
+        elif e == "faba":
+            step = f"{_chain(acyl, unsat_suffix=False)} trans→cis isomerization"
+        elif e == "fabi":
+            step = f"{c} enoyl reduction"
+        elif e == "tesa":
+            step = f"{c} release"
+        else:
+            return label
+    return f"{enz}: {step}{dup}"
+
+
+def _tornado(ax, rows, xlabel, title, panel_letter=None, rids=None):
+    rids = rids or {}
     data = sorted(rows, key=lambda r: abs(r[1]), reverse=True)[:TOP_N]
     data = list(reversed(data))
-    labels = [
-        "\n".join(textwrap.wrap(r[0], width=70, break_long_words=False))
-        for r in data
-    ]
+    labels = [short_reaction_label(r[0], rids.get(r[0])) for r in data]
     vals = [r[1] for r in data]
     colors = ["#c0392b" if v >= 0 else "#2c7fb8" for v in vals]
     y = np.arange(len(labels))
     ax.barh(y, vals, color=colors, edgecolor="black", linewidth=0.4, height=0.7)
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=9)
-    ax.tick_params(axis="x", labelsize=11)
+    ax.tick_params(axis="x", labelsize=9)
     ax.axvline(0.0, color="black", linewidth=0.8)
     ax.grid(axis="x", linestyle=":", alpha=0.5)
-    ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_xlabel(xlabel, fontsize=10)
     if not BARE:
-        ax.set_title(title, fontsize=12)
+        ax.set_title(title, fontsize=10)
     if panel_letter:
         ax.text(
             -0.02,
-            1.04,
+            1.03,
             f"({panel_letter})",
             transform=ax.transAxes,
-            fontsize=16,
+            fontsize=12,
             fontweight="bold",
             va="bottom",
             ha="left",
         )
     return panel_letter
+
+
+def _save_label_key(stem, rows_by_class, rids):
+    """SI key: SBML id + short figure label -> full reaction equation, every scored reaction."""
+    seen = {}
+    for rows in rows_by_class:
+        for lab, _ in rows:
+            seen.setdefault(lab, _short_step_label(lab))
+    shorts = list(seen.values())
+    dupes = {s for s in shorts if shorts.count(s) > 1}
+    if dupes:
+        raise ValueError(f"short labels are not unique: {sorted(dupes)}")
+    missing = [lab for lab in seen if lab not in rids]
+    if rids and missing:
+        print(f"  ! {len(missing)} reactions not found in model.xml: {missing[:3]}", flush=True)
+
+    def _rnum(lab):
+        rid = rids.get(lab, "")
+        return int(rid[1:]) if rid[1:].isdigit() else 10**9
+
+    path = f"{stem}.csv"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("reaction_id,short_label,reaction\n")
+        for full in sorted(seen, key=lambda lab: (_rnum(lab), seen[lab])):
+            safe = full.replace('"', "'")
+            fh.write(f'{rids.get(full, "")},"{seen[full]}","{safe}"\n')
+    print(f"wrote {path}")
 
 
 def _save_tornado_csv(stem, rows):
@@ -690,15 +793,19 @@ def make_figure(kcat_rows, km_rows, dg_rows, t_star, write_csv=True):
     title_km = f"Km sensitivity at fixed t*={t_star:.0f}s"
     title_dg = f"Thermodynamic sensitivity at fixed t*={t_star:.0f}s"
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 13), sharex=False)
-    _tornado(axes[0], kcat_rows, xlabel_kcat, title_kcat, panel_letter="A")
-    _tornado(axes[1], km_rows, xlabel_km, title_km, panel_letter="B")
-    fig.subplots_adjust(left=0.48, right=0.98, top=0.96, bottom=0.06, hspace=0.28)
+    rids = _sbml_reaction_ids()
+    _save_label_key(f"{OUT_STEM}_label_key", (kcat_rows, km_rows, dg_rows), rids)
+
+    # Drawn at final print width (~6.5 in) so 9 pt labels stay 9 pt.
+    fig, axes = plt.subplots(2, 1, figsize=(6.5, 7.5), sharex=False)
+    _tornado(axes[0], kcat_rows, xlabel_kcat, title_kcat, panel_letter="A", rids=rids)
+    _tornado(axes[1], km_rows, xlabel_km, title_km, panel_letter="B", rids=rids)
+    fig.subplots_adjust(left=0.40, right=0.97, top=0.95, bottom=0.07, hspace=0.38)
     _save_tornado_png_pdf(fig, f"{OUT_STEM}_kcat_km")
 
-    fig, ax = plt.subplots(figsize=(12, 7))
-    _tornado(ax, dg_rows, xlabel_dg, title_dg)
-    fig.subplots_adjust(left=0.48, right=0.98, top=0.92, bottom=0.12)
+    fig, ax = plt.subplots(figsize=(6.5, 3.8))
+    _tornado(ax, dg_rows, xlabel_dg, title_dg, rids=rids)
+    fig.subplots_adjust(left=0.40, right=0.97, top=0.93, bottom=0.14)
     _save_tornado_png_pdf(fig, f"{OUT_STEM}_dgr")
 
 
@@ -723,6 +830,7 @@ def _print_table(name, rows):
 
 
 def main(feedback_only=False, tornado_only=False):
+    os.makedirs(_OUT_DIR, exist_ok=True)
     print("Building final FAS-II network (CatPred cached)...", flush=True)
     enlarger, model, temperature = build_model()
 

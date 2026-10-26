@@ -34,16 +34,21 @@ class TestGeneratedReaction:
 
 
 class TestReactionGenerator:
-    def test_init(self):
-        bees_obj = MagicMock()
+    def test_warns_when_estimation_on_without_estimator(self):
+        bees_obj = SimpleNamespace(settings=SimpleNamespace(estimate_kinetics=True, kinetics_estimator=None))
         logger = MagicMock()
         gen = ReactionGenerator(bees_obj, logger, "/tmp/out")
-        assert gen.bees_object is bees_obj
-        assert gen.logger is logger
-        assert gen.output_directory == "/tmp/out"
-        assert gen.reactions == []
-        assert gen.kinetic_db is None
+        gen.ensure_estimator_initialized()
         assert gen.kinetics_estimator is None
+        assert "no kinetics_estimator" in logger.warning.call_args.args[0]
+
+    def test_structureless_species_not_merged_through_generic_class(self):
+        """Species without SMILES unify via synonym groups, never via an 'a/an' class."""
+        gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        labels = ["acetyl-CoA", "malonyl-CoA", "hexanoyl-CoA"]  # all in "an acyl-CoA"
+        assert [gen._register_species_label(lab) for lab in labels] == labels
+        assert gen._register_species_label("ATP") == "ATP"
+        assert gen._register_species_label("adenosine triphosphate") == "ATP"
 
     def test_check_heavy_atom_balance_balanced(self):
         """Stoichiometry is balanced if total heavy atoms on both sides match."""
@@ -258,3 +263,31 @@ def test_concrete_alias_matched_row_still_generates(tmp_path):
     assert rxns
     assert all(c in (-1, 1) for r in rxns for c in r.stoichiometry.values())
     assert not any(lab.lower().startswith(("a ", "an ")) for r in rxns for lab in r.stoichiometry)
+
+
+def test_reactions_summary_uses_stable_reaction_ids(tmp_path):
+    """With reaction_id_by_sig, summary numbers match the SBML ids, not list position."""
+    from bees.reaction_generator import reaction_signature
+
+    def _rxn(enz, a, b):
+        return GeneratedReaction(
+            enzyme_label=enz, substrate_label=a, ec_number="EC 2.7.1.1",
+            template=_make_template(), kinetics=None,
+            reactant_labels=[a], product_labels=[b], stoichiometry={a: -1, b: 1},
+        )
+
+    r_late, r_early = _rxn("E1", "A", "B"), _rxn("E2", "B", "C")
+    bees_obj = MagicMock()
+    bees_obj.project = "p"
+    gen = ReactionGenerator(bees_obj, MagicMock(), str(tmp_path))
+    gen.reactions = [r_late, r_early]
+    ids = {reaction_signature(r_late): 7, reaction_signature(r_early): 3}
+
+    with open(gen.export_reactions_summary(
+        core_rxn_ids={id(r_late), id(r_early)}, reaction_id_by_sig=ids,
+    )) as summary_file:
+        text = summary_file.read()
+
+    assert text.index("Reaction 3:\n  Enzyme: E2") < text.index("Reaction 7:\n  Enzyme: E1")
+    assert "Reaction 1:" not in text and "Reaction 2:" not in text
+    assert "Consumed in reaction(s): R7" in text  # A is consumed only by E1

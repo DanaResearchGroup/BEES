@@ -108,12 +108,12 @@ class CatPredEstimator(BaseKineticsEstimator):
                 + ", ".join(f"{k}x{v}" for k, v in sorted(self.ec_kcat_scale.items()))
             )
             logging.getLogger(__name__).info(msg)
-            print(f"[CatPredEstimator] {msg}", flush=True)
         # In-process memoization: repeated CatPred calls are expensive.
         # Keyed by (enzyme sequence, reactant set, inhibitor, include_sd).
-        # ec_number is NOT in the key — the cached entry is the unscaled CatPred
-    
+        # ec_number is NOT in the key: the cached entry is the unscaled CatPred
+        # prediction, and ec_kcat_scale is applied after lookup.
         self._memo: Dict[tuple, EstimatedKinetics] = {}
+        self._memo_not_persisted: set = set()
         # BEES_CATPRED_CACHE: unset -> ~/.cache/bees/...; <path> -> that file; off/0/none/false/disable -> off.
         _cache_env = os.environ.get("BEES_CATPRED_CACHE")
         if _cache_env is None:
@@ -151,8 +151,11 @@ class CatPredEstimator(BaseKineticsEstimator):
             d = os.path.dirname(self._cache_path) or "."
             os.makedirs(d, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+            to_save = {
+                k: v for k, v in self._memo.items() if k not in self._memo_not_persisted
+            }
             with os.fdopen(fd, "wb") as fh:
-                pickle.dump(self._memo, fh)
+                pickle.dump(to_save, fh)
             os.replace(tmp, self._cache_path)
         except Exception as exc:
             logging.getLogger(__name__).debug("CatPred cache save failed: %s", exc)
@@ -183,7 +186,6 @@ class CatPredEstimator(BaseKineticsEstimator):
             f"kcat {raw.kcat:.4g} -> {scaled:.4g} s^-1"
         )
         logging.getLogger(__name__).info(msg)
-        print(f"[CatPredEstimator] {msg}", flush=True)
         return EstimatedKinetics(
             km=raw.km,
             km_per_substrate=raw.km_per_substrate,
@@ -386,7 +388,7 @@ class CatPredEstimator(BaseKineticsEstimator):
             try:
                 df_km.to_csv(km_csv, index=False)
             except Exception as e:
-                pass  # results already populated for kcat
+                results["km_error"] = f"could not write Km input: {e}"
             else:
                 param = "km"
                 checkpoint_dir = os.path.join(self.CHECKPOINT_BASE, param)
@@ -474,7 +476,12 @@ class CatPredEstimator(BaseKineticsEstimator):
         if memo_key is not None:
             try:
                 self._memo[memo_key] = raw
-                self._save_persistent_cache()
+                if errors:
+                    # Reuse within this run, but a failed run (env, OOM, timeout)
+                    # must be retried next run, not reused forever from disk.
+                    self._memo_not_persisted.add(memo_key)
+                else:
+                    self._save_persistent_cache()
             except Exception as exc:
                 logging.getLogger(__name__).debug("Failed to update CatPred memo cache for key %s: %s", memo_key, exc)
         return self._apply_kcat_scaling(raw, ec_number)

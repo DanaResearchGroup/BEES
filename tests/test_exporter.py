@@ -276,7 +276,7 @@ def _make_reaction_with_thermo(
 
 def _export_sbml_with_reactions(
     rxns, output_dir, mock_bees_object, *, extra_species=(), strict_invariant=True,
-    exporter_logger=None,
+    exporter_logger=None, add_reaction_species=True, explored=(),
 ):
     """Build an enlarger, attach reactions and species, export SBML, return path.
 
@@ -301,7 +301,7 @@ def _export_sbml_with_reactions(
     species_seen = set()
     for rxn in rxns:
         for lab in list(rxn.reactant_labels) + list(rxn.product_labels):
-            if lab in species_seen:
+            if not add_reaction_species or lab in species_seen:
                 continue
             species_seen.add(lab)
             enlarger.model.add_core_species(SpeciesData(label=lab, concentration=1.0))
@@ -314,6 +314,7 @@ def _export_sbml_with_reactions(
         enlarger.model.core_reactions.append(rxn)
     for sd in extra_species:
         enlarger.model.add_core_species(sd)
+    enlarger.model.explored_species_lc.update(lab.lower() for lab in explored)
 
 
     exporter = EnlargerExporter(
@@ -520,7 +521,8 @@ def test_feedback_inhibitors_exported_as_shared_site(mock_bees_object, output_di
             SpeciesData(label="inh_y", concentration=0.0),
         ),
     )
-    m = libsbml.SBMLReader().readSBMLFromFile(path).getModel()
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    m = doc.getModel()
     conc = {"a": 0.1, "b": 0.0, "inh_x": 0.005, "inh_y": 0.005}
     ns = {p.getId(): p.getValue() for p in m.getListOfParameters()}
     ns["compartment1"] = 1.0
@@ -558,7 +560,8 @@ def test_sbml_kinetic_laws_evaluate_like_simulator(mock_bees_object, output_dir)
     path = _export_sbml_with_reactions(
         [rxn_rev, rxn_pi], output_dir, mock_bees_object, strict_invariant=False,
     )
-    m = libsbml.SBMLReader().readSBMLFromFile(path).getModel()
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    m = doc.getModel()
     conc = {"a": 1.9e-6, "b": 2.27e-6, "h2o": 55.0, "c": 0.02}
     enz = {"enzymer": 0.01, "enzymep": 0.01}
     ns = {p.getId(): p.getValue() for p in m.getListOfParameters()}
@@ -594,7 +597,8 @@ def test_sbml_reversible_law_uses_1_molar_standard_state(mock_bees_object, outpu
     )
     rxn.kinetics.km_per_substrate = {"A": 0.1, "B": 0.1, "C": 0.1}
     path = _export_sbml_with_reactions([rxn], output_dir, mock_bees_object, strict_invariant=False)
-    m = libsbml.SBMLReader().readSBMLFromFile(path).getModel()
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    m = doc.getModel()
     formula = libsbml.formulaToL3String(m.getReaction(0).getKineticLaw().getMath()).replace("^", "**")
     enz = {"enzymer": 0.01}
     for conc in ({"a": 1.0, "b": 1.0, "c": 0.01}, {"a": 1.0, "b": 1.0, "c": 0.02},
@@ -658,15 +662,63 @@ def test_export_uses_single_arg_log_calls_on_missing_inhibitor(
     assert path is not None and os.path.exists(path)
 
 
-def test_free_fatty_acid_global_quantities_exported(mock_bees_object, output_dir):
-    """
-    The exporter must emit one global quantity (parameter + assignment rule)
-    for the Yu-2011 / Ruppe S2A time-course PE metric:
-      palmitic_equivalents_uM = 1000·Σ((carbons-2)/14)·[acid]
-    (malonyl-label weight: Yu et al. 2011 counts [2-14C]malonyl, palmitate = 7 units).
-    """
+def test_export_uses_single_arg_log_calls_on_missing_kinetics(
+    mock_bees_object, output_dir
+):
+    """A reaction without kinetics is exported without a rate law, not a crash."""
     libsbml = pytest.importorskip("libsbml")
 
+    rxn = _make_reaction_with_thermo(enzyme_label="E1")
+    rxn.kinetics = None
+    path = _export_sbml_with_reactions(
+        [rxn], output_dir, mock_bees_object, strict_invariant=False,
+        exporter_logger=_StrictLogger(),
+    )
+    assert path is not None and os.path.exists(path)
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    m = doc.getModel()
+    assert m.getNumReactions() == 1
+    assert not m.getReaction(0).isSetKineticLaw()
+
+
+def test_export_resolves_ontology_alias_like_simulator(mock_bees_object, output_dir):
+    """A reaction written with an alias (D-glucose) uses the model species (Glucose)."""
+    libsbml = pytest.importorskip("libsbml")
+    from bees.core_edge_model import SpeciesData
+
+    rxn = _make_reaction_with_thermo(enzyme_label="E1", reactant_labels=("D-glucose",), product_labels=("B",))
+    path = _export_sbml_with_reactions(
+        [rxn], output_dir, mock_bees_object, add_reaction_species=False,
+        extra_species=[SpeciesData(label="Glucose", concentration=1.0), SpeciesData(label="B", concentration=0.0)],
+    )
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    r = doc.getModel().getReaction(0)
+    assert [r.getReactant(i).getSpecies() for i in range(r.getNumReactants())] == ["Glucose"]
+
+
+def test_export_accepts_concentration_range(mock_bees_object, output_dir):
+    """A (min, max) concentration exports the lower bound, as the simulator uses."""
+    libsbml = pytest.importorskip("libsbml")
+
+    mock_bees_object.species[0].label = "A"
+    mock_bees_object.species[0].concentration = (2.0, 5.0)
+    mock_bees_object.enzymes[0].label = "EnzymeR"
+    mock_bees_object.enzymes[0].concentration = (0.01, 0.02)
+    rxn = _make_reaction_with_thermo()
+    path = _export_sbml_with_reactions(
+        [rxn], output_dir, mock_bees_object, strict_invariant=False,
+    )
+    doc = libsbml.readSBMLFromFile(path)
+    model = doc.getModel()
+    a = next(model.getSpecies(i) for i in range(model.getNumSpecies())
+             if model.getSpecies(i).getName() == "A")
+    assert a.getInitialConcentration() == pytest.approx(2.0)
+    enz = next(model.getParameter(i) for i in range(model.getNumParameters())
+               if model.getParameter(i).getName() == "[EnzymeR]")
+    assert enz.getValue() == pytest.approx(0.01)
+
+
+def _free_acid_reactions():
     rxn_c8 = _make_reaction_with_thermo(
         enzyme_label="TesA8", reactant_labels=("octanoyl-[ACP]",),
         product_labels=("octanoate",), thermo_source="fallback",
@@ -677,8 +729,31 @@ def test_free_fatty_acid_global_quantities_exported(mock_bees_object, output_dir
         product_labels=("hexadecanoate",), thermo_source="fallback",
         irreversible=True, keq=float("nan"), kcat_rev=None, dgr=float("nan"),
     )
+    return [rxn_c8, rxn_c16]
+
+
+def test_palmitic_equivalents_needs_a_fas_calibration(mock_bees_object, output_dir):
+    """A generic run (no FAS calibration enabled) writes no FAS observable."""
+    libsbml = pytest.importorskip("libsbml")
     path = _export_sbml_with_reactions(
-        [rxn_c8, rxn_c16], output_dir, mock_bees_object, strict_invariant=False,
+        _free_acid_reactions(), output_dir, mock_bees_object, strict_invariant=False,
+    )
+    doc = libsbml.SBMLReader().readSBMLFromFile(path)
+    assert doc.getModel().getParameter("palmitic_equivalents_uM") is None
+
+
+def test_free_fatty_acid_global_quantities_exported(mock_bees_object, output_dir):
+    """
+    With a FAS calibration enabled, the exporter must emit one global quantity
+    (parameter + assignment rule) for the Yu-2011 / Ruppe S2A time-course PE metric:
+      palmitic_equivalents_uM = 1000·Σ((carbons-2)/14)·[acid]
+    (malonyl-label weight: Yu et al. 2011 counts [2-14C]malonyl, palmitate = 7 units).
+    """
+    libsbml = pytest.importorskip("libsbml")
+
+    mock_bees_object.settings.calibrations = ["tesa_long_chain_preference"]
+    path = _export_sbml_with_reactions(
+        _free_acid_reactions(), output_dir, mock_bees_object, strict_invariant=False,
     )
     doc = libsbml.SBMLReader().readSBMLFromFile(path)
     m = doc.getModel()
@@ -747,11 +822,19 @@ class TestProductionOnlyInvariant:
         with pytest.raises(ValueError, match="produced but never consumed"):
             _export_sbml_with_reactions(rxns, output_dir, mock_bees_object)
 
-    def test_allows_free_fatty_acid_terminals(self, output_dir, mock_bees_object):
-        # "hexanoate" matches the *ate suffix → terminal-OK.
+    def test_allows_searched_end_products(self, output_dir, mock_bees_object):
+        # Searched for consumers and none found (e.g. a free fatty acid) → end product.
         rxns = self._make_pair(product_label="hexanoate")
-        path = _export_sbml_with_reactions(rxns, output_dir, mock_bees_object)
+        path = _export_sbml_with_reactions(
+            rxns, output_dir, mock_bees_object, explored=("hexanoate",),
+        )
         assert path is not None and os.path.exists(path)
+
+    def test_name_ending_in_ate_is_not_exempt(self, output_dir, mock_bees_object):
+        # Never searched: an "-ate" name alone does not hide the leak.
+        rxns = self._make_pair(product_label="pyruvate")
+        with pytest.raises(ValueError, match="produced but never consumed"):
+            _export_sbml_with_reactions(rxns, output_dir, mock_bees_object)
 
     def test_allows_general_cofactor_terminals(self, output_dir, mock_bees_object):
         # CoA is a general cofactor — production-only cofactors are not leaks.

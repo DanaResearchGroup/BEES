@@ -212,8 +212,52 @@ class TestIterativeEnlarger:
         )
         result = enlarger.run()
         assert isinstance(result, EnlargerResult)
+        assert result.converged
         assert result.iterations >= 1
         assert result.final_core_species >= 1
+        assert "s" in enlarger.model.explored_species_lc
+
+    def test_run_forgets_rule_values_from_a_previous_model(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        """A same-signature reaction from an earlier model must not overwrite this run's kinetics."""
+        from bees.reaction_generator import reaction_signature
+        from bees.rules import load_rules
+
+        rules = load_rules()
+        rxn = mock_reaction_generator._generate_reactions.return_value[0]
+        rules._baselines[reaction_signature(rxn)] = {
+            "kinetics": {"kcat": 999.0, "km": 1.0, "km_per_substrate": None},
+        }
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+        try:
+            enlarger.run()
+        finally:
+            rules.reset_baselines()
+        assert rxn.kinetics.kcat == 10.0
+
+    def test_flux_summary_has_final_iteration_when_run_stops_early(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        failed = SimulationResult(
+            t=np.array([]), y=np.zeros((0, 0)), species_labels=[],
+            success=False, message="solver failed",
+        )
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+        with patch("bees.enlarger.ODESimulator.simulate", return_value=failed):
+            result = enlarger.run()
+        assert result.iterations == 1
+        assert [row["iteration"] for row in enlarger._iteration_summaries] == [0, 1]
 
     def test_unmatched_feedback_inhibitor_warns(
         self, mock_bees_object, mock_reaction_generator, output_dir
@@ -336,19 +380,21 @@ class TestIterativeEnlarger:
             result = enlarger.run()
 
         assert result.iterations == 2
-        assert inst.simulate.call_count == 2
+        # Two growth passes, then the final model is simulated from t=0.
+        assert inst.simulate.call_count == 3
+        assert inst.simulate.call_args_list[2].kwargs["interrupt_simulation_tol"] == float("inf")
         assert not result.converged
         assert result.convergence_reason == "Reached max_iterations (2)."
 
     @patch("bees.enlarger.ODESimulator")
-    def test_sub_iteration_restart_calls_simulate_twice(
+    def test_interrupt_promotes_then_reruns(
         self,
         ode_cls,
         mock_bees_object,
         mock_reaction_generator,
         output_dir,
     ):
-        """Interrupt at toleranceInterruptSimulation triggers promote+reset; second run completes."""
+        """Interrupt at toleranceInterruptSimulation promotes the edge species; second run completes."""
         from bees.core_edge_model import SpeciesData
 
         mock_reaction_generator.ensure_estimator_initialized = MagicMock()
@@ -393,6 +439,7 @@ class TestIterativeEnlarger:
         )
         enlarger.run()
         assert sim_inst.simulate.call_count == 2
+        assert enlarger.model.is_core_species("prodx")
 
     @pytest.mark.parametrize(
         "peak_rr, expect_promoted",
@@ -579,45 +626,190 @@ class TestIterativeEnlarger:
         enlarger.model.prune_edge.assert_not_called()
 
 
-class TestResetToInitialConsistency:
-    """Every outer enlargement iteration must start from initial concentrations."""
+class TestResumeAfterInterrupt:
+    """Interrupt with nothing promotable resumes the pass from the interrupt time."""
 
-    def test_reset_called_before_each_outer_iteration(
-        self, mock_bees_object, mock_reaction_generator, output_dir
-    ):
-        """Ensure reset_concentrations_to_initial is called at the start of
-        each enlargement iteration, even when the previous run completed
-        without interrupt (and thus simulator left final-time concentrations
-        in the model)."""
-        logger = MagicMock()
+    @staticmethod
+    def _result(*, t_end, interrupted, success=True, message=""):
+        return SimulationResult(
+            t=np.array([0.0, t_end]),
+            y=np.ones((3, 2)),
+            species_labels=["S", "Enzyme", "prodx"],
+            success=success,
+            message=message,
+            simulation_interrupted=interrupted,
+            interrupt_char_rate=1.0 if interrupted else 0.0,
+            interrupt_edge_rates={"prodx": 1e-12} if interrupted else {},
+            max_char_rate=1.0,
+            final_char_rate=0.5,
+            max_edge_rate_ratio={},
+        )
+
+    def _enlarger(self, mock_bees_object, mock_reaction_generator, output_dir):
+        from bees.core_edge_model import SpeciesData
+
+        mock_bees_object.settings.toleranceInterruptSimulation = 1.0
+        mock_reaction_generator.ensure_estimator_initialized = MagicMock()
+        mock_reaction_generator._generate_reactions.return_value = []
         enlarger = IterativeEnlarger(
             bees_object=mock_bees_object,
             reaction_generator=mock_reaction_generator,
-            logger=logger,
+            logger=MagicMock(),
             output_directory=output_dir,
         )
         enlarger._initialise_model()
-        enlarger.reaction_generator.ensure_estimator_initialized = MagicMock()
+        enlarger.model.add_edge_species(
+            SpeciesData(label="prodx", concentration=0.0, initial_concentration=0.0)
+        )
+        return enlarger
 
-        no_interrupt_result = SimulationResult(
-            t=np.array([0.0, 50.0, 100.0]),
-            y=np.array([[10.0, 5.0, 2.0]]),
-            species_labels=["s"],
-            success=True,
-            simulation_interrupted=False,
-            max_char_rate=1.0,
-            final_char_rate=0.5,
+    @patch("bees.enlarger.ODESimulator")
+    def test_clean_resume_resimulates_from_zero_and_converges(
+        self, ode_cls, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        full = self._result(t_end=100.0, interrupted=False)
+        sim_inst = MagicMock()
+        sim_inst.simulate.side_effect = [
+            self._result(t_end=30.0, interrupted=True),
+            self._result(t_end=70.0, interrupted=False),
+            full,
+        ]
+        ode_cls.return_value = sim_inst
+        enlarger = self._enlarger(mock_bees_object, mock_reaction_generator, output_dir)
+        result = enlarger.run()
+
+        assert sim_inst.simulate.call_count == 3
+        resume_kwargs = sim_inst.simulate.call_args_list[1].kwargs
+        assert resume_kwargs["end_time"] == pytest.approx(70.0)
+        for key in ("method", "rtol", "atol", "max_wall_time_s"):
+            assert key in resume_kwargs
+        final_kwargs = sim_inst.simulate.call_args_list[2].kwargs
+        assert final_kwargs["end_time"] == 100.0
+        assert final_kwargs["interrupt_simulation_tol"] == float("inf")
+        assert result.converged
+        assert result.simulation_profiles[-1] is full
+
+    @patch("bees.enlarger.ODESimulator")
+    def test_failed_resume_is_reported(
+        self, ode_cls, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        sim_inst = MagicMock()
+        sim_inst.simulate.side_effect = [
+            self._result(t_end=30.0, interrupted=True),
+            self._result(t_end=40.0, interrupted=False, success=False, message="boom"),
+        ]
+        ode_cls.return_value = sim_inst
+        enlarger = self._enlarger(mock_bees_object, mock_reaction_generator, output_dir)
+        result = enlarger.run()
+
+        assert not result.converged
+        assert result.convergence_reason == "ODE failure on resume: boom"
+
+    @patch("bees.enlarger.ODESimulator")
+    def test_final_profile_resimulated_when_model_grew_after_last_pass(
+        self, ode_cls, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        """Hitting max_iterations right after a promotion must not export the stale, cut-off pass."""
+        mock_bees_object.settings.max_iterations = 1
+        interrupted = self._result(t_end=30.0, interrupted=True)
+        interrupted.interrupt_edge_rates = {"prodx": 1.0}
+        full = self._result(t_end=100.0, interrupted=False)
+        sim_inst = MagicMock()
+        sim_inst.simulate.side_effect = [interrupted, full]
+        ode_cls.return_value = sim_inst
+        enlarger = self._enlarger(mock_bees_object, mock_reaction_generator, output_dir)
+        result = enlarger.run()
+
+        assert enlarger.model.is_core_species("prodx")
+        assert result.convergence_reason == "Reached max_iterations (1)."
+        assert sim_inst.simulate.call_count == 2
+        assert sim_inst.simulate.call_args_list[1].kwargs["interrupt_simulation_tol"] == float("inf")
+        assert result.simulation_profiles[-1] is full
+
+    def test_reaction_level_promotion_keeps_strongest(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        from bees.core_edge_model import SpeciesData
+
+        mock_bees_object.settings.toleranceMoveEdgeReactionToCore = 0.1
+        mock_bees_object.settings.max_num_objects_per_iter = 1
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+        for label in ("weak", "strong"):
+            enlarger.model.add_edge_species(SpeciesData(label=label, concentration=0.0))
+        enlarger._reaction_obj_by_sig = {
+            "sig_weak": _make_reaction(reactant_labels=["S"], product_labels=["weak"]),
+            "sig_strong": _make_reaction(reactant_labels=["S"], product_labels=["strong"]),
+        }
+        sim = SimulationResult(
+            t=np.array([0.0]), y=np.zeros((1, 1)), species_labels=["S"], success=True,
+        )
+        sim.max_edge_reaction_dlnaccum = {"sig_weak": 1.0, "sig_strong": 5.0}
+        assert enlarger._reaction_level_promotions(sim) == ["strong"]
+
+    def test_reaction_level_promotion_ignores_label_case(
+        self, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        from bees.core_edge_model import SpeciesData
+
+        mock_bees_object.settings.toleranceMoveEdgeReactionToCore = 0.1
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+        enlarger.model.add_edge_species(SpeciesData(label="Malonyl-CoA", concentration=0.0))
+        enlarger._reaction_obj_by_sig = {
+            "sig": _make_reaction(reactant_labels=["S"], product_labels=["malonyl-coa"]),
+        }
+        sim = SimulationResult(
+            t=np.array([0.0]), y=np.zeros((1, 1)), species_labels=["S"], success=True,
+        )
+        sim.max_edge_reaction_dlnaccum = {"sig": 5.0}
+        assert enlarger._reaction_level_promotions(sim) == ["Malonyl-CoA"]
+
+
+class TestResetToInitialConsistency:
+    """Every outer enlargement iteration must start from initial concentrations."""
+
+    @patch("bees.enlarger.ODESimulator")
+    def test_reset_called_before_each_outer_iteration(
+        self, ode_cls, mock_bees_object, mock_reaction_generator, output_dir
+    ):
+        """Each enlargement iteration starts from initial concentrations, even though
+        the simulator leaves final-time concentrations in the model."""
+        from bees.core_edge_model import SpeciesData
+
+        mock_reaction_generator.ensure_estimator_initialized = MagicMock()
+        mock_reaction_generator._generate_reactions.return_value = []
+        enlarger = IterativeEnlarger(
+            bees_object=mock_bees_object,
+            reaction_generator=mock_reaction_generator,
+            logger=MagicMock(),
+            output_directory=output_dir,
+        )
+        enlarger._initialise_model()
+        enlarger.model.add_edge_species(
+            SpeciesData(label="prodx", concentration=0.0, initial_concentration=0.0)
         )
 
-        with patch("bees.enlarger.ODESimulator") as MockSim:
-            instance = MockSim.return_value
-            instance.simulate.return_value = no_interrupt_result
-            enlarger.run()
+        results = iter([_interrupt_result(True, "prodx"), _interrupt_result(False)])
+        at_initial = []
 
-        for sp in enlarger.model.core_species:
-            if not sp.constant:
-                assert sp.concentration == sp.initial_concentration, (
-                    f"{sp.label}: concentration should have been reset "
-                    f"to initial ({sp.initial_concentration}) at the top "
-                    f"of each iteration, got {sp.concentration}"
-                )
+        def simulate(**_kwargs):
+            variable = [sp for sp in enlarger.model.core_species if not sp.constant]
+            at_initial.append(all(sp.concentration == sp.initial_concentration for sp in variable))
+            for sp in variable:
+                sp.concentration = sp.initial_concentration + 123.0
+            return next(results)
+
+        ode_cls.return_value.simulate.side_effect = simulate
+        enlarger.run()
+
+        assert len(at_initial) == 2
+        assert all(at_initial), at_initial

@@ -26,7 +26,8 @@ from bees.core_edge_model import CoreEdgeModel, SpeciesData
 from bees.enzyme_sharing import PartitionCompetition, format_sharing_terms
 from bees.flux_calculator import format_rate_law, rate_law_spec
 from bees.reaction_generator import GeneratedReaction, reaction_signature
-from bees.simulator import SimulationResult, rate_law_options_of
+from bees.rules import load_rules
+from bees.simulator import SimulationResult, build_alias_to_model_label, rate_law_options_of
 
 try:
     import libsbml as _libsbml  # python-libsbml
@@ -398,7 +399,7 @@ class EnlargerExporter:
         Kinetic laws are the ones the simulator evaluates (flux_calculator.rate_law_spec):
         reversible CM in the (1 - Q/Keq) form, product-inhibited CM, or legacy MM,
         times the feedback factor. ``strict_invariant=True`` raises on production-only
-        species (warns by default). See knowledge/functions/EXPORTER.md.
+        species (warns by default).
         """
         if not _LIBSBML_AVAILABLE:
             self.logger.warning(
@@ -478,12 +479,23 @@ class EnlargerExporter:
             label_to_id[sd.label.lower().strip()] = sid
             used_ids.add(sid)
 
+        alias_to_model = build_alias_to_model_label(self.model.get_all_species_labels())
+
+        def _species_id(label: str) -> Optional[str]:
+            """SBML id of the species the simulator resolves ``label`` to (ontology aliases included)."""
+            lc = str(label).lower().strip()
+            return label_to_id.get(alias_to_model.get(lc, lc))
+
         input_concs = {}
         if self.bees_object is not None:
-            for sp in getattr(self.bees_object, "species", []) or []:
-                input_concs[str(sp.label).lower().strip()] = getattr(sp, "concentration", 0.0)
-            for enz in getattr(self.bees_object, "enzymes", []) or []:
-                input_concs[str(enz.label).lower().strip()] = getattr(enz, "concentration", 0.0)
+            for sp in (
+                list(getattr(self.bees_object, "species", []) or [])
+                + list(getattr(self.bees_object, "enzymes", []) or [])
+            ):
+                conc = getattr(sp, "concentration", 0.0)
+                if isinstance(conc, tuple):
+                    conc = conc[0]  # same lower bound the simulator starts from
+                input_concs[str(sp.label).lower().strip()] = conc
 
         for sd in species_list:
             lc = sd.label.lower().strip()
@@ -534,20 +546,30 @@ class EnlargerExporter:
             for lab in getattr(rxn, "reactant_labels", ()) or ():
                 edge_consumed_lcs.add(lab.lower().strip())
 
+        # Searched for consumers and none found = end product (e.g. a free fatty acid).
+        explored_lcs: Set[str] = getattr(self.model, "explored_species_lc", set())
         leaks: List[str] = []
         branch_exits: List[str] = []
+        end_products: List[str] = []
         for sp_lc in sorted(produced_lcs - consumed_lcs):
             if sp_lc in boundary_labels:
                 continue
-            # Cofactors + FFA (ate / oic acid) exempt.
             if is_general_cofactor_label(sp_lc):
-                continue
-            if sp_lc.endswith("ate") or sp_lc.endswith("oic acid"):
                 continue
             if sp_lc in edge_consumed_lcs:
                 branch_exits.append(sp_lc)
                 continue
+            if sp_lc in explored_lcs:
+                end_products.append(sp_lc)
+                continue
             leaks.append(sp_lc)
+
+        if end_products:
+            preview = ", ".join(end_products[:10]) + ("…" if len(end_products) > 10 else "")
+            self.logger.info(
+                f"SBML export: {len(end_products)} end product(s) (produced, no consuming "
+                f"reaction found): {preview}"
+            )
 
         if branch_exits:
             preview = ", ".join(branch_exits[:10]) + ("…" if len(branch_exits) > 10 else "")
@@ -625,8 +647,7 @@ class EnlargerExporter:
             td = getattr(rxn, "thermo", None)
 
             for r_label in rxn.reactant_labels:
-                lc = r_label.lower().strip()
-                sid = label_to_id.get(lc)
+                sid = _species_id(r_label)
                 if sid is None:
                     continue
                 sr = sbml_rxn.createReactant()
@@ -636,8 +657,7 @@ class EnlargerExporter:
                 sr.setConstant(True)
 
             for p_label in rxn.product_labels:
-                lc = p_label.lower().strip()
-                sid = label_to_id.get(lc)
+                sid = _species_id(p_label)
                 if sid is None:
                     continue
                 sp2 = sbml_rxn.createProduct()
@@ -649,9 +669,8 @@ class EnlargerExporter:
             kin = getattr(rxn, "kinetics", None)
             if kin is None or getattr(rxn, "rate_law", None) is None:
                 self.logger.debug(
-                    "SBML: %s skipped kinetic law (no kinetics/rate_law) — "
-                    "reaction structure exported without rate equation",
-                    rid,
+                    f"SBML: {rid} skipped kinetic law (no kinetics/rate_law) — "
+                    "reaction structure exported without rate equation"
                 )
                 sbml_rxn.setName(
                     f"{rxn.enzyme_label}: {' + '.join(rxn.reactant_labels)} -> {' + '.join(rxn.product_labels)}"
@@ -724,7 +743,7 @@ class EnlargerExporter:
                     return pid
 
                 others = format_sharing_terms(
-                    terms, lambda lab: label_to_id.get(lab.lower().strip()), _kc,
+                    terms, _species_id, _kc,
                 )
                 if terms and others is None:
                     self.logger.warning(
@@ -734,7 +753,7 @@ class EnlargerExporter:
 
             formula = format_rate_law(
                 spec,
-                conc=lambda lab: label_to_id.get(lab.lower().strip()),
+                conc=_species_id,
                 km=lambda lab, role: km_pids[(lab, role)],
                 vf=vf,
                 keq=keq_pid,
@@ -749,7 +768,7 @@ class EnlargerExporter:
                 ):
                     present.update(getter(j).getSpecies() for j in range(n))
                 for lab in k_of:
-                    sid = label_to_id.get(lab.lower().strip())
+                    sid = _species_id(lab)
                     if sid is not None and sid not in present:
                         sbml_rxn.createModifier().setSpecies(sid)
                         present.add(sid)
@@ -763,7 +782,7 @@ class EnlargerExporter:
                 }
                 fb_terms = []
                 for inh_label, (ki_val, hill_val) in fb.items():
-                    inh_sid = label_to_id.get(str(inh_label).lower().strip())
+                    inh_sid = _species_id(inh_label)
                     if inh_sid is None:
                         self.logger.debug(
                             f"SBML: {rid} feedback inhibitor {inh_label!r} "
@@ -797,8 +816,8 @@ class EnlargerExporter:
             _ast = _libsbml.parseL3Formula(formula)
             if _ast is None:
                 self.logger.warning(
-                    "SBML: %s parseL3Formula failed (%s) — falling back to setFormula",
-                    rid, _libsbml.getLastParseL3Error(),
+                    f"SBML: {rid} parseL3Formula failed "
+                    f"({_libsbml.getLastParseL3Error()}) — falling back to setFormula"
                 )
                 kl.setFormula(formula)
             else:
@@ -826,49 +845,20 @@ class EnlargerExporter:
                     + "</p></body>"
                 )
 
-        # ----------------------------------------------------------------
-        # Palmitic equivalents assignment rule - aligning with Yu et al. 2011 
-        # used for the fas project solo.
-        # Yu counts [2-14C]malonyl label: C_n carries (n-2)/2 labelled units
-        # (acetyl primer unlabelled) vs 7 in palmitate -> weight (n-2)/14.
-        # ----------------------------------------------------------------
-        _FA_STEMS = [  # most specific first so e.g. 'hexadec' wins over 'hex'
-            ("icosen", 20), ("icosan", 20), ("octadecen", 18), ("octadecan", 18),
-            ("hexadecen", 16), ("hexadecan", 16), ("tetradecen", 14), ("tetradecan", 14),
-            ("dodecen", 12), ("dodecan", 12), ("decen", 10), ("decan", 10),
-            ("octen", 8), ("octan", 8), ("hexen", 6), ("hexan", 6),
-            ("penten", 5), ("pentan", 5), ("buten", 4), ("butan", 4),
-        ]
-
-        def _fa_carbons(label: str) -> Optional[int]:
-            n = label.lower()
-            if "[acp]" in n or not n.endswith("oate"):
-                return None  # ACP thioester or not a free acid
-            for stem, c in _FA_STEMS:
-                if stem in n:
-                    return c
-            return None
-
-        fa_palm_terms: List[str] = []
-        for sd in species_list:
-            c = _fa_carbons(sd.label)
-            if c is None:
-                continue
-            sid = label_to_id[sd.label.lower().strip()]
-            fa_palm_terms.append(f"({c - 2}/14) * {sid}")
-
-        if fa_palm_terms:
-            pid = "palmitic_equivalents_uM"
+        # System observables (e.g. FAS palmitic equivalents) come from the enabled
+        # calibration modules, so a generic run writes none.
+        settings = getattr(self.bees_object, "settings", None)
+        enabled_calibrations = getattr(settings, "calibrations", None) or []
+        species_ids = {sd.label: label_to_id[sd.label.lower().strip()] for sd in species_list}
+        for pid, name, formula in load_rules().observables(enabled_calibrations, species_ids):
             p = model.createParameter()
             p.setId(pid)
-            p.setName("Palmitic equivalents(uM)")
-            p.setConstant(False)  
+            p.setName(name)
+            p.setConstant(False)
             p.setValue(0.0)
             rule = model.createAssignmentRule()
             rule.setVariable(pid)
-            ast = _libsbml.parseL3Formula(
-                "1000 * (" + " + ".join(fa_palm_terms) + ")"
-            )
+            ast = _libsbml.parseL3Formula(formula)
             if ast is None:
                 self.logger.warning(
                     f"SBML: failed to parse assignment rule for {pid} "
@@ -899,7 +889,7 @@ class EnlargerExporter:
             )
             return output_path
         else:
-            self.logger.warning(f"SBML export failed (libsbml writer returned error).")
+            self.logger.warning("SBML export failed (libsbml writer returned error).")
             return None
 
 

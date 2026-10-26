@@ -48,6 +48,8 @@ class CoreEdgeModel:
         self._edge_species_labels_lc: Set[str] = set()
         self._known_reaction_signatures: Set[tuple] = set()
         self.rate_law_options = RateLawOptions()
+        # Lowercase labels already searched for reactions that consume them.
+        self.explored_species_lc: Set[str] = set()
 
     # ------------------------------------------------------------------
     # Species management
@@ -153,13 +155,25 @@ class CoreEdgeModel:
         return True
 
     def prune_edge(self, labels_to_remove: Set[str]) -> int:
-        """Remove species from the edge by lowercase label; returns count removed."""
-        removed = 0
+        """Remove species from the edge by lowercase label; returns count removed.
+
+        Edge reactions that use a removed species go too (and may be regenerated later).
+        """
+        removed_lc: Set[str] = set()
         for lc in list(labels_to_remove):
             if lc in self._edge_species_labels_lc:
                 self._remove_edge_species(lc)
-                removed += 1
-        return removed
+                removed_lc.add(lc)
+        if removed_lc:
+            kept = []
+            for rxn in self.edge_reactions:
+                labels = list(rxn.reactant_labels) + list(rxn.product_labels)
+                if any(lab.lower().strip() in removed_lc for lab in labels):
+                    self._known_reaction_signatures.discard(reaction_signature(rxn))
+                else:
+                    kept.append(rxn)
+            self.edge_reactions = kept
+        return len(removed_lc)
 
     # ------------------------------------------------------------------
     # Concentration vector helpers

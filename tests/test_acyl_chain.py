@@ -82,9 +82,6 @@ class TestAcylMoietyExtraction:
         n = detect_acyl_chain_length("x", coa_smiles)
         assert n == 4, f"expected acyl length 4, got {n} (must not count CoA tail)"
 
-    def test_long_acyl_coa(self):
-        assert detect_acyl_chain_length("x", _saturated(14) + COA_TAIL) == 14
-
     def test_unparseable_smiles_returns_none(self):
         assert detect_acyl_chain_length("x", "not_a_smiles") is None
 

@@ -25,12 +25,6 @@ from bees.cofactors import ENERGY_CARRIERS, _acp_thioester_label_permutations
 
 BEES_PATH = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
-# Define base paths for projects and data relative to BEES_PATH
-
-
-PROJECTS_BASE_PATH = os.path.join(BEES_PATH, 'projects')
-DATA_BASE_PATH = os.path.join(BEES_PATH, 'data')
-
 VERSION = '0.1.0'  
 
 
@@ -179,7 +173,7 @@ def get_ontology_equivalents(label: str) -> List[str]:
     # concrete molecules to match generic reaction templates via their category alias.
     if l_lc in categories_raw:
         out.extend(categories_raw[l_lc])
-    return list(dict.fromkeys(out))
+    return list(dict.fromkeys(str(x).lower().strip() for x in out))
 
 
 def get_chemical_aliases(molecule_label: str) -> List[str]:

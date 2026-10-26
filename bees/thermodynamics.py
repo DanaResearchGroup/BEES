@@ -39,7 +39,7 @@ _SIGMA_WARN_KJMOL = 10.0        # σ threshold ⇒ Keq uncertain by >50×
 logger = logging.getLogger("BEES")
 
 def _is_disabled() -> bool:
-    return os.environ.get("BEES_DISABLE_THERMO", "").strip() not in ("", "0", "false", "False")
+    return os.environ.get("BEES_DISABLE_THERMO", "").strip().lower() not in ("", "0", "false", "off", "no")
 
 @dataclass
 class ThermoData:
@@ -182,6 +182,7 @@ class ThermoEngine:
             return None  # cached miss
 
         cpd = None
+        lookup_error = False
         try:
             if inchi:
                 cpd = cc.get_compound_by_inchi(inchi)
@@ -213,9 +214,12 @@ class ThermoEngine:
                 except Exception:
                     cpd = None
         except Exception as e:
-            logger.debug("Compound lookup failed for smiles=%r: %s", smiles, e)
+            logger.warning("Compound lookup failed for smiles=%r: %s", smiles, e)
             cpd = None
+            lookup_error = True
 
+        if cpd is None and lookup_error:
+            return None  # possibly transient; do not persist as a miss
         if cpd is None:
             self.cache.set("compound", cache_key, None)  # persist miss only
             logger.info(

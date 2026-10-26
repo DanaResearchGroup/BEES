@@ -97,6 +97,30 @@ class TestPruneEdge:
         assert model.is_edge_species("ADP")
         assert not model.is_edge_species("Fructose-6P")
 
+    def test_prune_edge_drops_reactions_of_pruned_species(self, model, species_a, species_b):
+        from types import SimpleNamespace
+
+        model.add_core_species(species_a)
+        model.add_edge_species(species_b)
+        model.add_edge_species(SpeciesData(label="ADP", concentration=0.0))
+
+        def rxn(product):
+            return SimpleNamespace(
+                enzyme_label="E", reactant_labels=["Glucose"], product_labels=[product],
+            )
+
+        model.add_reaction(rxn("Fructose-6P"))
+        model.add_reaction(rxn("ADP"))
+        assert len(model.edge_reactions) == 2
+
+        model.prune_edge({"fructose-6p"})
+        assert [r.product_labels for r in model.edge_reactions] == [["ADP"]]
+
+        # The dropped reaction can be regenerated if the species comes back.
+        model.add_edge_species(species_b)
+        model.add_reaction(rxn("Fructose-6P"))
+        assert len(model.edge_reactions) == 2
+
 
 # ---------------------------------------------------------------------------
 # Concentration vector tests

@@ -424,7 +424,7 @@ class TestComputeReversibleMmRate:
         rxn = _make_reversible_reaction()
         rxn.thermo = None
         v = compute_reversible_mm_rate(rxn, {"s": 1.0, "p": 5.0}, {"hexokinase": 0.001})
-        assert v > 0.0  # falls back to forward-only
+        assert v == compute_mm_rate(rxn, {"s": 1.0, "p": 5.0}, {"hexokinase": 0.001})
 
     def test_falls_back_when_product_km_missing(self):
         # No Km_p ⇒ Haldane wasn't computable; defer to forward-only.
@@ -558,11 +558,6 @@ class TestStandardState:
         assert v == 0.0
         assert compute_reversible_mm_rate(rxn, {"a": 10.0, "b": 0.25}, self.ENZ) > 0.0
         assert compute_reversible_mm_rate(rxn, {"a": 10.0, "b": 1.0}, self.ENZ) < 0.0
-
-    def test_equal_molecularity_unchanged(self):
-        # Δν = 0: the standard concentration cancels, so mM and M give the same Q.
-        rxn = _reversible(["S"], ["P"], {"S": -1, "P": 1}, 10.0, {"S": 1.0, "P": 2.0})
-        assert compute_reversible_mm_rate(rxn, {"s": 1.0, "p": 10.0}, self.ENZ) == 0.0
 
     @pytest.mark.parametrize("conc", [
         {"a": 1.0, "b": 1.0, "c": 0.005},

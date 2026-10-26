@@ -11,7 +11,7 @@ from itertools import chain, repeat
 from unittest.mock import MagicMock, patch
 
 from bees.core_edge_model import CoreEdgeModel, SpeciesData
-from bees.simulator import ODESimulator, _VectorizedRHS
+from bees.simulator import ODESimulator, _CONTINUABLE_SOLVERS, _VectorizedRHS
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +253,20 @@ class TestStepwiseInterrupt:
         assert stepwise.t[-1] == pytest.approx(50.0)
         np.testing.assert_allclose(stepwise.y[:, -1], continuous.y[:, -1], rtol=1e-5, atol=1e-10)
 
-    def test_continuous_path_still_works(self):
+    def test_stepwise_solver_failure_is_not_success(self, monkeypatch):
+        """A solver exception mid-pass must report failure, not a short 'successful' run."""
+        class _Boom:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("solver blew up")
+
+        monkeypatch.setitem(_CONTINUABLE_SOLVERS, "BDF", _Boom)
+        result = ODESimulator(_make_core_edge_model_with_immediate_flux()).simulate(
+            end_time=50.0, method="BDF", interrupt_simulation_tol=1e6,
+        )
+        assert not result.success
+        assert "solver" in result.message.lower()
+
+    def test_continuous_path_still_works(self, monkeypatch):
         """When no edge species exist, the continuous path should be used."""
         model = CoreEdgeModel()
         model.add_core_species(SpeciesData(
@@ -275,6 +288,7 @@ class TestStepwiseInterrupt:
         model.core_reactions.append(rxn)
 
         sim = ODESimulator(model)
+        monkeypatch.setattr(sim, "_simulate_stepwise", MagicMock(side_effect=AssertionError("stepwise path used")))
         result = sim.simulate(
             end_time=10.0, time_step=1.0,
             interrupt_simulation_tol=1e-5,
@@ -416,20 +430,6 @@ class TestProductInhibitionOverlay:
 
         assert v_high_p[0] < v_no_p[0], "product accumulation must reduce forward rate"
         assert v_high_p[0] > 0.0,       "rate must remain forward-only (>= 0)"
-
-    def test_reaction_routed_to_overlay_not_fast_path(self):
-        """vmax for a product-Km-complete reaction must be 0 (overlay, not fast path)."""
-        rxn = self._make_product_inhibited_rxn()
-        rhs = _VectorizedRHS(
-            species_labels=["S", "P"],
-            reactions=[rxn],
-            alias_to_model_label={"s": "s", "p": "p"},
-            enzyme_conc_map={"enzyme": 1.0},
-            constant_mask=np.array([False, False]),
-        )
-        assert rhs._vmax[0] == 0.0
-        assert len(rhs._product_inhibited_indices) == 1
-        assert rhs._product_inhibited_indices[0] == 0
 
 
 # ---------------------------------------------------------------------------

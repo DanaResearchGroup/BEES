@@ -1,8 +1,9 @@
-"""Unit tests for RuleRegistry.configure_calibrations.
+"""Unit tests for RuleRegistry.configure_calibrations and per-run registry state.
 
 Verifies that settings.calibrations enables exactly the named calibrations,
-never a physics law or an unknown name, and that state does not leak across
-calls (the global-singleton reset).
+never a physics law or an unknown name, that state does not leak across
+calls (the global-singleton reset), and that calibration observables follow
+the enabled set.
 """
 from __future__ import annotations
 
@@ -40,16 +41,19 @@ def test_enables_exactly_named_calibration():
     assert _enabled(reg) == {"a_law": True, "cal_one": True, "cal_two": False}
 
 
-def test_empty_disables_all_calibrations_law_untouched():
+def test_empty_turns_previous_calibrations_off_law_untouched():
     reg = _registry()
+    reg.configure_calibrations(["cal_one", "cal_two"])
+    # A subsequent run that lists nothing must turn them back off (no leak across calls).
     reg.configure_calibrations([])
     assert _enabled(reg) == {"a_law": True, "cal_one": False, "cal_two": False}
 
 
 def test_none_is_treated_as_empty():
     reg = _registry()
+    reg.configure_calibrations(["cal_one", "cal_two"])
     reg.configure_calibrations(None)
-    assert all(not r.enabled for r in reg if r.kind == "calibration")
+    assert _enabled(reg) == {"a_law": True, "cal_one": False, "cal_two": False}
 
 
 def test_law_name_rejected():
@@ -60,18 +64,45 @@ def test_law_name_rejected():
 
 def test_unknown_name_rejected_lists_available():
     reg = _registry()
-    with pytest.raises(ValueError, match="Unknown calibration"):
+    with pytest.raises(ValueError, match=r"Unknown calibration 'nope'.*Available calibrations: .*cal_one.*cal_two"):
         reg.configure_calibrations(["nope"])
 
 
-def test_no_leak_across_calls():
+def test_reset_baselines_forgets_a_previous_models_values():
+    from types import SimpleNamespace
+
+    class Double(Rule):
+        def apply(self, reaction):
+            reaction.kinetics.kcat *= 2
+
+    def rxn(kcat):
+        return SimpleNamespace(
+            enzyme_label="E", reactant_labels=["S"], product_labels=["P"],
+            kinetics=SimpleNamespace(kcat=kcat, km=1.0, km_per_substrate=None), thermo=None,
+        )
+
+    reg = RuleRegistry()
+    reg.register(Double(name="double", description="t",
+                        reference=Reference(authors=("T",), title="t", year="2024"),
+                        reference_type="theoretical"))
+    first = rxn(10.0)
+    reg.apply_all([first])
+    assert first.kinetics.kcat == 20.0
+
+    reg.reset_baselines()
+    second = rxn(50.0)  # same signature, new model
+    reg.apply_all([second])
+    assert second.kinetics.kcat == 100.0
+
+
+def test_observable_emitted_only_when_its_calibration_is_enabled():
     reg = _registry()
-    reg.configure_calibrations(["cal_one", "cal_two"])
-    assert reg.by_name("cal_one").enabled and reg.by_name("cal_two").enabled
-    # A subsequent run that lists nothing must turn them back off.
-    reg.configure_calibrations([])
-    assert not reg.by_name("cal_one").enabled
-    assert not reg.by_name("cal_two").enabled
+    reg.register_observable(lambda ids: ("obs", "Obs", " + ".join(ids.values())),
+                            calibrations=["cal_one"])
+    ids = {"A": "A_id", "B": "B_id"}
+    assert reg.observables([], ids) == []
+    assert reg.observables(["cal_two"], ids) == []
+    assert reg.observables(["cal_one"], ids) == [("obs", "Obs", "A_id + B_id")]
 
 
 def test_validation_failure_leaves_state_unchanged():
