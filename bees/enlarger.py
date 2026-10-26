@@ -5,8 +5,7 @@ Iterative Enlarger Module
 """
 
 import os
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from bees.core_edge_model import CoreEdgeModel, RateLawOptions, SpeciesData
@@ -26,12 +25,8 @@ class EnlargerResult:
     final_core_species: int = 0
     final_edge_species: int = 0
     final_core_reactions: int = 0
-    simulation_profiles: list = None  
+    simulation_profiles: list = field(default_factory=list)
     model: Optional[CoreEdgeModel] = None
-
-    def __post_init__(self):
-        if self.simulation_profiles is None:
-            self.simulation_profiles = []
 
 
 class IterativeEnlarger:
@@ -118,10 +113,8 @@ class IterativeEnlarger:
         # label_lc -> (peak |R_edge|/R_char over growth simulations while on the edge, iteration)
         self._edge_peak_rr: Dict[str, Tuple[float, int]] = {}
 
-        # Caches / backoff to avoid repeated slow no-hit searches.
+        # (ec, substrate) pairs that found no reaction; not searched again.
         self._rxn_nohit_cache: Set = set()
-        self._enzyme_nohit_counts: Dict = {}
-        self._skip_enzyme_ec_numbers: Set = set()
 
         self._thermo_engine = self._build_thermo_engine()
         self._substitutor = self._build_substitutor()
@@ -137,6 +130,8 @@ class IterativeEnlarger:
         self.logger.info("=" * 60)
 
         self._initialise_model()
+        from bees.rules import load_rules
+        load_rules().reset_baselines()
 
         self.reaction_generator.ensure_estimator_initialized()
 
@@ -158,16 +153,12 @@ class IterativeEnlarger:
         self.logger.info(
             f"Initial model: {self.model.summary()}"
         )
-        s0 = self.model.summary()
-        self._iteration_summaries = [{
-            "iteration": 0,
-            "core_species": s0["core_species"],
-            "edge_species": s0["edge_species"],
-            "core_reactions": s0["core_reactions"],
-            "edge_reactions": s0["edge_reactions"],
-        }]
+        self._iteration_summaries = []
+        self._record_iteration_summary(0)
 
         result = EnlargerResult(model=self.model)
+        model_changed_after_profile = False
+        ode_failed = False
 
         for iteration in range(1, self.max_iterations + 1):
             self.logger.info(f"--- Enlargement iteration {iteration} ---")
@@ -190,6 +181,7 @@ class IterativeEnlarger:
                 termination_conversion=self.termination_conversion,
             )
             self._profiles.append(sim_result)
+            model_changed_after_profile = False
             self._record_edge_peaks(sim_result, iteration)
 
             if self.save_ode_equations and sim_result.success:
@@ -206,132 +198,56 @@ class IterativeEnlarger:
             if not sim_result.success:
                 self.logger.warning(f"ODE simulation failed: {sim_result.message}")
                 result.convergence_reason = f"ODE failure: {sim_result.message}"
+                ode_failed = True
                 break
 
-            rxn_promote_species: List[str] = []
+            significant_sub, rxn_promote_species = self._promotion_candidates(sim_result)
+            t_offset = 0.0
             if (
-                self.tol_move_edge_reaction_to_core is not None
-                and self.tol_move_edge_reaction_to_core > 0
-                and sim_result.max_edge_reaction_dlnaccum
+                sim_result.simulation_interrupted
+                and not significant_sub
+                and not rxn_promote_species
             ):
-                violators = [
-                    (sig, dln)
-                    for sig, dln in sim_result.max_edge_reaction_dlnaccum.items()
-                    if dln > self.tol_move_edge_reaction_to_core
-                ]
-                violators.sort(key=lambda kv: kv[1], reverse=True)
-                edge_label_set = {sp.label for sp in self.model.edge_species}
-                for sig, dln in violators[: self.max_num_objects_per_iter]:
-                    rxn_obj = self._reaction_obj_by_sig.get(sig)
-                    if rxn_obj is None:
-                        continue
-                    for sp_label in list(rxn_obj.reactant_labels) + list(rxn_obj.product_labels):
-                        if sp_label in edge_label_set and sp_label not in rxn_promote_species:
-                            rxn_promote_species.append(sp_label)
-                if rxn_promote_species and self.logger:
-                    self.logger.info(
-                        f"  Reaction-level (dlnaccum) promotion: {len(violators)} edge reaction(s) "
-                        f"above tol={self.tol_move_edge_reaction_to_core}; "
-                        f"promoting {len(rxn_promote_species)} associated species."
-                    )
-
-            peak_sub = []
-            if not sim_result.simulation_interrupted:
-                peak_sub = identify_significant_species_from_peak_ratios(
-                    sim_result.max_edge_rate_ratio,
-                    self.tol_move_to_core,
-                    max_objects=self.max_num_objects_per_iter,
+                # Interrupt but nothing promotable: resume from here, don't terminate.
+                t_resume = float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0
+                max_edge_abs = max(
+                    (abs(r) for r in sim_result.interrupt_edge_rates.values()),
+                    default=0.0,
                 )
-
-            if sim_result.simulation_interrupted or peak_sub:
-                if sim_result.simulation_interrupted:
-                    significant_sub = identify_significant_species_at_interrupt(
-                        sim_result.interrupt_edge_rates,
-                        sim_result.interrupt_char_rate,
-                        self.tol_move_to_core,
-                        max_objects=self.max_num_objects_per_iter,
-                        abs_flux_floor=self.abs_flux_floor,
+                if t_resume >= self.end_time * 0.99:
+                    result.convergence_reason = (
+                        "ODE interrupted but no edge species exceeded "
+                        f"threshold (R_char={sim_result.interrupt_char_rate:.4e}, "
+                        f"max |R_edge|={max_edge_abs:.4e}, "
+                        f"tol={self.tol_move_to_core})."
                     )
-                else:
-                    significant_sub = peak_sub
-                if not significant_sub and not rxn_promote_species:
-                    # Interrupt but nothing promotable: resume from here, don't terminate.
-                    t_resume = float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0
-                    if t_resume < self.end_time * 0.99:
-                        max_edge_abs = max(
-                            (abs(r) for r in sim_result.interrupt_edge_rates.values()),
-                            default=0.0,
-                        )
-                        if self.logger:
-                            self.logger.info(
-                                f"  Interrupt at t={t_resume:.3e} s produced no new promotable "
-                                f"species (R_char={sim_result.interrupt_char_rate:.4e}, "
-                                f"max |R_edge|={max_edge_abs:.4e}); resuming simulation."
-                            )
-                        remaining_time = self.end_time - t_resume
-                        sim_result2 = simulator.simulate(
-                            end_time=remaining_time,
-                            time_step=self.end_time / 100.0,
-                            interrupt_simulation_tol=self.tol_interrupt_simulation,
-                            tol_move_edge_reaction_to_core=self.tol_move_edge_reaction_to_core,
-                        )
-                        if sim_result2.success and not sim_result2.simulation_interrupted:
-                            sim_result = sim_result2
-                        elif sim_result2.simulation_interrupted:
-                            sim_result = sim_result2
-                        self._record_edge_peaks(sim_result2, iteration)
-                        if not sim_result.success:
-                            result.convergence_reason = f"ODE failure on resume: {sim_result.message}"
-                            if self.logger:
-                                self.logger.warning(f"  {result.convergence_reason}")
-                            break
-                        if sim_result.simulation_interrupted:
-                            significant_sub = identify_significant_species_at_interrupt(
-                                sim_result.interrupt_edge_rates,
-                                sim_result.interrupt_char_rate,
-                                self.tol_move_to_core,
-                                max_objects=self.max_num_objects_per_iter,
-                                abs_flux_floor=self.abs_flux_floor,
-                            )
-                        else:
-                            significant_sub = identify_significant_species_from_peak_ratios(
-                                sim_result.max_edge_rate_ratio,
-                                self.tol_move_to_core,
-                                max_objects=self.max_num_objects_per_iter,
-                            )
-                        rxn_promote_species = []
-                        if (
-                            self.tol_move_edge_reaction_to_core is not None
-                            and self.tol_move_edge_reaction_to_core > 0
-                            and sim_result.max_edge_reaction_dlnaccum
-                        ):
-                            violators2 = [
-                                (sig, dln)
-                                for sig, dln in sim_result.max_edge_reaction_dlnaccum.items()
-                                if dln > self.tol_move_edge_reaction_to_core
-                            ]
-                            edge_label_set2 = {sp.label for sp in self.model.edge_species}
-                            for sig, _dln in violators2[: self.max_num_objects_per_iter]:
-                                rxn_obj = self._reaction_obj_by_sig.get(sig)
-                                if rxn_obj is None:
-                                    continue
-                                for sp_label in list(rxn_obj.reactant_labels) + list(rxn_obj.product_labels):
-                                    if sp_label in edge_label_set2 and sp_label not in rxn_promote_species:
-                                        rxn_promote_species.append(sp_label)
-                        if not significant_sub and not rxn_promote_species:
-                            max_edge_abs = max(
-                                (abs(r) for r in sim_result.interrupt_edge_rates.values()),
-                                default=0.0,
-                            )
-                            result.convergence_reason = (
-                                "ODE interrupted but no edge species exceeded "
-                                f"threshold (R_char={sim_result.interrupt_char_rate:.4e}, "
-                                f"max |R_edge|={max_edge_abs:.4e}, "
-                                f"tol={self.tol_move_to_core})."
-                            )
-                            self.logger.warning(f"  {result.convergence_reason}")
-                            break
-                    else:
+                    self.logger.warning(f"  {result.convergence_reason}")
+                    break
+                self.logger.info(
+                    f"  Interrupt at t={t_resume:.3e} s produced no new promotable "
+                    f"species (R_char={sim_result.interrupt_char_rate:.4e}, "
+                    f"max |R_edge|={max_edge_abs:.4e}); resuming simulation."
+                )
+                sim_result = simulator.simulate(
+                    end_time=self.end_time - t_resume,
+                    time_step=self.time_step,
+                    method=self.ode_method,
+                    rtol=self.ode_rtol,
+                    atol=self.ode_atol,
+                    interrupt_simulation_tol=self.tol_interrupt_simulation,
+                    tol_move_edge_reaction_to_core=self.tol_move_edge_reaction_to_core,
+                    max_wall_time_s=self.max_wall_time_per_iteration,
+                )
+                self._record_edge_peaks(sim_result, iteration)
+                if not sim_result.success:
+                    result.convergence_reason = f"ODE failure on resume: {sim_result.message}"
+                    ode_failed = True
+                    self.logger.warning(f"  {result.convergence_reason}")
+                    break
+                t_offset = t_resume
+                significant_sub, rxn_promote_species = self._promotion_candidates(sim_result)
+                if sim_result.simulation_interrupted:
+                    if not significant_sub and not rxn_promote_species:
                         max_edge_abs = max(
                             (abs(r) for r in sim_result.interrupt_edge_rates.values()),
                             default=0.0,
@@ -344,8 +260,27 @@ class IterativeEnlarger:
                         )
                         self.logger.warning(f"  {result.convergence_reason}")
                         break
+                elif not significant_sub:
+                    # Resumed run finished cleanly: termination and pruning need the
+                    # whole trajectory from t=0, not the resumed tail.
+                    self.logger.info(
+                        "  Resumed run reached end_time with nothing to promote; "
+                        "re-simulating from t=0 for termination checks."
+                    )
+                    sim_result = self._simulate_full_trajectory()
+                    if not sim_result.success:
+                        result.convergence_reason = f"ODE failure: {sim_result.message}"
+                        ode_failed = True
+                        self.logger.warning(f"  {result.convergence_reason}")
+                        break
+                    self._profiles[-1] = sim_result
+                    self._record_edge_peaks(sim_result, iteration)
+                    t_offset = 0.0
+                    significant_sub, rxn_promote_species = self._promotion_candidates(sim_result)
 
-                t_int = float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0
+            # A full (uninterrupted) run promotes only on peak ratio, as before.
+            if significant_sub or (sim_result.simulation_interrupted and rxn_promote_species):
+                t_int = t_offset + (float(sim_result.t[-1]) if len(sim_result.t) > 0 else 0.0)
                 labels_csv = ", ".join(sf.label for sf in significant_sub[:3])
                 if len(significant_sub) > 3:
                     labels_csv += f", ... (+{len(significant_sub) - 3} more)"
@@ -400,6 +335,7 @@ class IterativeEnlarger:
                 )
                 self._ingest_iteration = iteration
                 self._ingest_reactions(new_rxns_sub)
+                model_changed_after_profile = True
                 self._attach_thermo_to_reactions()
                 self._sync_reaction_tracking(iteration=iteration)
                 self.logger.info(
@@ -472,14 +408,7 @@ class IterativeEnlarger:
                 break
 
             self.logger.info(f"  Model status: {self.model.summary()}")
-            s_it = self.model.summary()
-            self._iteration_summaries.append({
-                "iteration": iteration,
-                "core_species": s_it["core_species"],
-                "edge_species": s_it["edge_species"],
-                "core_reactions": s_it["core_reactions"],
-                "edge_reactions": s_it["edge_reactions"],
-            })
+            self._record_iteration_summary(iteration)
             if result.converged:
                 break
 
@@ -489,8 +418,17 @@ class IterativeEnlarger:
             )
             self.logger.info(result.convergence_reason)
 
-        if self._profiles and self._profiles[-1].terminated_early:
-            self._replace_last_profile_with_full_run()
+        if self._iteration_summaries[-1]["iteration"] != result.iterations:
+            self._record_iteration_summary(result.iterations)
+
+        last = self._profiles[-1] if self._profiles else None
+        if last is not None and last.success and not ode_failed:
+            if last.terminated_early:
+                self._replace_last_profile_with_full_run("last growth pass stopped at termination")
+            elif last.simulation_interrupted:
+                self._replace_last_profile_with_full_run("last growth pass stopped at an interrupt")
+            elif model_changed_after_profile:
+                self._replace_last_profile_with_full_run("model grew after the last growth pass")
 
         summary = self.model.summary()
         result.final_core_species = summary["core_species"]
@@ -498,10 +436,6 @@ class IterativeEnlarger:
         result.final_core_reactions = summary["core_reactions"]
         result.simulation_profiles = self._profiles
         result.model = self.model
-        if result.iterations == 0:
-            result.iterations = min(
-                self.max_iterations, max(1, len(self._profiles))
-            )
 
         self.logger.info("=" * 60)
         self.logger.info("ENLARGEMENT SUMMARY")
@@ -524,6 +458,80 @@ class IterativeEnlarger:
         self._warn_unmatched_feedback_inhibitors()
 
         return result
+
+    def _record_iteration_summary(self, iteration: int) -> None:
+        s = self.model.summary()
+        self._iteration_summaries.append({
+            "iteration": iteration,
+            "core_species": s["core_species"],
+            "edge_species": s["edge_species"],
+            "core_reactions": s["core_reactions"],
+            "edge_reactions": s["edge_reactions"],
+        })
+
+    def _reaction_level_promotions(self, sim_result: SimulationResult) -> List[str]:
+        """Edge species of the strongest edge reactions above toleranceMoveEdgeReactionToCore."""
+        promote: List[str] = []
+        if (
+            self.tol_move_edge_reaction_to_core is None
+            or self.tol_move_edge_reaction_to_core <= 0
+            or not sim_result.max_edge_reaction_dlnaccum
+        ):
+            return promote
+        violators = [
+            (sig, dln)
+            for sig, dln in sim_result.max_edge_reaction_dlnaccum.items()
+            if dln > self.tol_move_edge_reaction_to_core
+        ]
+        violators.sort(key=lambda kv: kv[1], reverse=True)
+        edge_by_lc = {sp.label.lower().strip(): sp.label for sp in self.model.edge_species}
+        for sig, _dln in violators[: self.max_num_objects_per_iter]:
+            rxn_obj = self._reaction_obj_by_sig.get(sig)
+            if rxn_obj is None:
+                continue
+            for sp_label in list(rxn_obj.reactant_labels) + list(rxn_obj.product_labels):
+                edge_label = edge_by_lc.get(sp_label.lower().strip())
+                if edge_label is not None and edge_label not in promote:
+                    promote.append(edge_label)
+        if promote:
+            self.logger.info(
+                f"  Reaction-level (dlnaccum) promotion: {len(violators)} edge reaction(s) "
+                f"above tol={self.tol_move_edge_reaction_to_core}; "
+                f"promoting {len(promote)} associated species."
+            )
+        return promote
+
+    def _promotion_candidates(self, sim_result: SimulationResult):
+        """(species-level candidates, reaction-level species) for one simulation result."""
+        rxn_promote_species = self._reaction_level_promotions(sim_result)
+        if sim_result.simulation_interrupted:
+            significant_sub = identify_significant_species_at_interrupt(
+                sim_result.interrupt_edge_rates,
+                sim_result.interrupt_char_rate,
+                self.tol_move_to_core,
+                max_objects=self.max_num_objects_per_iter,
+                abs_flux_floor=self.abs_flux_floor,
+            )
+        else:
+            significant_sub = identify_significant_species_from_peak_ratios(
+                sim_result.max_edge_rate_ratio,
+                self.tol_move_to_core,
+                max_objects=self.max_num_objects_per_iter,
+            )
+        return significant_sub, rxn_promote_species
+
+    def _simulate_full_trajectory(self) -> SimulationResult:
+        """Simulate the current model from t=0 to end_time without interrupts."""
+        self.model.reset_concentrations_to_initial()
+        return ODESimulator(self.model, logger=self.logger).simulate(
+            end_time=self.end_time,
+            time_step=self.time_step,
+            method=self.ode_method,
+            rtol=self.ode_rtol,
+            atol=self.ode_atol,
+            interrupt_simulation_tol=float("inf"),
+            max_wall_time_s=self.max_wall_time_per_iteration,
+        )
 
     def _record_edge_peaks(self, sim_result: SimulationResult, iteration: int) -> None:
         """Keep, per edge species, the largest peak |R_edge|/R_char seen in any growth simulation."""
@@ -555,10 +563,8 @@ class IterativeEnlarger:
         with no Keq correction. A high fallback fraction (>5%) signals chemically
         inconsistent stoichiometry or unknown compounds and deserves review.
 
-        The configurable threshold is settings.max_thermo_fallback_fraction
-        (default 0.05 = 5%). Exceeding it emits a WARNING; a hard failure is
-        not raised so that legitimate niche reactions lacking equilibrator data
-        can still proceed.
+        Exceeding the threshold emits a WARNING; a hard failure is not raised so
+        that legitimate niche reactions lacking equilibrator data can still proceed.
         """
         fallback_rxns = [
             rxn for rxn in self.model.core_reactions
@@ -568,15 +574,11 @@ class IterativeEnlarger:
         n_total = len(self.model.core_reactions)
         fraction = n_fallback / n_total if n_total > 0 else 0.0
 
-        threshold = float(getattr(
-            getattr(self.bees_object, "settings", None),
-            "max_thermo_fallback_fraction",
-            0.05,
-        ))
+        threshold = 0.05
 
         if n_fallback == 0:
             self.logger.info(
-                f"Thermo fallback gate: 0 / {n_total} core reactions use fallback ΔG°' (all resolved). ✓"
+                f"Thermo fallback gate: 0 / {n_total} core reactions use fallback ΔG°' (all resolved)."
             )
         else:
             rxn_ids = []
@@ -625,6 +627,7 @@ class IterativeEnlarger:
         for label in species_labels:
             if label.lower().strip() in GENERAL_COFACTORS:
                 continue
+            self.model.explored_species_lc.add(label.lower().strip())
             substrate = SimpleNamespace(
                 label=label,
                 reactive=True,
@@ -637,13 +640,10 @@ class IterativeEnlarger:
                     ec = tuple(e.strip() for e in _ecval)
                 else:
                     ec = _ecval.strip()
-                if ec and ec in self._skip_enzyme_ec_numbers:
-                    continue
                 key = (ec, label.lower().strip())
                 if ec and key in self._rxn_nohit_cache:
                     continue
 
-                t0 = time.time()
                 rxns = self.reaction_generator._generate_reactions(
                     enzyme,
                     substrate,
@@ -653,19 +653,10 @@ class IterativeEnlarger:
                     global_smiles_map=self._global_smiles_map,
                     substitutor=self._substitutor,
                 )
-                dt = time.time() - t0
                 new_reactions.extend(rxns)
 
                 if ec and not rxns:
                     self._rxn_nohit_cache.add(key)
-                    self._enzyme_nohit_counts[ec] = self._enzyme_nohit_counts.get(ec, 0) + 1
-
-                    # FabA backoff: skip EC 4.2.1.60 after a slow no-hit (>30 s).
-                    if ec == "EC 4.2.1.60" and self._enzyme_nohit_counts[ec] >= 1 and dt > 30.0:
-                        self._skip_enzyme_ec_numbers.add(ec)
-                        self.logger.info(
-                            f"Skipping further reaction-generation calls for {ec} (repeated no-hits; last call {dt:.1f}s)."
-                        )
 
         return new_reactions
 
@@ -707,23 +698,14 @@ class IterativeEnlarger:
                 return True
         return False
 
-    def _replace_last_profile_with_full_run(self) -> None:
-        """Growth passes stop at termination; the exported profile must still span end_time."""
+    def _replace_last_profile_with_full_run(self, reason: str) -> None:
+        """The exported profile must be the final model simulated from t=0 to end_time."""
         t_stop = float(self._profiles[-1].t[-1]) if len(self._profiles[-1].t) else 0.0
         self.logger.info(
             f"  Final model simulation to end_time={self.end_time:g} s "
-            f"(last growth pass stopped at termination, t={t_stop:.3e} s)."
+            f"({reason}, t={t_stop:.3e} s)."
         )
-        self.model.reset_concentrations_to_initial()
-        full = ODESimulator(self.model, logger=self.logger).simulate(
-            end_time=self.end_time,
-            time_step=self.time_step,
-            method=self.ode_method,
-            rtol=self.ode_rtol,
-            atol=self.ode_atol,
-            interrupt_simulation_tol=float("inf"),
-            max_wall_time_s=self.max_wall_time_per_iteration,
-        )
+        full = self._simulate_full_trajectory()
         if full.success:
             self._profiles[-1] = full
         else:
