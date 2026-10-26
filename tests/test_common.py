@@ -158,6 +158,12 @@ def test_get_ontology_equivalents_acp_thioester_permutations():
     eq2 = get_ontology_equivalents("(5Z)-3-oxododecenoyl-[ACP]")
     assert "3-oxo-(5z)-dodecenoyl-[acp]" in eq2
 
+
+def test_get_ontology_equivalents_are_lowercase():
+    eq = get_ontology_equivalents("Glucose")
+    assert "d-glucose" in eq  # category alias, written "D-glucose" in ontology.yaml
+    assert all(e == e.lower() for e in eq)
+
 def test_save_yaml_file(tmp_path):
     """Test save_yaml_file function."""
     output_path = tmp_path / "output.yml"

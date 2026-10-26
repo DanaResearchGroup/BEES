@@ -29,6 +29,10 @@ from bees.reaction_utils import (
 from bees.kinetics_estimator import build_estimator
 from bees.thermodynamics import ThermoData
 
+# Buffered by the environment; never sent to CatPred as substrates.
+_NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
+
+
 @dataclass
 class GeneratedReaction:
     enzyme_label: str
@@ -117,7 +121,10 @@ class ReactionGenerator:
                 if self.kinetics_estimator:
                     self.logger.info(f"Kinetics estimation enabled: {self.kinetics_estimator.name}")
                 else:
-                    self.logger.info("Kinetics estimation enabled, but no estimator selected.")
+                    self.logger.warning(
+                        "estimate_kinetics is true but no kinetics_estimator is set: reactions "
+                        "without database kinetics will be skipped."
+                    )
             else:
                 self.kinetics_estimator = None
         except Exception as e:
@@ -320,8 +327,11 @@ class ReactionGenerator:
                 return existing_from_smiles
 
         # Skip ontology unify when existing canonical has SMILES (categories mix structures).
+        # Unify through synonym groups only: "a/an ..." classes hold distinct molecules.
         for eq in get_ontology_equivalents(label_clean):
             eq_lc = str(eq).lower().strip()
+            if eq_lc != label_lc and eq_lc.startswith(("a ", "an ")):
+                continue
             existing_from_alias = self._species_alias_to_canonical_label.get(eq_lc)
             if existing_from_alias is not None:
                 existing_smiles = self._species_smiles_to_canonical_label
@@ -521,7 +531,6 @@ class ReactionGenerator:
                         if smi:
                             reactant_smiles[rname] = smi
 
-                    _NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
                     reactant_smiles_normalized: Dict[str, str] = {}
                     for _rname, _smi in reactant_smiles.items():
                         if _rname.lower().strip() in _NON_SUBSTRATE_LABELS:
@@ -723,9 +732,6 @@ class ReactionGenerator:
             if smi:
                 smiles_map[lab] = smi
 
-        td = thermo_engine.compute_keq(stoichiometry=stoich, smiles_map=smiles_map)
-        reaction.thermo = td
-
         # Always reverse-query even if irreversible (product inhibition).
         enzyme_seq: Optional[str] = None
         for enz in getattr(self.bees_object, "enzymes", []):
@@ -777,7 +783,6 @@ class ReactionGenerator:
 
         if enzyme_sequence and self.kinetics_estimator:
             # Skip only buffered cofactors; query CoA/NAD/NADP for product terms.
-            _NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
             rev_reactant_smiles: Dict[str, str] = {}
             for prod_label in reaction.product_labels:
                 prod_lc = prod_label.lower().strip()

@@ -2,7 +2,7 @@
 Concentration projection for conserved pools in ODE state vectors.
 
 When stiff integrators produce small negative concentrations, naively clipping
-to zero can inject phantom mass into conserved pools. This module goal redistributes
+to zero can inject phantom mass into conserved pools. This module redistributes
 deficits onto configured donor species where possible.
 """
 

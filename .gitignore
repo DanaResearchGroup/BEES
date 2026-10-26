@@ -77,10 +77,7 @@ CLAUDE.md
 # LibreOffice lock files for CSVs
 .~lock.*.csv#
 
-#---  in workprojects ---
-projects/In_work/
-
-# --- Konwledge---
+# --- Knowledge ---
 knowledge
 
 # --- docs ---

@@ -38,15 +38,15 @@ class Logger(object):
 
     Args:
         project_directory (str): The project directory path.
-        verbose (Optional[int]): The logging level, optional. 10 - debug, 20 - info, 30 - warning.
-                                 ``None`` to avoid logging to file.
+        verbose (Optional[int]): Console logging level: 10 - debug, 20 - info, 30 - warning.
+                                 ``None`` defaults to info.
         t0 (float): Initial time when the project was spawned, stored as a float (from time.time()).
 
     Attributes:
         project (str): The project name (derived from project_directory).
         project_directory (str): The project directory path.
-        verbose (Optional[int]): The logging level, optional. 10 - debug, 20 - info, 30 - warning.
-                                 ``None`` to avoid logging to file.
+        verbose (Optional[int]): Console logging level: 10 - debug, 20 - info, 30 - warning.
+                                 ``None`` defaults to info.
         t0 (float): Initial time when the project was spawned, stored as a float.
     """
 
