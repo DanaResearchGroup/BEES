@@ -6,6 +6,7 @@ Opt-in via `settings.calibrations`; params locked here and fully literature cite
 from __future__ import annotations
 
 import math
+from typing import Dict, Optional, Tuple
 
 from bees.rules.base import RULES, Reference, Rule
 from bees.rules.helpers import _ec_norm, _reaction_acyl_substrate_n
@@ -127,4 +128,49 @@ RULES.register(
         enabled=False,
     ),
     before="haldane_reverse_kcat",
+)
+
+
+# Palmitic equivalents (Yu et al. 2011 / Ruppe 2020 S2A time-course metric).
+# Yu counts [2-14C]malonyl label: C_n carries (n-2)/2 labelled units
+# (acetyl primer unlabelled) vs 7 in palmitate -> weight (n-2)/14.
+_FA_STEMS = [  # most specific first so e.g. 'hexadec' wins over 'hex'
+    ("icosen", 20), ("icosan", 20), ("octadecen", 18), ("octadecan", 18),
+    ("hexadecen", 16), ("hexadecan", 16), ("tetradecen", 14), ("tetradecan", 14),
+    ("dodecen", 12), ("dodecan", 12), ("decen", 10), ("decan", 10),
+    ("octen", 8), ("octan", 8), ("hexen", 6), ("hexan", 6),
+    ("penten", 5), ("pentan", 5), ("buten", 4), ("butan", 4),
+]
+
+
+def free_fatty_acid_carbons(label: str) -> Optional[int]:
+    """Carbon count of a free fatty acid label (e.g. 'hexadecanoate' -> 16), else None."""
+    n = label.lower()
+    if "[acp]" in n or not n.endswith("oate"):
+        return None  # ACP thioester or not a free acid
+    for stem, c in _FA_STEMS:
+        if stem in n:
+            return c
+    return None
+
+
+def palmitic_equivalents(species_ids: Dict[str, str]) -> Optional[Tuple[str, str, str]]:
+    """palmitic_equivalents_uM = 1000 * sum((n-2)/14 * [acid_n]) over free fatty acids."""
+    terms = []
+    for label, sid in species_ids.items():
+        c = free_fatty_acid_carbons(label)
+        if c is not None:
+            terms.append(f"({c - 2}/14) * {sid}")
+    if not terms:
+        return None
+    return (
+        "palmitic_equivalents_uM",
+        "Palmitic equivalents(uM)",
+        "1000 * (" + " + ".join(terms) + ")",
+    )
+
+
+RULES.register_observable(
+    palmitic_equivalents,
+    calibrations=("fabI_enoyl_reductase_measured_kcat", "tesa_long_chain_preference"),
 )

@@ -11,9 +11,6 @@ def load_rules() -> RuleRegistry:
     Side-effect imports register each Rule on ``RULES``. Imports stay inside this
     function to avoid load-time cycles with ``bees.rules.base``. Idempotent.
     """
-    try:
-        import bees.rules.physics_rules  # noqa: F401
-        import bees.rules.calibrations  # noqa: F401
-    except ImportError:
-        pass
+    import bees.rules.physics_rules  # noqa: F401
+    import bees.rules.calibrations  # noqa: F401
     return RULES

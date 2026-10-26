@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterable, Iterator, Optional, Sequence
 
 logger = logging.getLogger("BEES.rules")
 
@@ -96,6 +96,7 @@ class RuleRegistry:
     def __init__(self) -> None:
         self._rules: list[Rule] = []
         self._baselines: dict[Any, dict[str, dict[str, Any]]] = {}
+        self._observables: list[tuple[frozenset[str], Callable[..., Any]]] = []
 
     def register(self, rule: Rule, *, before: Optional[str] = None) -> Rule:
         if any(r.name == rule.name for r in self._rules):
@@ -123,6 +124,33 @@ class RuleRegistry:
 
     def enabled_rules(self) -> Sequence[Rule]:
         return [r for r in self._rules if r.enabled]
+
+    def reset_baselines(self) -> None:
+        """Forget every snapshot. Call once per run: a new model may reuse a signature
+        with different raw kinetics, and must not be restored to the old values."""
+        self._baselines = {}
+
+    def register_observable(
+        self, builder: Callable[..., Any], *, calibrations: Iterable[str]
+    ) -> None:
+        """Register an SBML observable emitted when any of ``calibrations`` is enabled.
+
+        ``builder(species_ids)`` gets {label: SBML id} (model order) and returns
+        ``(parameter_id, name, formula)`` or None when no species qualifies.
+        """
+        self._observables.append((frozenset(calibrations), builder))
+
+    def observables(
+        self, enabled: Iterable[str], species_ids: dict[str, str]
+    ) -> list[tuple[str, str, str]]:
+        enabled_set = set(enabled)
+        out = []
+        for names, builder in self._observables:
+            if names & enabled_set:
+                built = builder(species_ids)
+                if built is not None:
+                    out.append(built)
+        return out
 
     def apply_all(self, reactions: Iterable[object]) -> None:
         """Restore baselines then apply enabled rules."""
