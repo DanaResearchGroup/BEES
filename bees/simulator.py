@@ -69,6 +69,17 @@ class SimulationResult:
     def terminated_early(self) -> bool:
         return bool(self.termination_reason)
 
+def build_alias_to_model_label(species_labels: List[str]) -> Dict[str, str]:
+    """Map ontology aliases to model species labels so stoichiometry lookups resolve correctly."""
+    alias_to_model: Dict[str, str] = {}
+    for lab in species_labels:
+        model_lc = lab.lower().strip()
+        alias_to_model[model_lc] = model_lc
+        for equiv in get_ontology_equivalents(lab):
+            alias_to_model[equiv.lower().strip()] = model_lc
+    return alias_to_model
+
+
 class _VectorizedRHS:
     """NumPy-vectorized ODE RHS compiled once (no per-call Python loops)."""
 
@@ -557,7 +568,7 @@ class ODESimulator:
         """Full-span solve_ivp without flux-interrupt events."""
         species_labels = self.model.get_all_species_labels()
         n_species = len(species_labels)
-        alias_to_model_label = self._build_alias_to_model_label(species_labels)
+        alias_to_model_label = build_alias_to_model_label(species_labels)
         enzyme_conc_map = self._build_enzyme_concentration_map()
         constant_mask = np.array(
             [s.constant for s in self.model.core_species]
@@ -596,7 +607,6 @@ class ODESimulator:
             rhs, (0.0, end_time), y0,
             method=method, t_eval=t_eval,
             rtol=rtol, atol=atol,
-            dense_output=True,
             max_step=end_time / 10 if end_time > 0 else np.inf,
         )
 
@@ -662,7 +672,7 @@ class ODESimulator:
         species_labels = self.model.get_all_species_labels()
         n_species = len(species_labels)
         label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
-        alias_to_model_label = self._build_alias_to_model_label(species_labels)
+        alias_to_model_label = build_alias_to_model_label(species_labels)
         enzyme_conc_map = self._build_enzyme_concentration_map()
         constant_mask = np.array(
             [s.constant for s in self.model.core_species]
@@ -769,7 +779,8 @@ class ODESimulator:
         dt_min = dt_floor_outer
         dt_growth = 2.0
         near_frac = 0.5
-        max_char_rate = 0.0
+        # Peak includes t=0 (often the peak), like _attach_flux_metrics over the trajectory.
+        max_char_rate = float(np.linalg.norm(rhs.compute_dydt_unmasked(y0)[:n_core]))
         interrupted = False
         interrupt_char = 0.0
         interrupt_edge: Dict[str, float] = {}
@@ -777,6 +788,8 @@ class ODESimulator:
         outer_step_idx = 0
         state_invalid = False
         invalid_message = ""
+        solver_failed = False
+        solver_message = ""
         solver_cls = _CONTINUABLE_SOLVERS.get(method)
         solver = None
 
@@ -822,19 +835,20 @@ class ODESimulator:
                     message = sol.message
                     if ok:
                         new_t, new_y = sol.t[-1], sol.y[:, -1]
-            except Exception:
+            except Exception as exc:
+                solver_failed = True
+                solver_message = f"ODE solver exception at t={current_t:.6e} s: {exc!r}"
                 if self.logger:
-                    self.logger.warning(
-                        f"ODE solver exception at t={current_t:.6e} s"
-                    )
+                    self.logger.warning(solver_message)
                 break
 
             if not ok:
+                solver_failed = True
+                solver_message = (
+                    f"ODE solver failed at t={current_t:.6e} s: {message or 'unknown'}"
+                )
                 if self.logger:
-                    self.logger.warning(
-                        f"ODE solver failed at t={current_t:.6e} s: "
-                        f"{message or 'unknown'}"
-                    )
+                    self.logger.warning(solver_message)
                 break
 
             current_t = float(new_t)
@@ -914,8 +928,8 @@ class ODESimulator:
                     self.logger.warning(
                         "ODE stepwise pass stopped: exceeded "
                         f"max_wall_time_per_iteration ({max_wall_time_s} s wall-clock) "
-                        f"after completing outer step at simulation t={current_t:.6e} s "
-                                            )
+                        f"after completing outer step at simulation t={current_t:.6e} s."
+                    )
                 break
 
             if not first_step and max_rr > interrupt_simulation_tol:
@@ -981,9 +995,7 @@ class ODESimulator:
 
             # Do not shrink dt while max_rr <= tol.
             dt = max(dt, dt_floor_outer)
-            if max_rr >= near_frac * interrupt_simulation_tol:
-                pass
-            else:
+            if not max_rr >= near_frac * interrupt_simulation_tol:
                 dt = min(dt * dt_growth, dt_max)
 
         t_arr = np.array(t_history)
@@ -999,12 +1011,14 @@ class ODESimulator:
                 f"{fail_msg + ' ' if fail_msg else ''}"
                 f"Invalid concentration state: {invalid_message}"
             ).strip()
+        if solver_failed:
+            fail_msg = f"{fail_msg + ' ' if fail_msg else ''}{solver_message}".strip()
 
         result = SimulationResult(
             t=t_arr,
             y=y_arr,
             species_labels=species_labels,
-            success=(not wall_time_exceeded and not state_invalid),
+            success=(not wall_time_exceeded and not state_invalid and not solver_failed),
             message=fail_msg,
             simulation_interrupted=interrupted,
             max_char_rate=max_char_rate,
@@ -1021,7 +1035,7 @@ class ODESimulator:
             result.interrupt_char_rate = interrupt_char
             result.interrupt_edge_rates = interrupt_edge
         else:
-            if self.logger and not wall_time_exceeded and not state_invalid:
+            if self.logger and result.success:
                 self.logger.debug(
                     f"ODE simulation completed (stepwise) "
                     f"({len(t_history)} time points)"
@@ -1049,7 +1063,7 @@ class ODESimulator:
             lab.lower().strip(): [] for lab in species_labels
         }
         constant_mask = {}
-        for i, sp in enumerate(self.model.core_species):
+        for sp in self.model.core_species:
             constant_mask[sp.label.lower().strip()] = sp.constant
         for sp in self.model.edge_species:
             constant_mask[sp.label.lower().strip()] = False
@@ -1242,20 +1256,7 @@ class ODESimulator:
                 edge_labels[i]: float(max_ratios[i]) for i in range(n_edge)
             }
         else:
-            sim_result.max_edge_rate_ratio = {            }
-
-    def _build_alias_to_model_label(
-        self,
-        species_labels: List[str],
-    ) -> Dict[str, str]:
-        """Map ontology aliases to model species labels so stoichiometry lookups resolve correctly."""
-        alias_to_model: Dict[str, str] = {}
-        for lab in species_labels:
-            model_lc = lab.lower().strip()
-            alias_to_model[model_lc] = model_lc
-            for equiv in get_ontology_equivalents(lab):
-                alias_to_model[equiv.lower().strip()] = model_lc
-        return alias_to_model
+            sim_result.max_edge_rate_ratio = {}
 
     def unmatched_feedback_inhibitors(self) -> Dict[str, List[str]]:
         """{enzyme: [inhibitor labels]} of core reactions whose inhibitor is not a model species.
@@ -1265,7 +1266,7 @@ class ODESimulator:
         """
         species_labels = self.model.get_all_species_labels()
         label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
-        alias = self._build_alias_to_model_label(species_labels)
+        alias = build_alias_to_model_label(species_labels)
         missing: Dict[str, List[str]] = {}
         for rxn in self.model.core_reactions:
             inh = getattr(rxn, "feedback_inhibitors", None)
