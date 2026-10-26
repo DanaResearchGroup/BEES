@@ -283,9 +283,10 @@ def test_reactions_summary_uses_stable_reaction_ids(tmp_path):
     gen.reactions = [r_late, r_early]
     ids = {reaction_signature(r_late): 7, reaction_signature(r_early): 3}
 
-    text = open(gen.export_reactions_summary(
+    with open(gen.export_reactions_summary(
         core_rxn_ids={id(r_late), id(r_early)}, reaction_id_by_sig=ids,
-    )).read()
+    )) as summary_file:
+        text = summary_file.read()
 
     assert text.index("Reaction 3:\n  Enzyme: E2") < text.index("Reaction 7:\n  Enzyme: E1")
     assert "Reaction 1:" not in text and "Reaction 2:" not in text

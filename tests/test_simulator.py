@@ -11,7 +11,7 @@ from itertools import chain, repeat
 from unittest.mock import MagicMock, patch
 
 from bees.core_edge_model import CoreEdgeModel, SpeciesData
-from bees.simulator import ODESimulator, _VectorizedRHS
+from bees.simulator import ODESimulator, _CONTINUABLE_SOLVERS, _VectorizedRHS
 
 
 # ---------------------------------------------------------------------------
@@ -255,13 +255,11 @@ class TestStepwiseInterrupt:
 
     def test_stepwise_solver_failure_is_not_success(self, monkeypatch):
         """A solver exception mid-pass must report failure, not a short 'successful' run."""
-        import bees.simulator as simmod
-
         class _Boom:
             def __init__(self, *args, **kwargs):
                 raise RuntimeError("solver blew up")
 
-        monkeypatch.setitem(simmod._CONTINUABLE_SOLVERS, "BDF", _Boom)
+        monkeypatch.setitem(_CONTINUABLE_SOLVERS, "BDF", _Boom)
         result = ODESimulator(_make_core_edge_model_with_immediate_flux()).simulate(
             end_time=50.0, method="BDF", interrupt_simulation_tol=1e6,
         )
