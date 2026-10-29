@@ -173,7 +173,8 @@ class PartitionCompetition:
         for g in self.groups:
             others = g["notown"] @ self._weights(g, y_ext)
             d = den[g["rows"]]
-            c[g["rows"]] = d / (d + others)
+            # 1 / (1 + others / d) equals d / (d + others) but stays finite when a weight overflows.
+            c[g["rows"]] = 1.0 / (1.0 + others / d)
         return c
 
     def complex_label(self, k: Complex) -> str:
