@@ -51,6 +51,7 @@ Example configs in `projects/`:
 
 - `minimal/` — first three glycolysis steps using the general db.
 - `fattyAcidSynthesis/fattyAcidSynthesis_ecoli/` — *E. coli* FAS II (uses `database.name: ecoli`)
+- `methotrexate_dhfr/`, `glycolysis_2dg/`, `fattyAcidSynthesis/fas_inhibitor_delivery/` — drug-delivery showcases (see below); `database.name` `folate` / `glycolysis` / `ecoli`
 - `commented/` — annotated YAML template (every allowed key)
 
 ## Input YAML
@@ -115,6 +116,48 @@ settings:
     - tesa_long_chain_preference
 ```
 
+
+## Inhibitors and time-dependent dosing
+
+BEES computes what a drug does to an enzyme pathway; the release profile of its carrier decides when it does it.
+
+```yaml
+species:
+  - {label: methotrexate, concentration: 0, smiles: "...", reactive: false}   # enters only by dosing
+enzymes:
+  - label: DHFR
+    measured_kinetics:            # optional experimental values, override the database / CatPred
+      kcat: 12.0
+      km: {FH2: 2.0e-4}           # mM per substrate
+      default_km: 0.005           # Km of every substrate not listed (a substrate without Km counts as saturated)
+    inhibition:
+      - inhibitor: methotrexate
+        type: tight_binding       # competitive | uncompetitive | noncompetitive | mixed (alpha:) | tight_binding
+        ki: 1.0e-7                # mM; omit to estimate with CatPred (needs smiles + amino_acid_sequence)
+        substrate: FH2            # competitive / uncompetitive / mixed only; default: first substrate with a Km
+dosing:
+  - species: methotrexate
+    profile: biexponential        # bolus | constant | first_order | biexponential | weibull | korsmeyer_peppas | table
+    dose: 0.002                   # mM released in total
+    params: {fraction_fast: 0.1, half_life_fast: 7200, half_life_slow: 162000}   # seconds
+    t_start: 0
+    elimination_half_life: 10000  # or elimination_k (1/s): first-order loss of the free drug
+```
+
+Inhibition changes the rate law: competitive scales the substrate Km by `1 + I/Ki`, noncompetitive scales Vmax by `1/(1 + I/Ki)`, mixed and uncompetitive both (`bees/inhibition.py`); tight binding uses the Morrison quadratic with the enzyme concentration. The older `feedback_inhibition` is unchanged. Dosing adds a source `u(t)` (and the elimination) to the drug's equation, integrated in segments at the profile's breakpoints; both go into the ODE text and the SBML export (`DOSE_`/`ELIM_` pseudo-reactions, Ki/alpha parameters, inhibitors as modifiers).
+
+Tools in `devtools/`:
+
+- `release_sweep.py` — same total dose as free bolus / liposome / slow depot: output lost, time below half the control flux, inhibition AUC, peak free drug (CSV + PNG)
+- `target_scan.py` — scale kcat of one enzyme at a time, output lost at 1/3/6 h
+- `fetch_inhibitors.py` — median Ki per target/compound from ChEMBL (needs network access to ebi.ac.uk)
+
+```bash
+python devtools/release_sweep.py -i projects/methotrexate_dhfr/input.yml --drug methotrexate --output-species dTMP
+python devtools/target_scan.py   -i projects/methotrexate_dhfr/input.yml --output-species dTMP
+```
+
+The kinetics in the three showcase projects are order-of-magnitude placeholders; see their READMEs.
 
 ## Development
 

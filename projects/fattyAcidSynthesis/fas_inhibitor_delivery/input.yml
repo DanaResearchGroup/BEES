@@ -1,0 +1,276 @@
+# E. coli FAS II with two inhibitors and three delivery profiles.
+#
+# Copy of ../fattyAcidSynthesis_ecoli (same enzymes, db/ecoli.csv) with
+#   - the two drugs as species that enter only through `dosing`,
+#   - `inhibition` on the target enzymes,
+#   - PLACEHOLDER kinetics (measured_kinetics) so that it runs without CatPred. The kcats are
+#     rounded order-of-magnitude values; the Kms of acyl-ACPs are one default of 0.02 mM and
+#     TesA's long-chain preference is imitated with a high Km on short acyl-ACPs. The
+#     calibrations of the original input are not used. Nothing here is a result about biology.
+#
+# Drugs
+#   triclosan      FabI, tight binding, Ki = 7e-9 mM (Ward et al. 1999 - VERIFY the value)
+#   thiolactomycin FabH / FabB / FabF, competitive against malonyl-[ACP],
+#                  Ki = 0.05 / 0.02 / 0.02 mM (PLACEHOLDERS)
+# Doses are the ones of the README; devtools/release_sweep.py compares delivery profiles of
+# one drug at a time (use --time-scale 0.1 for the 6 h run).
+project: fas_inhibitor_delivery
+project_directory: projects/fattyAcidSynthesis/fas_inhibitor_delivery
+
+species:
+  - label: NADPH
+    concentration: 1
+    smiles: NC(=O)C1=CN(C=CC1)[C@H]1O[C@@H](COP(O)(=O)OP(O)(=O)OC[C@@H]2O[C@@H]([C@@H](OP(O)(O)=O)[C@H]2O)N2C=NC3=C(N)N=CN=C23)[C@H](O)[C@@H]1O
+    reactive: true
+
+  - label: NADH
+    concentration: 1.0
+    smiles: NC(=O)C1=CN(C=CC1)[C@@H]1O[C@H](CO[P@](O)(=O)O[P@](O)(=O)OC[C@H]2O[C@H]([C@H](O)[C@@H]2O)N2C=NC3=C(N)N=CN=C23)[C@@H](O)[C@H]1O
+    reactive: true
+
+  - label: Malonyl-CoA
+    concentration: 0.5
+    smiles: CC(C)(COP(=O)(O)OP(=O)(O)OC[C@@H]1[C@H]([C@H]([C@@H](O1)N2C=NC3=C(N=CN=C32)N)O)OP(=O)(O)O)[C@H](C(=O)NCCC(=O)NCCSC(=O)CC(=O)O)O
+    reactive: true
+
+  - label: Acetyl-CoA
+    concentration: 0.5
+    smiles: CC(=O)SCCNC(=O)CCNC(=O)[C@@H](C(C)(C)COP(=O)(O)OP(=O)(O)OC[C@@H]1[C@H]([C@H]([C@@H](O1)N2C=NC3=C(N=CN=C32)N)O)OP(=O)(O)O)O
+    reactive: true
+
+  - label: holo-[ACP]
+    concentration: 0.01
+    smiles: CC(C)(COP(=O)(O)O)[C@H](C(=O)NCCC(=O)NCCS)O
+    reactive: true
+
+  - label: H2O
+    concentration: 55500.0 # pure water, 55.5 M in mM (solvent; not used in rate laws)
+    smiles: O
+    constant: true
+    reactive: true
+    solvent: true
+
+  - label: H+
+    concentration: 3.16e-5 # pH 7.5 (effect of the 100 mM sodium phosphate)
+    smiles: "[H+]"
+    constant: true
+    reactive: true
+
+# Buffers
+  - label: sodium phosphate 
+    concentration: 100.0
+    smiles: "[Na+].[Na+].OP([O-])([O-])=O"
+    constant: true
+    reactive: false
+
+  - label: TCEP # buffer; reducing agent
+    concentration: 1.0
+    smiles: O=C(O)CCP(CC(=O)O)CC(=O)O
+    constant: true
+    reactive: false
+
+  # Drugs: only enter through `dosing`
+  - label: triclosan
+    concentration: 0
+    smiles: Oc1cc(Cl)ccc1Oc1ccc(Cl)cc1Cl
+    reactive: false
+  - label: thiolactomycin
+    concentration: 0
+    smiles: C=CC(C)=CC1(C)SC(=O)C(C)=C1O
+    reactive: false
+
+enzymes:
+  - label: FabA 
+    concentration: 0.001
+    ecnumber:
+      - EC 4.2.1.59
+      - EC 5.3.3.14
+    reactive: true
+    measured_kinetics:
+      kcat: 30
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MVDKRESYTKEDLLASGRGELFGAKGPQLPAPNMLMMDRVVKMTETGGNFDKGYVEAELDINPDLWFFGCHFIGDPVMPGCLGLDAMWQLVGFYLGWLGGEGKGRALGVGEVKFTGQVLPTAKKVTYRIHFKRIVNRRLIMGLADGEVLVDGRLIYTASDLKVGLFQDTSAF
+    
+
+  - label: FabB
+    concentration: 0.001
+    ecnumber: EC 2.3.1.41
+    reactive: true
+    measured_kinetics:
+      kcat: 3
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MKRAVITGLGIVSSIGNNQQEVLASLREGRSGITFSQELKDSGMRSHVWGNVKLDTTGLIDRKVVRFMSDASIYAFLSMEQAIADAGLSPEAYQNNPRVGLIAGSGGGSPRFQVFGADAMRGPRGLKAVGPYVVTKAMASGVSACLATPFKIHGVNYSISSACATSAHCIGNAVEQIQLGKQDIVFAGGGEELCWEMACEFDAMGALSTKYNDTPEKASRTYDAHRDGFVIAGGGGMVVVEELEHALARGAHIYAEIVGYGATSDGADMVAPSGEGAVRCMKMAMHGVDTPIDYLNSHGTSTPVGDVKELAAIREVFGDKSPAISATKAMTGHSLGAAGVQEAIYSLLMLEHGFIAPSINIEELDEQAAGLNIVTETTDRELTTVMSNSFGFGGTNATLVMRKLKD
+    inhibition:
+      - inhibitor: thiolactomycin
+        type: competitive
+        substrate: Malonyl-[ACP]
+        ki: 0.02   # mM, PLACEHOLDER
+        source: placeholder
+
+  - label: FabD
+    concentration: 0.001
+    ecnumber: EC 2.3.1.39
+    reactive: true
+    measured_kinetics:
+      kcat: 100
+      km:
+        Malonyl-CoA: 0.1
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MTQFAFVFPGQGSQTVGMLADMAASYPIVEETFAEASAALGYDLWALTQQGPAEELNKTWQTQPALLTASVALYRVWQQQGGKAPAMMAGHSLGEYSALVCAGVIDFADAVRLVEMRGKFMQEAVPEGTGAMAAIIGLDDASIAKACEEAAEGQVVSPVNFNSPGQVVIAGHKEAVERAGAACKAAGAKRALPLPVSVPSHCALMKPAADKLAVELAKITFNAPTVPVVNNVDVKCETNGDAIRDALVRQLYNPVQWTKSVEYMAAQGVEHLYEVGPGKVLTGLTKRIVDTLTASALNEPSAMAAALEL
+
+  - label: FabF
+    concentration: 0.001
+    ecnumber: EC 2.3.1.179
+    reactive: true
+    measured_kinetics:
+      kcat: 3
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MSKRRVVVTGLGMLSPVGNTVESTWKALLAGQSGISLIDHFDTSAYATKFAGLVKDFNCEDIISRKEQRKMDAFIQYGIVAGVQAMQDSGLEITEENATRIGAAIGSGIGGLGLIEENHTSLMNGGPRKISPFFVPSTIVNMVAGHLTIMYGLRGPSISIATACTSGVHNIGHAARIIAYGDADVMVAGGAEKASTPLGVGGFGAARALSTRNDNPQAASRPWDKERDGFVLGDGAGMLVLEEYEHAKKRGAKIYAELVGFGMSSDAYHMTSPPENGAGAALAMANALRDAGIEASQIGYVNAHGTSTPAGDKAEAQAVKTIFGEAASRVLVSSTKSMTGHLLGAAGAVESIYSILALRDQAVPPTINLDNPDEGCDLDFVPHEARQVSGMEYTLCNSFGFGGTNGSLIFKKI
+    
+    inhibition:
+      - inhibitor: thiolactomycin
+        type: competitive
+        substrate: Malonyl-[ACP]
+        ki: 0.02   # mM, PLACEHOLDER
+        source: placeholder
+
+  - label: FabG
+    concentration: 0.001
+    ecnumber: EC 1.1.1.100
+    reactive: true
+    measured_kinetics:
+      kcat: 50
+      km:
+        NADPH: 0.03
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MNFEGKIALVTGASRGIGRAIAETLAARGAKVIGTATSENGAQAISDYLGANGKGLMLNVTDPASIESVLEKIRAEFGEVDILVNNAGITRDNLLMRMKDEEWNDIIETNLSSVFRLSKAVMRAMMKKRHGRIITIGSVVGTMGNGGQANYAAAKAGLIGFSKSLAREVASRGITVNVVAPGFIETDMTRALSDDQRAGILAQVPAGRLGGAQEIANAVAFLASDEAAYITGETLHVNGGMYMV
+
+  - label: FabH
+    concentration: 0.001
+    ecnumber: EC 2.3.1.180
+    reactive: true
+    measured_kinetics:
+      kcat: 2
+      km:
+        Acetyl-CoA: 0.05
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MYTKIIGTGSYLPEQVRTNADLEKMVDTSDEWIVTRTGIRERHIAAPNETVSTMGFEAATRAIEMAGIEKDQIGLIVVATTSATHAFPSAACQIQSMLGIKGCPAFDVAAACAGFTYALSVADQYVKSGAVKYALVVGSDVLARTCDPTDRGTIIIFGDGAGAAVLAASEEPGIISTHLHADGSYGELLTLPNADRVNPENSIHLTMAGNEVFKVAVTELAHIVDETLAANNLDRSQLDWLVPHQANLRIISATAKKLGMSMDNVVVTLDRHGNTSAASVPCALDEAVRDGRIKPGQLVLLEAFGGGFTWGSALVRF
+    feedback_inhibition:
+      inhibitors:
+        - dodecanoate
+        - (5z)-dodecenoate
+        - tetradecanoate
+        - (7z)-tetradecenoate
+        - hexadecanoate
+        - (9z)-hexadecenoate
+        - octadecanoate
+        - (11z)-octadecenoate
+        - icosanoate
+        - (13z)-icosenoate
+      ki: 0.021
+      hill: 1.0
+    inhibition:
+      - inhibitor: thiolactomycin
+        type: competitive
+        substrate: Malonyl-[ACP]
+        ki: 0.05   # mM, PLACEHOLDER
+        source: placeholder
+
+  - label: FabI
+    concentration: 0.001
+    ecnumber: EC 1.3.1.9
+    reactive: true
+    measured_kinetics:
+      kcat: 20
+      km:
+        NADPH: 0.03
+        NADH: 0.1
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MGFLSGKRILVTGVASKLSIAYGIAQAMHREGAELAFTYQNDKLKGRVEEFAAQLGSDIVLQCDVAEDASIDTMFAELGKVWPKFDGFVHSIGFAPGDQLDGDYVNAVTREGFKIAHDISSYSFVAMAKACRSMLNPGSALLTLSYLGAERAIPNYNVMGLAKASLEANVRYMANAMGPEGVRVNAISAGPIRTLAASGIKDFRKMLAHCEAVTPIRRTVTIEDVGNSAAFLCSDLSAGISGEVVHVDGGFSIAAMNELELK
+    feedback_inhibition:
+      inhibitors:
+        - dodecanoate
+        - (5z)-dodecenoate
+        - tetradecanoate
+        - (7z)-tetradecenoate
+        - hexadecanoate
+        - (9z)-hexadecenoate
+        - octadecanoate
+        - (11z)-octadecenoate
+        - icosanoate
+        - (13z)-icosenoate
+      ki: 0.020
+      hill: 1.0
+    inhibition:
+      - inhibitor: triclosan
+        type: tight_binding
+        ki: 7.0e-9   # mM; Ward et al. 1999, VERIFY
+        source: Ward et al. 1999 Biochemistry (VERIFY)
+
+  - label: FabZ
+    concentration: 0.001
+    ecnumber: EC 4.2.1.59
+    reactive: true
+    measured_kinetics:
+      kcat: 30
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MTTNTHTLQIEEILELLPHRFPFLLVDRVLDFEEGRFLRAVKNVSVNEPFFQGHFPGKPIFPGVLILEAMAQATGILAFKSVGKLEPGELYYFAGIDEARFKRPVVPGDQMIMEVTFEKTRRGLTRFKGVALVDGKVVCEATMMCARSREA
+
+  - label: TesA
+    concentration: 0.01
+    ecnumber: EC 3.1.2.14
+    reactive: true
+    measured_kinetics:
+      kcat: 1
+      km:
+        Butanoyl-[ACP]: 20
+        Hexanoyl-[ACP]: 20
+        Octanoyl-[ACP]: 10
+        Decanoyl-[ACP]: 5
+        (3Z)-Decenoyl-[ACP]: 5
+      default_km: 0.02
+      source: placeholder (order of magnitude)
+    amino_acid_sequence: MMNFNNVFRWHLPFLFLVLLTFRAAAADTLLILGDSLSAGYRMSASAAWPALLNDKWQSKTSVVNASISGDTSQQGLARLPALLKQHQPRWVLVELGGNDGLRGFQPQQTEQTLRQILQDVKAANAEPLLMQIRLPANYGRRYNEAFSAIYPKLAKEFDVPLLPFFMEEVYLKPQWMQDDGIHPNRDAQPFIADWMAKQLQPLVNHDS
+
+environment:
+  temperature: 298.0
+  pH: 7.5
+
+# Doses (mM): thiolactomycin 0.2, triclosan 0.01, each as a liposome (10 % with a 12 min
+# half-life, 90 % with 4.5 h: the 2 h / 45 h of the sweep x 0.1), free drug cleared with a
+# 30 min half-life.
+dosing:
+  - species: thiolactomycin
+    profile: biexponential
+    dose: 0.2
+    params: {fraction_fast: 0.1, half_life_fast: 720, half_life_slow: 16200}
+    elimination_half_life: 1800
+  - species: triclosan
+    profile: biexponential
+    dose: 0.01
+    params: {fraction_fast: 0.1, half_life_fast: 720, half_life_slow: 16200}
+    elimination_half_life: 1800
+
+database:
+  name: ecoli
+
+settings:
+  simulation_mode: iterative
+  end_time: 21600   # 6 h
+  time_step: 60
+  toleranceMoveToCore: 1e-2
+  toleranceKeepInEdge: 0
+  toleranceInterruptSimulation: 10
+  max_iterations: 100
+  max_num_objects_per_iter: 40
+  estimate_kinetics: false
+  enzyme_competition: true
+  verbose: 20
