@@ -751,3 +751,34 @@ class TestEdgeIsolation:
         # The integrator itself still kept [S] flat (edge isolation works).
         s_idx = result.species_labels.index("S")
         assert float(result.y[s_idx, -1]) == pytest.approx(10.0, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Inhibition and dosing in the ODE text export
+# ---------------------------------------------------------------------------
+
+def test_ode_equation_export_shows_inhibition_and_dosing(tmp_path):
+    from bees.dosing import DoseSchedule
+    from bees.inhibition import InhibitorSpec
+
+    model = CoreEdgeModel()
+    for lab, c, enz in [("S", 10.0, False), ("P", 0.0, False), ("E", 0.01, True), ("D", 0.0, False)]:
+        model.add_core_species(SpeciesData(label=lab, concentration=c, initial_concentration=c,
+                                           is_enzyme=enz, constant=enz))
+    rxn = _make_reaction(enzyme_label="E", reactant_labels=["S"], product_labels=["P"])
+    rxn.kinetics.kcat_sd = rxn.kinetics.km_sd = None
+    rxn.inhibitors = [InhibitorSpec("d", "competitive", 0.05, None, "s"), InhibitorSpec("d", "tight_binding", 0.001)]
+    rxn.thermo = None
+    model.add_reaction(rxn)
+    sim = ODESimulator(model, dosing=[
+        DoseSchedule("D", "weibull", 0.01, {"tau": 100.0, "beta": 0.6}, elimination_k=0.01),
+        DoseSchedule("D", "bolus", 0.02, t_start=50.0),
+    ])
+    path = sim.export_ode_equations(str(tmp_path / "ode.txt"), iteration=1, end_time=100.0)
+    text = open(path).read()
+    assert "Km_S * ((1 + [D] / Ki(D, s)) / (1))" in text
+    assert "Ki(D, s)=0.05 mM" in text and "Ki(D)=0.001 mM" in text
+    assert "sqrt(" in text  # the Morrison factor
+    assert "d[D]/dt = u1(t) - kel_D*[D]" in text
+    assert "weibull release of 0.01 mM D" in text and "kel_D = 0.01 1/s" in text
+    assert "bolus release of 0.02 mM D from t_start=50 s - an impulse" in text

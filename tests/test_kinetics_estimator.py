@@ -97,3 +97,62 @@ class TestPersistentCache:
         est2 = CatPredEstimator()
         assert good_key in est2._memo
         assert all("errors" not in v.source for v in est2._memo.values())
+
+
+class TestEstimateKi:
+    """CatPred Ki for inhibitors whose YAML omits ki (the CatPred call itself is mocked)."""
+
+    def _estimator(self, monkeypatch, tmp_path):
+        from bees.kinetics_estimator import CatPredEstimator
+        monkeypatch.setenv("BEES_CATPRED_CACHE", "off")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "catpred").mkdir()
+        monkeypatch.setattr(CatPredEstimator, "CATPRED_DIR", str(tmp_path / "catpred"))
+        return CatPredEstimator(include_sd=True)
+
+    def _fake_run(self, value, calls):
+        import os
+
+        def _run(cmd, cwd=None, **kwargs):
+            calls.append(cmd)
+            csv_path = cmd[cmd.index("--input_file") + 1]
+            base = os.path.splitext(os.path.basename(csv_path))[0]
+            out = os.path.join(cwd, "output", base)
+            os.makedirs(out)
+            with open(os.path.join(out, f"{base}_ki_output.csv"), "w") as fh:
+                fh.write(f"SMILES,Prediction_(mM),SD_total\nCCN,{value},0.3\n")
+        return _run
+
+    def test_returns_the_predicted_ki_and_memoizes(self, monkeypatch, tmp_path):
+        import subprocess
+        est = self._estimator(monkeypatch, tmp_path)
+        calls = []
+        monkeypatch.setattr(subprocess, "run", self._fake_run(0.021, calls))
+        first = est.estimate_ki(enzyme_sequence="MKT", inhibitor_smiles="CCN")
+        assert first.ki == pytest.approx(0.021) and first.ki_sd > 0 and first.source == "catpred"
+        assert est.estimate_ki(enzyme_sequence="MKT", inhibitor_smiles="CCN") is first
+        assert len(calls) == 1
+        assert "--parameter" in calls[0] and calls[0][calls[0].index("--parameter") + 1] == "ki"
+
+    def test_failed_run_reports_the_error_instead_of_a_value(self, monkeypatch, tmp_path):
+        import subprocess
+        est = self._estimator(monkeypatch, tmp_path)
+
+        def _fail(cmd, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd, stderr="boom")
+
+        monkeypatch.setattr(subprocess, "run", _fail)
+        res = est.estimate_ki(enzyme_sequence="MKT", inhibitor_smiles="CCN")
+        assert res.ki is None and "boom" in res.source
+
+    def test_needs_sequence_and_smiles(self, monkeypatch, tmp_path):
+        est = self._estimator(monkeypatch, tmp_path)
+        assert est.estimate_ki(enzyme_sequence="", inhibitor_smiles="CCN").ki is None
+        assert est.estimate_ki(enzyme_sequence="MKT", inhibitor_smiles="").ki is None
+
+    def test_missing_catpred_installation_is_an_error(self, monkeypatch, tmp_path):
+        from bees.kinetics_estimator import CatPredEstimator
+        monkeypatch.setenv("BEES_CATPRED_CACHE", "off")
+        monkeypatch.setattr(CatPredEstimator, "CATPRED_DIR", str(tmp_path / "absent"))
+        with pytest.raises(FileNotFoundError, match="give 'ki'"):
+            CatPredEstimator().estimate_ki(enzyme_sequence="MKT", inhibitor_smiles="CCN")

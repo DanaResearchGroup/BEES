@@ -478,3 +478,143 @@ def test_custom_validators_reject_bad_input(model, kwargs, message):
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+# ---------------------------------------------------------------------------
+# Inhibition, measured kinetics and dosing
+# ---------------------------------------------------------------------------
+
+def _drug_input(**overrides):
+    """A small valid input with an enzyme, a substrate and a drug species."""
+    data = dict(
+        project="DrugTest",
+        species=[
+            {"label": "S", "concentration": 1.0, "smiles": "CCO"},
+            {"label": "Drug", "concentration": 0, "smiles": "CCN", "reactive": False},
+        ],
+        enzymes=[{
+            "label": "E", "concentration": 1e-3, "ecnumber": "EC 1.1.1.1", "amino_acid_sequence": "ACDEFG",
+            "inhibition": [{"inhibitor": "Drug", "type": "competitive", "ki": 0.1, "substrate": "S"}],
+        }],
+        environment={"temperature": 310.0, "pH": 7.4},
+        settings={"end_time": 100.0},
+        database={"name": "db"},
+        dosing=[{"species": "Drug", "profile": "first_order", "dose": 0.01, "params": {"half_life": 60}}],
+    )
+    data.update(overrides)
+    return InputBase(**data)
+
+
+def test_zero_concentration_is_allowed_for_dosed_species():
+    assert Species(label="Drug", concentration=0).concentration == 0
+    assert Enzyme(label="E", concentration=0.0).concentration == 0
+    assert Species(label="R", concentration=(0, 1.0)).concentration == (0, 1.0)
+
+
+def test_drug_input_validates():
+    parsed = _drug_input()
+    inh = parsed.enzymes[0].inhibition[0]
+    assert (inh.inhibitor, inh.type, inh.ki, inh.substrate) == ("Drug", "competitive", 0.1, "S")
+    assert parsed.dosing[0].profile == "first_order"
+
+
+def test_inputs_without_the_new_keys_are_unchanged():
+    parsed = _drug_input(dosing=None, enzymes=[{"label": "E", "concentration": 1e-3}])
+    assert parsed.dosing is None and parsed.enzymes[0].inhibition is None
+    assert parsed.enzymes[0].measured_kinetics is None
+
+
+def test_feedback_inhibition_still_parses_next_to_inhibition():
+    enz = Enzyme(label="E", concentration=1e-3, feedback_inhibition={"inhibitors": ["Drug"], "ki": 1.0, "hill": 2.0},
+                 inhibition=[{"inhibitor": "Drug", "type": "noncompetitive", "ki": 0.5}])
+    assert enz.feedback_inhibition.hill == 2.0 and enz.inhibition[0].type == "noncompetitive"
+
+
+@pytest.mark.parametrize("spec,message", [
+    ({"inhibitor": "Drug", "type": "mixed", "ki": 1.0}, "needs 'alpha'"),
+    ({"inhibitor": "Drug", "type": "competitive", "ki": 1.0, "alpha": 2.0}, "only applies to mixed"),
+    ({"inhibitor": "Drug", "type": "noncompetitive", "ki": 1.0, "substrate": "S"}, "does not apply"),
+    ({"inhibitor": "Drug", "type": "tight_binding", "ki": 1.0, "substrate": "S"}, "does not apply"),
+    ({"inhibitor": "Drug", "type": "bogus", "ki": 1.0}, "Input should be"),
+    ({"inhibitor": "Drug", "type": "competitive", "ki": -1.0}, "greater than 0"),
+    ({"inhibitor": "Drug", "type": "competitive", "ki": 1.0, "extra": 1}, "Extra inputs"),
+])
+def test_invalid_inhibition_specs(spec, message):
+    with pytest.raises(ValidationError, match=message):
+        Enzyme(label="E", concentration=1e-3, inhibition=[spec])
+
+
+def test_mixed_inhibition_and_source_text():
+    enz = Enzyme(label="E", concentration=1e-3, inhibition=[
+        {"inhibitor": "Drug", "type": "mixed", "ki": 1.0, "alpha": 3.0, "source": "Smith 2020"}])
+    assert enz.inhibition[0].alpha == 3.0 and enz.inhibition[0].source == "Smith 2020"
+
+
+def test_measured_kinetics():
+    enz = Enzyme(label="E", concentration=1e-3, measured_kinetics={
+        "kcat": 100.0, "km": {"S": 0.1}, "default_km": 0.02, "source": "assay"})
+    assert enz.measured_kinetics.km == {"S": 0.1} and enz.measured_kinetics.default_km == 0.02
+    with pytest.raises(ValidationError, match="at least one of kcat, km, default_km"):
+        Enzyme(label="E", concentration=1e-3, measured_kinetics={"source": "nothing"})
+    with pytest.raises(ValidationError, match="greater than 0"):
+        Enzyme(label="E", concentration=1e-3, measured_kinetics={"kcat": 0})
+
+
+def test_inhibitor_must_be_a_species():
+    enzymes = [{"label": "E", "concentration": 1e-3,
+                "inhibition": [{"inhibitor": "Nope", "type": "competitive", "ki": 0.1}]}]
+    with pytest.raises(ValidationError, match="'Nope' is not in 'species'"):
+        _drug_input(enzymes=enzymes)
+
+
+def test_omitted_ki_needs_an_estimate_that_can_run():
+    enzymes = [{"label": "E", "concentration": 1e-3, "amino_acid_sequence": "ACDEFG",
+                "inhibition": [{"inhibitor": "Drug", "type": "competitive"}]}]
+    with pytest.raises(ValidationError, match="estimate_kinetics"):
+        _drug_input(enzymes=enzymes)
+    settings = {"end_time": 100.0, "estimate_kinetics": True, "kinetics_estimator": "catpred"}
+    assert _drug_input(enzymes=enzymes, settings=settings).enzymes[0].inhibition[0].ki is None
+    enzymes[0].pop("amino_acid_sequence")
+    with pytest.raises(ValidationError, match="amino_acid_sequence"):
+        _drug_input(enzymes=enzymes, settings=settings)
+    species = [{"label": "S", "concentration": 1.0}, {"label": "Drug", "concentration": 0, "reactive": False}]
+    enzymes[0]["amino_acid_sequence"] = "ACDEFG"
+    with pytest.raises(ValidationError, match="smiles"):
+        _drug_input(enzymes=enzymes, settings=settings, species=species)
+
+
+@pytest.mark.parametrize("dosing,message", [
+    ({"species": "Nope", "profile": "bolus", "dose": 1.0}, "'Nope' is not in 'species'"),
+    ({"species": "S", "profile": "bolus", "dose": 1.0}, None),
+    ({"species": "Drug", "profile": "bogus", "dose": 1.0}, "Input should be"),
+    ({"species": "Drug", "profile": "bolus", "dose": 0}, "greater than 0"),
+    ({"species": "Drug", "profile": "bolus", "dose": 1.0, "t_start": -1}, "greater than or equal to 0"),
+    ({"species": "Drug", "profile": "weibull", "dose": 1.0, "params": {"tau": 10}}, "'tau' \\(s\\) and 'beta'"),
+    ({"species": "Drug", "profile": "constant", "dose": 1.0}, "'duration'"),
+    ({"species": "Drug", "profile": "bolus", "dose": 1.0, "elimination_k": 1.0, "elimination_half_life": 1.0},
+     "not both"),
+])
+def test_invalid_dosing(dosing, message):
+    if message is None:
+        assert _drug_input(dosing=[dosing]).dosing[0].species == "S"
+        return
+    with pytest.raises(ValidationError, match=message):
+        _drug_input(dosing=[dosing])
+
+
+def test_dosing_a_constant_species_is_rejected():
+    species = [{"label": "S", "concentration": 1.0}, {"label": "Drug", "concentration": 0.1, "constant": True}]
+    with pytest.raises(ValidationError, match="constant"):
+        _drug_input(species=species)
+
+
+def test_conflicting_elimination_for_one_species_is_rejected():
+    dosing = [
+        {"species": "Drug", "profile": "bolus", "dose": 1.0, "elimination_k": 0.1},
+        {"species": "Drug", "profile": "first_order", "dose": 1.0, "params": {"k": 0.1}, "elimination_half_life": 100.0},
+    ]
+    with pytest.raises(ValidationError, match="conflicting elimination"):
+        _drug_input(dosing=dosing)
+    dosing[1]["elimination_half_life"] = None
+    dosing[1]["elimination_k"] = 0.1
+    assert len(_drug_input(dosing=dosing).dosing) == 2

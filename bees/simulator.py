@@ -1224,6 +1224,7 @@ class ODESimulator:
         label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
         edge_labels_lc = {sp.label.lower().strip() for sp in self.model.edge_species}
         enzyme_map = self._build_enzyme_concentration_map()
+        shown = {lab.lower().strip(): lab for lab in species_labels}
 
         species_terms: Dict[str, List[Tuple[int, int]]] = {
             lab.lower().strip(): [] for lab in species_labels
@@ -1304,21 +1305,22 @@ class ODESimulator:
                 inh_v, inh_km = "1", {}
                 if inh_specs and spec.form != "zero":
                     def _inh_param(kind, sp, value, _p=inh_params):
-                        name = f"{kind}({sp.inhibitor})" if sp.substrate is None else f"{kind}({sp.inhibitor}, {sp.substrate})"
+                        inh = shown.get(sp.inhibitor, sp.inhibitor)
+                        name = f"{kind}({inh})" if sp.substrate is None else f"{kind}({inh}, {sp.substrate})"
                         _p.append(f"{name}={value:.6g} mM")
                         return name
                     first_sub = spec.substrates[0][0] if spec.substrates else None
                     inh_v, inh_km = format_inhibition_terms(
                         inh_specs,
-                        lambda lab: f"[{lab}]" if lab in label_to_idx else None,
+                        lambda lab: f"[{shown[lab]}]" if lab in label_to_idx else None,
                         _inh_param,
                         first_sub,
                     )
                     for sp in inh_specs:
                         if sp.type == "tight_binding" and sp.inhibitor in label_to_idx:
-                            ki_name = f"Ki({sp.inhibitor})"
+                            ki_name = f"Ki({shown[sp.inhibitor]})"
                             inh_params.append(f"{ki_name}={sp.ki:.6g} mM")
-                            inh_v += " * " + morrison_expression(f"[{sp.inhibitor}]", f"[{rxn.enzyme_label}]", ki_name)
+                            inh_v += " * " + morrison_expression(f"[{shown[sp.inhibitor]}]", f"[{rxn.enzyme_label}]", ki_name)
                     if inh_v.startswith("1 * "):
                         inh_v = inh_v[4:]
                     if inh_v != "1":
@@ -1327,7 +1329,7 @@ class ODESimulator:
                     spec,
                     conc=lambda lab: f"[{lab}]" if lab.lower().strip() in label_to_idx else None,
                     km=lambda lab, role: (
-                        f"Km_{lab} * {inh_km[lab.lower().strip()]}"
+                        f"(Km_{lab} * {inh_km[lab.lower().strip()]})"
                         if role == "S" and lab.lower().strip() in inh_km else f"Km_{lab}"
                     ),
                     vf=vf,
@@ -1399,7 +1401,7 @@ class ODESimulator:
             if sch.elimination_k:
                 eliminations[lc] = sch.elimination_k
         for lc, k_el in eliminations.items():
-            dose_terms.setdefault(lc, []).append(f"- kel_{lc}*[{lc}]")
+            dose_terms.setdefault(lc, []).append(f"- kel_{shown[lc]}*[{shown[lc]}]")
 
         for lab in species_labels:
             lc = lab.lower().strip()
@@ -1445,7 +1447,7 @@ class ODESimulator:
                 )
                 if sch.elimination_k:
                     lines.append(
-                        f"kel_{sch.species.lower().strip()} = {sch.elimination_k:.6g} 1/s "
+                        f"kel_{shown[sch.species.lower().strip()]} = {sch.elimination_k:.6g} 1/s "
                         f"(half-life {math.log(2.0) / sch.elimination_k:.6g} s)"
                     )
         lines.append("")
