@@ -1,0 +1,102 @@
+# 2-deoxyglucose against hexokinase in upper glycolysis: a deliberately modest example.
+#
+# PLACEHOLDER KINETICS AND Ki. CatPred is not used: every kcat / Km is an order-of-magnitude
+# value typed in (measured_kinetics) and the 2-DG Ki of 0.3 mM is a PLACEHOLDER (ChEMBL has
+# no hexokinase Ki for 2-DG). Not a result about biology.
+#
+# Network (db/glycolysis.csv): HK  D-glucose + ATP -> G6P + ADP
+#                              PGI G6P <=> F6P
+#                              PFK F6P + ATP -> FBP + ADP      FBP is the output.
+# ATP and ADP are held constant. 2-DG is modelled ONLY as a competitor for hexokinase's
+# glucose site; in reality HK also phosphorylates it (2-DG-6-phosphate then inhibits PGI/HK),
+# which this input does not capture.
+project: glycolysis_2dg
+project_directory: projects/glycolysis_2dg
+
+species:
+  - label: D-glucose
+    concentration: 0.2
+    smiles: OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O
+    reactive: true
+  - label: ATP
+    concentration: 5.0
+    smiles: C1=NC(=C2C(=N1)N(C=N2)[C@H]3[C@@H]([C@@H]([C@H](O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O)N
+    constant: true
+    reactive: false
+  - label: ADP
+    concentration: 0.5
+    smiles: C1=NC(=C2C(=N1)N(C=N2)[C@H]3[C@@H]([C@@H]([C@H](O3)COP(=O)(O)OP(=O)(O)O)O)O)N
+    constant: true
+    reactive: false
+  - label: 2-deoxyglucose
+    concentration: 0
+    smiles: OC[C@H]1OC(O)C[C@@H](O)[C@@H]1O
+    reactive: false
+
+enzymes:
+  - label: HK
+    concentration: 1.0e-5
+    ecnumber: EC 2.7.1.1
+    reactive: true
+    measured_kinetics:
+      kcat: 50.0
+      km:
+        D-glucose: 0.1
+        ATP: 0.5
+      default_km: 0.5
+      source: placeholder (order of magnitude)
+    inhibition:
+      - inhibitor: 2-deoxyglucose
+        type: competitive
+        substrate: D-glucose
+        ki: 0.3   # mM, PLACEHOLDER
+        source: placeholder; ChEMBL holds no hexokinase Ki for 2-DG
+  - label: PGI
+    concentration: 1.0e-5
+    ecnumber: EC 5.3.1.9
+    reactive: true
+    measured_kinetics:
+      kcat: 500.0
+      default_km: 0.3
+      source: placeholder (order of magnitude)
+  - label: PFK
+    concentration: 1.0e-5
+    ecnumber: EC 2.7.1.11
+    reactive: true
+    measured_kinetics:
+      kcat: 100.0
+      km:
+        D-fructose 6-phosphate: 0.1
+      default_km: 0.1
+      source: placeholder (order of magnitude)
+
+environment:
+  temperature: 310.15
+  pH: 7.4
+
+database:
+  name: glycolysis
+
+# 5 mM of 2-DG, 10 % released with a 6 min half-life and 90 % with 4.5 h (a liposome
+# 10x faster than the one of the methotrexate example, to fit the 2 h run); free-drug
+# half-life 30 min.
+dosing:
+  - species: 2-deoxyglucose
+    profile: biexponential
+    dose: 5.0
+    params: {fraction_fast: 0.1, half_life_fast: 720, half_life_slow: 16200}
+    elimination_half_life: 1800
+
+settings:
+  end_time: 7200.0
+  time_step: 60.0
+  simulation_mode: iterative
+  estimate_kinetics: false
+  toleranceMoveToCore: 0.01
+  toleranceKeepInEdge: 0
+  toleranceInterruptSimulation: 0.1
+  max_iterations: 15
+  save_simulation_profiles: true
+  save_simulation_plots: true
+  save_ode_equations: true
+  verbose: 20

@@ -42,6 +42,12 @@ species:
     solvent: true
     reactive: false
 
+  ## A drug species: concentration 0 is allowed, it only enters through `dosing` (see the end of the file)
+  - label: Glucosamine-6-phosphate
+    concentration: 0
+    smiles: NC1C(O)OC(COP(O)(O)=O)C(O)C1O
+    reactive: false
+
   - label: NAD+
     concentration: 0.5
     smiles: C1=CC(=C[N+](=C1)[C@H]2[C@@H]([C@@H]([C@H](O2)COP(=O)([O-])OP(=O)([O-])OC[C@@H]3[C@H]([C@H]([C@@H](O3)N4C=NC5=C(N=CN=C54)N)O)O)O)O)C(=O)N
@@ -50,13 +56,34 @@ species:
 ## --- Enzyme Definition ---
 ## `enzymes` (required): enzymes are species + optional enzyme metadata.
 ## Allowed keys per enzyme (schema): everything in species + ecnumber +
-## amino_acid_sequence + feedback_inhibition.
+## amino_acid_sequence + feedback_inhibition + inhibition + measured_kinetics.
 enzymes:
   - label: Hexokinase
     concentration: 1e-6
     ## ecnumber (optional): "EC x.x.x.x", or a list of them for a multi-function enzyme
     ecnumber: EC 2.7.1.1
     reactive: true
+    ## measured_kinetics (optional): experimental values that override database / CatPred ones
+    ##   kcat (1/s), km (substrate label -> mM), default_km (mM, for every substrate not listed in km;
+    ##   a substrate without a Km is treated as saturated), source (free text)
+    measured_kinetics:
+      kcat: 100.0
+      km:
+        Glucose: 0.1
+      default_km: 0.5
+      source: example only
+    ## inhibition (optional): reversible inhibitors, species labels from `species`
+    ##   type: competitive | uncompetitive | noncompetitive | mixed | tight_binding
+    ##   ki (mM): omit to have CatPred estimate it (then the inhibitor needs smiles and the enzyme a sequence)
+    ##   alpha: mixed only (Ki' = alpha * Ki); substrate: competitive / uncompetitive / mixed only
+    ##   source: free text
+    inhibition:
+      - inhibitor: Glucosamine-6-phosphate
+        type: mixed
+        ki: 0.5
+        alpha: 3.0
+        substrate: Glucose
+        source: example only
     ## amino_acid_sequence (optional): uppercase 1-letter amino acids only
     amino_acid_sequence: MIAAQLLAYYFTELKDDQVKKIDKYLYAMRLSDETLIDIMTRFRKEMKNGLSRDFNPTATVKMLPTFVRSIPDGSEKGDFIALDLGGSSFRILRVQVNHEKNQNVHMESEVYDTPENIVHGSGSQLFDHVAECLGDFMEKRKIKDKKLPVGFTFSFPCQQSKIDEAILITWTKRFKASGVEGADVVKLLNKAIKKRGDYDANIVAVVNDTVGTMMTCGYDDQHCEVGLIIGTGTNACYMEELRHIDLVEGDEGRMCINTEWGAFGDDGSLEDIRTEFDREIDRGSLNPGKQLFEKMVSGMYLGELVRLILVKMAKEGLLFEGRITPELLTRGKFNTSDVSAIEKNKEGLHNAKEILTRLGVEPSDDDCVSVQHVCTIVSFRSANLVAATLGAILNRLRDNKGTPRLRTTVGVDGSLYKTHPQYSRRFHKTLRRLVPDSDVRFLLSESGSGKGAAMVTAVAYRLAEQHRQIEETLAHFHLTKDMLLEVKKRMRAEMELGLRKQTHNNAVVKMLPSFVRRTPDGTENGDFLALDLGGTNFRVLLVKIRSGKKRTVEMHNKIYAIPIEIMQGTGEELFDHIVSCISDFLDYMGIKGPRMPLGFTFSFPCQQTSLDAGILITWTKGFKATDCVGHDVVTLLRDAIKRREEFDLDVVAVVNDTVGTMMTCAYEEPTCEVGLIVGTGSNACYMEEMKNVEMVEGDQGQMCINMEWGAFGDNGCLDDIRTHYDRLVDEYSLNAGKQRYEKMISGMYLGEIVRNILIDFTKKGFLFRGQISETLKTRGIFETKFLSQIESDRLALLQVRAILQQLGLNSTCDDSILVKTVCGVVSRRAAQLCGAGMAAVVDKIRENRGLDRLNVTVGVDGTLYKLHPHFSRIMHQTVKELSPKCNVSFLLSEDGSGKGAALITAVGVRLRTEASS
 
@@ -89,6 +116,25 @@ environment:
 database:
   ## name: database identifier (e.g., `db`)
   name: db
+
+## --- Dosing (optional) ---
+## Time-dependent input of a species, e.g. a drug released by its carrier. Allowed keys per entry:
+## species (must be in `species`, not constant), profile, dose (mM released in total), t_start (s),
+## params (seconds), elimination_k (1/s) or elimination_half_life (s) for the free species.
+## profiles and params:
+##   bolus (none) | constant (duration) | first_order (k | half_life) |
+##   biexponential (fraction_fast, k_fast | half_life_fast, k_slow | half_life_slow) |
+##   weibull (tau, beta) | korsmeyer_peppas (k, n) | table (table: [[t, rate], ...])
+dosing:
+  - species: Glucosamine-6-phosphate
+    profile: biexponential
+    dose: 0.05
+    t_start: 0
+    params:
+      fraction_fast: 0.1
+      half_life_fast: 120
+      half_life_slow: 1800
+    elimination_half_life: 600
 
 ## --- Settings (all current schema attributes) ---
 settings:
