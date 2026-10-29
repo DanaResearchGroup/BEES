@@ -1,12 +1,16 @@
 """Pydantic input schema for BEES YAML."""
 
-from typing import Dict, List, Optional, Tuple, Union, Literal, Annotated
+import math
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal, Annotated
 from pydantic import BaseModel, ConfigDict, conint, confloat, constr, field_validator, model_validator, ValidationInfo, Field
 from rdkit import Chem
 
+from bees.dosing import normalize_params
+
 class Species(BaseModel):
     label: str
-    concentration: Union[Annotated[float, Field(gt=0)], Tuple[Annotated[float, Field(gt=0)], Annotated[float, Field(gt=0)]]] = Field(
+    # 0 is allowed: a drug species that only enters through `dosing`.
+    concentration: Union[Annotated[float, Field(ge=0)], Tuple[Annotated[float, Field(ge=0)], Annotated[float, Field(ge=0)]]] = Field(
         default=None, validate_default=True,
     )
     smiles: Optional[str] = None
@@ -69,10 +73,50 @@ class FeedbackInhibition(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+class Inhibition(BaseModel):
+    """Reversible inhibition of an enzyme by a model species (see bees/inhibition.py)."""
+    inhibitor: constr(min_length=1)  # label of a species
+    type: Literal["competitive", "uncompetitive", "noncompetitive", "mixed", "tight_binding"]
+    ki: Optional[Annotated[float, Field(gt=0)]] = None  # mM; None -> estimated (CatPred)
+    alpha: Optional[Annotated[float, Field(gt=0)]] = None  # mixed only: Ki' = alpha * Ki
+    substrate: Optional[constr(min_length=1)] = None  # which substrate it acts against
+    source: Optional[str] = None  # where Ki comes from (free text)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_type_fields(self):
+        if self.type == "mixed" and self.alpha is None:
+            raise ValueError("Mixed inhibition needs 'alpha' (Ki' = alpha * Ki)")
+        if self.type != "mixed" and self.alpha is not None:
+            raise ValueError(f"'alpha' only applies to mixed inhibition, not '{self.type}'")
+        if self.substrate is not None and self.type in ("noncompetitive", "tight_binding"):
+            raise ValueError(f"'substrate' does not apply to {self.type} inhibition (it acts on the whole enzyme)")
+        return self
+
+class MeasuredKinetics(BaseModel):
+    """Experimental kinetics of an enzyme; override database/CatPred values."""
+    kcat: Optional[Annotated[float, Field(gt=0)]] = None  # 1/s
+    km: Optional[Dict[str, Annotated[float, Field(gt=0)]]] = None  # substrate label -> mM
+    # Km for every substrate not listed in `km`. A substrate without a Km is left out of the
+    # rate law, i.e. treated as saturated, which lets the reaction run after it is used up.
+    default_km: Optional[Annotated[float, Field(gt=0)]] = None  # mM
+    source: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_something_given(self):
+        if self.kcat is None and not self.km and self.default_km is None:
+            raise ValueError("measured_kinetics needs at least one of kcat, km, default_km")
+        return self
+
 class Enzyme(Species):
     ecnumber: Optional[Union[constr(pattern=r"^EC \d+\.\d+\.\d+\.\d+$"), List[constr(pattern=r"^EC \d+\.\d+\.\d+\.\d+$")]]] = None
     amino_acid_sequence: Optional[str] = None
     feedback_inhibition: Optional[FeedbackInhibition] = None
+    inhibition: Optional[List[Inhibition]] = None
+    measured_kinetics: Optional[MeasuredKinetics] = None
 
     @field_validator('label')
     @classmethod
@@ -242,6 +286,27 @@ class Database(BaseModel):
             raise ValueError("Name cannot be empty")
         return value
 
+class Dosing(BaseModel):
+    """Time-dependent input of a species (a drug released by its carrier); see bees/dosing.py."""
+    species: constr(min_length=1)
+    profile: Literal[
+        "bolus", "constant", "first_order", "biexponential", "weibull", "korsmeyer_peppas", "table",
+    ]
+    dose: Annotated[float, Field(gt=0)]  # mM released in total
+    t_start: Annotated[float, Field(ge=0)] = 0.0  # s
+    params: Optional[Dict[str, Any]] = None  # profile parameters, in seconds
+    elimination_k: Optional[Annotated[float, Field(gt=0)]] = None  # 1/s
+    elimination_half_life: Optional[Annotated[float, Field(gt=0)]] = None  # s
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_profile(self):
+        if self.elimination_k is not None and self.elimination_half_life is not None:
+            raise ValueError("Give elimination_k or elimination_half_life, not both")
+        normalize_params(self.profile, self.params)  # raises with a message naming the profile
+        return self
+
 class InputBase(BaseModel):
     project: constr(max_length=255)
     project_directory: Optional[constr(max_length=255)] = None
@@ -250,6 +315,7 @@ class InputBase(BaseModel):
     environment: Environment
     settings: Settings
     database: Database
+    dosing: Optional[List[Dosing]] = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -273,3 +339,45 @@ class InputBase(BaseModel):
         if not value:
             raise ValueError("Enzymes list cannot be empty")
         return value
+
+    @model_validator(mode="after")
+    def _check_cross_references(self):
+        species = {sp.label.lower().strip(): sp for sp in self.species}
+        enzyme_labels = {e.label.lower().strip() for e in self.enzymes}
+        for enz in self.enzymes:
+            for inh in enz.inhibition or []:
+                key = inh.inhibitor.lower().strip()
+                sp = species.get(key)
+                if sp is None:
+                    raise ValueError(
+                        f"Enzyme '{enz.label}': inhibitor '{inh.inhibitor}' is not in 'species'"
+                    )
+                if inh.ki is None:
+                    if not self.settings.estimate_kinetics:
+                        raise ValueError(
+                            f"Enzyme '{enz.label}': Ki for '{inh.inhibitor}' is omitted, which asks for an "
+                            "estimate; set settings.estimate_kinetics or give 'ki'"
+                        )
+                    if not sp.smiles or not enz.amino_acid_sequence:
+                        raise ValueError(
+                            f"Enzyme '{enz.label}': estimating Ki for '{inh.inhibitor}' needs the inhibitor's "
+                            "'smiles' and the enzyme's 'amino_acid_sequence'; otherwise give 'ki'"
+                        )
+        elimination: Dict[str, float] = {}
+        for d in self.dosing or []:
+            key = d.species.lower().strip()
+            sp = species.get(key)
+            if sp is None:
+                raise ValueError(f"Dosing: species '{d.species}' is not in 'species'")
+            if sp.constant:
+                raise ValueError(f"Dosing: species '{d.species}' is constant, so it cannot be dosed")
+            if isinstance(sp.concentration, tuple):
+                raise ValueError(f"Dosing: species '{d.species}' must have a single concentration")
+            k = d.elimination_k
+            if k is None and d.elimination_half_life is not None:
+                k = math.log(2.0) / d.elimination_half_life
+            if k is not None:
+                if key in elimination and not math.isclose(elimination[key], k, rel_tol=1e-9):
+                    raise ValueError(f"Dosing: conflicting elimination rates for species '{d.species}'")
+                elimination[key] = k
+        return self

@@ -9,12 +9,20 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from bees.core_edge_model import CoreEdgeModel, RateLawOptions, SpeciesData
+from bees.dosing import DoseSchedule, schedules_from_spec
 from bees.flux_calculator import (
     identify_insignificant_species_from_peak_ratios,
     identify_significant_species_at_interrupt,
     identify_significant_species_from_peak_ratios,
 )
-from bees.reaction_generator import GeneratedReaction, ReactionGenerator, reaction_signature
+from bees.inhibition import InhibitorSpec
+from bees.reaction_generator import (
+    GeneratedReaction,
+    ReactionGenerator,
+    apply_measured_kinetics,
+    measured_kinetics_by_enzyme,
+    reaction_signature,
+)
 from bees.simulator import ODESimulator, SimulationResult
 
 @dataclass
@@ -96,6 +104,9 @@ class IterativeEnlarger:
         self.save_ode_equations: bool = getattr(
             settings, "save_ode_equations", False
         )
+        self.dose_schedules: List[DoseSchedule] = schedules_from_spec(
+            getattr(bees_object, "dosing", None)
+        )
 
         self.model = CoreEdgeModel()
         self.model.rate_law_options = RateLawOptions(
@@ -115,6 +126,8 @@ class IterativeEnlarger:
 
         # (ec, substrate) pairs that found no reaction; not searched again.
         self._rxn_nohit_cache: Set = set()
+        # (enzyme label lc, inhibitor label lc) -> Ki in mM (None: could not be estimated).
+        self._ki_cache: Dict[Tuple[str, str], Optional[float]] = {}
 
         self._thermo_engine = self._build_thermo_engine()
         self._substitutor = self._build_substitutor()
@@ -167,7 +180,7 @@ class IterativeEnlarger:
             self.model.reset_concentrations_to_initial()
             self._attach_thermo_to_reactions()
 
-            simulator = ODESimulator(self.model, logger=self.logger)
+            simulator = ODESimulator(self.model, logger=self.logger, dosing=self.dose_schedules)
             sim_result = simulator.simulate(
                 end_time=self.end_time,
                 time_step=self.time_step,
@@ -237,6 +250,7 @@ class IterativeEnlarger:
                     interrupt_simulation_tol=self.tol_interrupt_simulation,
                     tol_move_edge_reaction_to_core=self.tol_move_edge_reaction_to_core,
                     max_wall_time_s=self.max_wall_time_per_iteration,
+                    t_offset=t_resume,
                 )
                 self._record_edge_peaks(sim_result, iteration)
                 if not sim_result.success:
@@ -456,6 +470,7 @@ class IterativeEnlarger:
 
         self._log_thermo_fallback_prevalence()
         self._warn_unmatched_feedback_inhibitors()
+        self._warn_unresolved_inhibitors()
 
         return result
 
@@ -523,7 +538,7 @@ class IterativeEnlarger:
     def _simulate_full_trajectory(self) -> SimulationResult:
         """Simulate the current model from t=0 to end_time without interrupts."""
         self.model.reset_concentrations_to_initial()
-        return ODESimulator(self.model, logger=self.logger).simulate(
+        return ODESimulator(self.model, logger=self.logger, dosing=self.dose_schedules).simulate(
             end_time=self.end_time,
             time_step=self.time_step,
             method=self.ode_method,
@@ -555,6 +570,17 @@ class IterativeEnlarger:
             f"Feedback inhibition: inhibitor(s) not found among model species, so their "
             f"terms are inactive — {parts}. Check the names in enzymes[].feedback_inhibition."
         )
+
+    def _warn_unresolved_inhibitors(self) -> None:
+        """Warn about declared inhibitors that act on nothing (checked once, on the final model)."""
+        rhs = ODESimulator(self.model)._build_rhs(core_only=True)
+        for enzyme, inhibitor, reason in dict.fromkeys(rhs.unresolved_inhibitors):
+            self.logger.warning(f"Inhibition: {enzyme} <- {inhibitor} is inactive in a reaction: {reason}.")
+        if self.dose_schedules:
+            labels = self.model.get_species_labels_lc()
+            for sch in self.dose_schedules:
+                if sch.species.lower().strip() not in labels:
+                    self.logger.warning(f"Dosing: {sch.species} is not a model species, so its dose is ignored.")
 
     def _log_thermo_fallback_prevalence(self) -> None:
         """Log the fraction of core reactions that used a thermodynamic fallback.
@@ -797,7 +823,84 @@ class IterativeEnlarger:
         all_reactions = list(self.model.core_reactions) + list(self.model.edge_reactions)
         rules.apply_all(all_reactions)
         self._sync_template_reversibility(all_reactions)
+        self._apply_measured_kinetics(all_reactions)
         self._apply_feedback_inhibition(all_reactions)
+        self._apply_inhibition(all_reactions)
+
+    def _apply_measured_kinetics(self, reactions) -> None:
+        """Re-apply Enzyme.measured_kinetics after the rules layer, so a calibration never
+        overrides a value the user supplied."""
+        measured = measured_kinetics_by_enzyme(self.bees_object)
+        if not measured:
+            return
+        for rxn in reactions:
+            spec = measured.get(str(getattr(rxn, "enzyme_label", "")).lower().strip())
+            if spec is not None:
+                apply_measured_kinetics(rxn, spec)
+
+    def _apply_inhibition(self, reactions) -> None:
+        """Attach Enzyme.inhibition (reversible inhibitors) as ``rxn.inhibitors``.
+
+        Matched by enzyme LABEL, like feedback inhibition. A Ki the YAML omits is estimated
+        once per (enzyme, inhibitor) with the kinetics estimator; if that is not possible the
+        inhibitor is left out with a warning. Re-applied every iteration so the set is
+        deterministic per run.
+        """
+        specs_by_enzyme: Dict[str, List[InhibitorSpec]] = {}
+        for enz in getattr(self.bees_object, "enzymes", []) or []:
+            declared = getattr(enz, "inhibition", None)
+            if not declared:
+                continue
+            resolved = []
+            for inh in declared:
+                ki = inh.ki if inh.ki is not None else self._estimate_ki(enz, inh.inhibitor)
+                if ki is None:
+                    continue
+                resolved.append(InhibitorSpec(
+                    inhibitor=inh.inhibitor.lower().strip(),
+                    type=inh.type,
+                    ki=float(ki),
+                    alpha=float(inh.alpha) if inh.alpha is not None else None,
+                    substrate=inh.substrate.lower().strip() if inh.substrate else None,
+                ))
+            if resolved:
+                specs_by_enzyme[str(enz.label).lower().strip()] = resolved
+        for rxn in reactions:
+            rxn.inhibitors = specs_by_enzyme.get(str(getattr(rxn, "enzyme_label", "")).lower().strip())
+
+    def _estimate_ki(self, enzyme, inhibitor_label: str) -> Optional[float]:
+        """CatPred Ki (mM) of ``inhibitor_label`` for ``enzyme``; None (warned) when unavailable."""
+        key = (str(enzyme.label).lower().strip(), inhibitor_label.lower().strip())
+        if key in self._ki_cache:
+            return self._ki_cache[key]
+        ki = None
+        estimator = self.reaction_generator.kinetics_estimator
+        smiles = next(
+            (sp.smiles for sp in self.bees_object.species
+             if sp.label.lower().strip() == key[1] and getattr(sp, "smiles", None)),
+            None,
+        )
+        try:
+            if estimator is None:
+                raise RuntimeError("no kinetics estimator is enabled")
+            est = estimator.estimate_ki(
+                enzyme_sequence=enzyme.amino_acid_sequence, inhibitor_smiles=smiles,
+            )
+            ki = est.ki
+            if ki is None:
+                raise RuntimeError(est.source)
+            if getattr(est, "ki_sd", None) is not None:
+                self.logger.info(f"Inhibition: Ki({enzyme.label}, {inhibitor_label}) sd = {est.ki_sd:.4g} mM")
+            self.logger.info(
+                f"Inhibition: Ki({enzyme.label}, {inhibitor_label}) = {ki:.4g} mM ({est.source})"
+            )
+        except Exception as exc:
+            self.logger.warning(
+                f"Inhibition: could not estimate Ki for {enzyme.label} <- {inhibitor_label} ({exc}); "
+                "this inhibitor is left out. Give 'ki' in the YAML to include it."
+            )
+        self._ki_cache[key] = ki
+        return ki
 
     def _apply_feedback_inhibition(self, reactions) -> None:
         """Attach opt-in end-product feedback inhibition (Enzyme.feedback_inhibition).
