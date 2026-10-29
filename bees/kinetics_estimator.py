@@ -71,6 +71,17 @@ class BaseKineticsEstimator:
             "BaseKineticsEstimator is an interface. Use build_estimator('catpred') "
         )
 
+    def estimate_ki(
+        self,
+        *,
+        enzyme_sequence: str,
+        inhibitor_smiles: str,
+    ) -> EstimatedKinetics:
+        """Estimate the inhibition constant Ki (mM) of one inhibitor for one enzyme."""
+        raise NotImplementedError(
+            "BaseKineticsEstimator is an interface. Use build_estimator('catpred') "
+        )
+
 class CatPredEstimator(BaseKineticsEstimator):
     """
     CatPred kinetics estimator. This class is used to estimate the kinetics of a reaction using CatPred.
@@ -198,6 +209,138 @@ class CatPredEstimator(BaseKineticsEstimator):
             source=f"{raw.source} [kcat scaled x{factor} for {ec_number}]",
         )
 
+    def _stage_workdir(self):
+        """A fresh writable CatPred working directory: (run_id, local tmp dir, work dir)."""
+        # Create a unique ID for this prediction request to avoid file collisions
+        run_id = f"bees_{uuid.uuid4().hex[:8]}"
+        
+        # Ensure a local writable temp directory exists
+        local_tmp = os.path.join(os.getcwd(), ".tmp")
+        os.makedirs(local_tmp, exist_ok=True)
+        
+        # Create a writable working directory for CatPred execution
+        catpred_work_dir = os.path.join(local_tmp, f"work_{run_id}")
+        os.makedirs(catpred_work_dir, exist_ok=True)
+        
+        # Symlink necessary CatPred files to the writable work dir
+        for item in os.listdir(self.CATPRED_DIR):
+            if item.startswith('.') or item == "output" or item == "demo":
+                continue
+            src = os.path.normpath(os.path.join(self.CATPRED_DIR, item))
+            dst = os.path.join(catpred_work_dir, item)
+            if not os.path.exists(dst):
+                try:
+                    os.symlink(src, dst)
+                except Exception as exc:
+                    # Some environments (including sandboxed execution) can prevent creating
+                    # symlinks to paths outside the workspace. Fall back to copying.
+                    try:
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copy2(src, dst)
+                    except Exception as copy_exc:
+                        logging.getLogger(__name__).warning(
+                            "Failed to stage CatPred item %r "
+                            "(symlink error: %s; copy error: %s)",
+                            item, exc, copy_exc,
+                        )
+        
+        os.makedirs(os.path.join(catpred_work_dir, "output"), exist_ok=True)
+        os.makedirs(os.path.join(catpred_work_dir, "demo"), exist_ok=True)
+        # CatPred demo_run.py writes ./predict.sh; a read-only symlink from the repo raises PermissionError.
+        staged_predict_sh = os.path.join(catpred_work_dir, "predict.sh")
+        try:
+            if os.path.exists(staged_predict_sh):
+                os.remove(staged_predict_sh)
+        except Exception as exc:
+            logging.getLogger(__name__).debug("Best-effort cleanup: could not remove %s: %s", staged_predict_sh, exc)
+        return run_id, local_tmp, catpred_work_dir
+
+    def estimate_ki(
+        self,
+        *,
+        enzyme_sequence: str,
+        inhibitor_smiles: str,
+    ) -> EstimatedKinetics:
+        """Estimate Ki (mM) with CatPred's ki model: one row, the inhibitor SMILES and the sequence.
+
+        BEES calls this only for inhibitors whose YAML omits ``ki``.
+        """
+        if not enzyme_sequence or not inhibitor_smiles:
+            return EstimatedKinetics(source="catpred(ki: needs sequence and inhibitor SMILES)")
+
+        memo_key = ("ki", enzyme_sequence, canonical_smiles(inhibitor_smiles) or str(inhibitor_smiles),
+                    bool(self.include_sd), self.CHECKPOINT_BASE)
+        cached = self._memo.get(memo_key)
+        if cached is not None:
+            return cached
+
+        if not os.path.isdir(self.CATPRED_DIR):
+            raise FileNotFoundError(
+                f"CatPred directory not found: {self.CATPRED_DIR!r}. "
+                "Set CATPRED_DIR to your CatPred clone path (see ./install.sh), "
+                "or give 'ki' for the inhibitor in the YAML."
+            )
+
+        run_id, local_tmp, work_dir = self._stage_workdir()
+        pdb_id = "bees_" + hashlib.md5(enzyme_sequence.encode("utf-8")).hexdigest()[:16]
+        ki_csv = os.path.join(work_dir, f"{run_id}_ki.csv")
+        pd.DataFrame([{
+            "SMILES": inhibitor_smiles, "sequence": enzyme_sequence, "pdbpath": pdb_id,
+        }]).to_csv(ki_csv, index=False)
+
+        checkpoint_dir = os.path.join(self.CHECKPOINT_BASE, "ki")
+        if self.CATPRED_PYTHON:
+            cmd = [self.CATPRED_PYTHON, "demo_run.py", "--parameter", "ki",
+                   "--input_file", ki_csv, "--checkpoint_dir", checkpoint_dir]
+        else:
+            cmd = [self.CONDA_BIN, "run", "-n", self.CONDA_ENV, "python", "demo_run.py",
+                   "--parameter", "ki", "--input_file", ki_csv, "--checkpoint_dir", checkpoint_dir]
+        env = os.environ.copy()
+        env["TMPDIR"] = env["TEMP"] = env["TMP"] = local_tmp
+        if self.CATPRED_PYTHON:
+            env["PATH"] = os.path.dirname(self.CATPRED_PYTHON) + os.pathsep + env.get("PATH", "")
+
+        ki = ki_sd = None
+        error = None
+        try:
+            subprocess.run(cmd, cwd=work_dir, check=True, capture_output=True, text=True, env=env)
+            base = os.path.splitext(os.path.basename(ki_csv))[0]
+            out_csv = os.path.join(work_dir, "output", base, f"{base}_ki_output.csv")
+            df = pd.read_csv(out_csv) if os.path.exists(out_csv) else None
+            if df is not None and not df.empty and "Prediction_(mM)" in df.columns:
+                ki = float(df["Prediction_(mM)"].iloc[0])
+                if self.include_sd and "SD_total" in df.columns and ki > 0:
+                    sd_log10 = float(df["SD_total"].iloc[0])
+                    if sd_log10 > 0:
+                        ki_sd = log10_sd_to_linear_sd(ki, sd_log10)
+            else:
+                error = "no Ki prediction in the CatPred output"
+        except subprocess.CalledProcessError as e:
+            error = (e.stderr or "").strip() or str(e)
+        except Exception as e:
+            error = str(e)
+
+        if error:
+            logging.getLogger(__name__).warning(
+                "CatPred Ki run failed; keeping work directory for inspection: %s", work_dir
+            )
+        else:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+        result = EstimatedKinetics(
+            ki=ki, ki_sd=ki_sd,
+            source="catpred" if not error else f"catpred(ki error: {error})"[:255],
+        )
+        self._memo[memo_key] = result
+        if error:
+            self._memo_not_persisted.add(memo_key)
+        else:
+            self._save_persistent_cache()
+        return result
+
     def estimate(
         self,
         *,
@@ -256,51 +399,7 @@ class CatPredEstimator(BaseKineticsEstimator):
                 "or export CATPRED_DIR=... CATPRED_CHECKPOINT_BASE=... CATPRED_CONDA_ENV=catpred."
             )
 
-        # 1. Create a unique ID for this prediction request to avoid file collisions
-        run_id = f"bees_{uuid.uuid4().hex[:8]}"
-        
-        # Ensure a local writable temp directory exists
-        local_tmp = os.path.join(os.getcwd(), ".tmp")
-        os.makedirs(local_tmp, exist_ok=True)
-        
-        # Create a writable working directory for CatPred execution
-        catpred_work_dir = os.path.join(local_tmp, f"work_{run_id}")
-        os.makedirs(catpred_work_dir, exist_ok=True)
-        
-        # Symlink necessary CatPred files to the writable work dir
-        for item in os.listdir(self.CATPRED_DIR):
-            if item.startswith('.') or item == "output" or item == "demo":
-                continue
-            src = os.path.normpath(os.path.join(self.CATPRED_DIR, item))
-            dst = os.path.join(catpred_work_dir, item)
-            if not os.path.exists(dst):
-                try:
-                    os.symlink(src, dst)
-                except Exception as exc:
-                    # Some environments (including sandboxed execution) can prevent creating
-                    # symlinks to paths outside the workspace. Fall back to copying.
-                    try:
-                        if os.path.isdir(src):
-                            shutil.copytree(src, dst, dirs_exist_ok=True)
-                        else:
-                            os.makedirs(os.path.dirname(dst), exist_ok=True)
-                            shutil.copy2(src, dst)
-                    except Exception as copy_exc:
-                        logging.getLogger(__name__).warning(
-                            "Failed to stage CatPred item %r "
-                            "(symlink error: %s; copy error: %s)",
-                            item, exc, copy_exc,
-                        )
-        
-        os.makedirs(os.path.join(catpred_work_dir, "output"), exist_ok=True)
-        os.makedirs(os.path.join(catpred_work_dir, "demo"), exist_ok=True)
-        # CatPred demo_run.py writes ./predict.sh; a read-only symlink from the repo raises PermissionError.
-        staged_predict_sh = os.path.join(catpred_work_dir, "predict.sh")
-        try:
-            if os.path.exists(staged_predict_sh):
-                os.remove(staged_predict_sh)
-        except Exception as exc:
-            logging.getLogger(__name__).debug("Best-effort cleanup: could not remove %s: %s", staged_predict_sh, exc)
+        run_id, local_tmp, catpred_work_dir = self._stage_workdir()
 
         results = {}
 

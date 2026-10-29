@@ -79,9 +79,9 @@ def test_Species():
     assert species_with_range.smiles == "C(C1C(C(C(C(O1)CO)O)O)O)O"
 
     # Test validators
-    with pytest.raises(ValidationError, match="Input should be greater than 0"):
+    with pytest.raises(ValidationError, match="Input should be greater than or equal to 0"):
         Species(label="NegativeConcentration", concentration=-0.1, smiles="C")
-    with pytest.raises(ValidationError, match="Input should be greater than 0"):
+    with pytest.raises(ValidationError, match="Input should be greater than or equal to 0"):
         Species(label="NegativeRange", concentration=(-0.1, 0.5), smiles="C")
     
   
@@ -137,9 +137,9 @@ def test_Enzyme():
     assert enzyme_missing_seq.amino_acid_sequence is None
     
     # Test validators
-    with pytest.raises(ValidationError, match="Input should be greater than 0"):
+    with pytest.raises(ValidationError, match="Input should be greater than or equal to 0"):
         Enzyme(label="NegativeConcentration", concentration=-0.1, amino_acid_sequence="ACDEFGHIKLMNPQRSTVWY")
-    with pytest.raises(ValidationError, match="Input should be greater than 0"):
+    with pytest.raises(ValidationError, match="Input should be greater than or equal to 0"):
         Enzyme(label="NegativeRange", concentration=(-0.1, 0.5), amino_acid_sequence="ACDEFGHIKLMNPQRSTVWY")
     with pytest.raises(ValidationError):
         Enzyme(label="InvalidEC", concentration=0.1, ecnumber="not.a.valid.ecnumber", amino_acid_sequence="ACDEFGHIKLMNPQRSTVWY")

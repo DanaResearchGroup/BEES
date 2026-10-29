@@ -6,6 +6,8 @@ Concentrations mM, time s, rates mM/s.
 """
 
 from dataclasses import dataclass, field
+import copy
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 import math
 import os
@@ -25,6 +27,14 @@ from bees.flux_calculator import (
     rate_law_spec,
 )
 from bees.conservator import Conservator
+from bees.dosing import DosePlan, DoseSchedule
+from bees.inhibition import (
+    SUBSTRATE_SPECIFIC_TYPES,
+    InhibitionTable,
+    format_inhibition_terms,
+    morrison_expression,
+    resolve_slot,
+)
 from bees.reaction_generator import reaction_signature
 
 _OLD_MODEL_NOTED = False
@@ -93,6 +103,7 @@ class _VectorizedRHS:
         n_core_species: Optional[int] = None,
         n_core_reactions: Optional[int] = None,
         options: Optional[RateLawOptions] = None,
+        dose_plan: Optional[DosePlan] = None,
     ):
         n_sp = len(species_labels)
         n_rx = len(reactions)
@@ -126,12 +137,14 @@ class _VectorizedRHS:
         sub_idx_list: List[List[int]] = []
         km_list:      List[List[float]] = []
         nu_list:      List[List[float]] = []
+        slot_labels:  List[List[str]] = []
 
         for rxn in reactions:
             kin = rxn.kinetics
             pairs_idx: List[int] = []
             pairs_km:  List[float] = []
             pairs_nu:  List[float] = []
+            pairs_lab: List[str] = []
             if kin is not None and rxn.rate_law is not None:
                 km_per = getattr(kin, "km_per_substrate", None) or {}
                 km_single = kin.km
@@ -161,6 +174,8 @@ class _VectorizedRHS:
                         pairs_idx.append(idx)
                         pairs_km.append(float(km_val))
                         pairs_nu.append(float(abs(stoich.get(reactant, 1))))
+                        pairs_lab.append(reactant)
+            slot_labels.append(pairs_lab)
             sub_idx_list.append(pairs_idx)
             km_list.append(pairs_km)
             nu_list.append(pairs_nu)
@@ -216,6 +231,36 @@ class _VectorizedRHS:
                 self._fb_idx_mat[j, :nj] = idxs
                 self._fb_ki_mat[j, :nj] = kis
                 self._fb_hill_mat[j, :nj] = hs
+
+        # Reversible inhibitors (rxn.inhibitors): each acts on one substrate slot of the law.
+        self._slot_labels = slot_labels
+        entries = []
+        self.unresolved_inhibitors: List[Tuple[str, str, str]] = []
+        for j, rxn in enumerate(reactions):
+            specs = getattr(rxn, "inhibitors", None)
+            if not isinstance(specs, (list, tuple)):  # None, or MagicMock in tests
+                continue
+            e_conc = enzyme_conc_map.get(str(rxn.enzyme_label).lower().strip(), 0.0)
+            for sp in specs:
+                model_lc = alias_to_model_label.get(sp.inhibitor, sp.inhibitor)
+                idx = label_to_idx.get(model_lc, label_to_idx.get(sp.inhibitor))
+                if idx is None:
+                    self.unresolved_inhibitors.append((rxn.enzyme_label, sp.inhibitor, "not a model species"))
+                    continue
+                if sp.type in SUBSTRATE_SPECIFIC_TYPES:
+                    slot = resolve_slot(sp.substrate, slot_labels[j], alias_to_model_label)
+                    if slot is None:
+                        if sp.substrate is not None and slot_labels[j]:
+                            reason = f"{sp.substrate!r} is not a substrate with a Km in {rxn!r}"
+                        else:
+                            reason = f"no substrate with a Km in {rxn!r}"
+                        self.unresolved_inhibitors.append((rxn.enzyme_label, sp.inhibitor, reason))
+                        continue
+                else:
+                    slot = K
+                entries.append((j, idx, slot, sp, e_conc))
+        self._inhibition = InhibitionTable(n_rx, K, entries)
+        self._inhibited_rx = set(self._inhibition.inhibited_reactions)
 
         rows, cols, data = [], [], []
         for j, rxn in enumerate(reactions):
@@ -273,6 +318,8 @@ class _VectorizedRHS:
         self._species_labels = list(species_labels)
         self._enzyme_conc_map = dict(enzyme_conc_map)
 
+        self._reactions = reactions
+        self._dose_plan = dose_plan
         self.options = options or RateLawOptions()
         self._competition = None
         if self.options.enzyme_competition:
@@ -283,8 +330,13 @@ class _VectorizedRHS:
             )
 
     def __call__(self, t: float, y: np.ndarray) -> np.ndarray:
-        """Evaluate dydt = S @ v(y)."""
-        return self.compute_dydt(y)
+        """Evaluate dydt = S @ v(y), plus the dosing sources and eliminations at time t."""
+        dydt = self.compute_dydt(y)
+        if self._dose_plan is not None and self._dose_plan.active:
+            dose = self._dose_plan.dydt(t, y)
+            dose[self._integration_mask] = 0.0
+            dydt = dydt + dose
+        return dydt
 
     def compute_v(self, y: np.ndarray) -> np.ndarray:
         """Compute rate vector v(y). Accepts (n_species,) or (n_species, n_timepoints)."""
@@ -336,6 +388,11 @@ class _VectorizedRHS:
         else:
             y_ext = np.append(y, 1.0)
 
+        # Inhibitors rescale each reaction's Vmax and the Km of the substrate they act on.
+        v_scale = km_scale = None
+        if self._inhibition.active:
+            v_scale, km_scale = self._inhibition.scales(y_ext)
+
         # Clip only inside saturation so rates stay non-negative.
         s = y_ext[self._sub_idx_mat]
         s_pos = np.maximum(s, 0.0)
@@ -343,20 +400,23 @@ class _VectorizedRHS:
         if is_mat:
             km = self._km_mat[:, :, np.newaxis]
             nu = self._nu_mat[:, :, np.newaxis]
-            sat = s_pos / (km + s_pos)
-            v = self._vmax[:, np.newaxis] * np.prod(sat ** nu, axis=1)
+            vmax = self._vmax[:, np.newaxis]
         else:
-            sat = s_pos / (self._km_mat + s_pos)
-            v = self._vmax * np.prod(sat ** self._nu_mat, axis=1)
+            km = self._km_mat
+            nu = self._nu_mat
+            vmax = self._vmax
+        if v_scale is not None:
+            km = km * km_scale
+            vmax = vmax * v_scale
+
+        sat = s_pos / (km + s_pos)
+        v = vmax * np.prod(sat ** nu, axis=1)
 
         den = None
         if want_den:
             # Pad columns have Km = 0, nu = 0: (1 + 1/0)**0 = 1.
             with np.errstate(divide="ignore"):
-                if is_mat:
-                    den = np.prod((1.0 + s_pos / km) ** nu, axis=1)
-                else:
-                    den = np.prod((1.0 + s_pos / self._km_mat) ** self._nu_mat, axis=1)
+                den = np.prod((1.0 + s_pos / km) ** nu, axis=1)
 
         # Overlays apply max(c, 0) themselves.
         _need_overlay = self._reversible_indices or self._product_inhibited_indices
@@ -376,13 +436,15 @@ class _VectorizedRHS:
                             for i, lab in enumerate(self._species_labels)
                         }
                         v[col, k], d = compute_reversible_mm_rate_and_den(
-                            rxn, conc_k, self._enzyme_conc_map
+                            self._inhibited_view(col, rxn, v_scale, km_scale, k), conc_k, self._enzyme_conc_map
                         )
                         if den is not None:
                             den[col, k] = d
             else:
                 for col, rxn in zip(self._reversible_indices, self._reversible_reactions):
-                    v[col], d = compute_reversible_mm_rate_and_den(rxn, conc, self._enzyme_conc_map)
+                    v[col], d = compute_reversible_mm_rate_and_den(
+                        self._inhibited_view(col, rxn, v_scale, km_scale), conc, self._enzyme_conc_map
+                    )
                     if den is not None:
                         den[col] = d
 
@@ -395,12 +457,16 @@ class _VectorizedRHS:
                             lab.lower().strip(): float(y[i, k])
                             for i, lab in enumerate(self._species_labels)
                         }
-                        v[col, k], d = compute_mm_rate_and_den(rxn, conc_k, self._enzyme_conc_map)
+                        v[col, k], d = compute_mm_rate_and_den(
+                            self._inhibited_view(col, rxn, v_scale, km_scale, k), conc_k, self._enzyme_conc_map
+                        )
                         if den is not None:
                             den[col, k] = d
             else:
                 for col, rxn in zip(self._product_inhibited_indices, self._product_inhibited_reactions):
-                    v[col], d = compute_mm_rate_and_den(rxn, conc, self._enzyme_conc_map)
+                    v[col], d = compute_mm_rate_and_den(
+                        self._inhibited_view(col, rxn, v_scale, km_scale), conc, self._enzyme_conc_map
+                    )
                     if den is not None:
                         den[col] = d
 
@@ -419,6 +485,26 @@ class _VectorizedRHS:
             v = v * self._competition_c(y_ext, den, v.shape)
 
         return v, den
+
+    def _inhibited_view(self, col: int, rxn, v_scale, km_scale, k: Optional[int] = None):
+        """``rxn`` with its Vmax and substrate Kms replaced by the inhibited ones (the same
+        reaction when nothing inhibits it), for rate laws that read them off the reaction."""
+        if v_scale is None or col not in self._inhibited_rx:
+            return rxn
+        v = float(v_scale[col] if k is None else v_scale[col, k])
+        km_row = km_scale[col] if k is None else km_scale[col, :, k]
+        kin = copy.copy(rxn.kinetics)
+        if kin.kcat is not None:
+            kin.kcat = kin.kcat * v
+        if kin.vmax is not None:
+            kin.vmax = kin.vmax * v
+        km_per = dict(getattr(kin, "km_per_substrate", None) or {})
+        for slot, lab in enumerate(self._slot_labels[col]):
+            km_per[lab] = float(self._km_mat[col, slot] * km_row[slot])
+        kin.km_per_substrate = km_per
+        view = copy.copy(rxn)
+        view.kinetics = kin
+        return view
 
     def compute_dydt(self, y: np.ndarray) -> np.ndarray:
         """dydt = S @ v(y) with edge isolation for the integrator."""
@@ -485,10 +571,23 @@ class _VectorizedRHS:
 class ODESimulator:
     """Integrate the biochemical reaction network for a CoreEdgeModel."""
 
-    def __init__(self, model: CoreEdgeModel, logger=None):
+    def __init__(self, model: CoreEdgeModel, logger=None, dosing: Optional[List[DoseSchedule]] = None):
         self.model = model
         self.logger = logger
         self.options = rate_law_options_of(model, logger)
+        self.dosing: List[DoseSchedule] = list(dosing or [])
+
+    def _dose_plan(self, species_labels: List[str], t_offset: float) -> Optional[DosePlan]:
+        """The dosing schedules laid over this run (run time 0 = absolute time ``t_offset``)."""
+        if not self.dosing:
+            return None
+        label_to_idx = {lab.lower().strip(): i for i, lab in enumerate(species_labels)}
+        plan = DosePlan(self.dosing, label_to_idx, len(species_labels), t_offset)
+        if plan.missing and self.logger:
+            self.logger.warning(
+                f"Dosing: species not in the model, so their doses are ignored: {', '.join(plan.missing)}"
+            )
+        return plan if plan.active else None
 
     @staticmethod
     def _concentrations_nonnegative(y: np.ndarray) -> np.ndarray:
@@ -509,8 +608,12 @@ class ODESimulator:
         stepwise_heartbeat_interval_s: Optional[float] = None,
         termination_rate_ratio: Optional[float] = None,
         termination_conversion: Optional[Dict[str, float]] = None,
+        t_offset: float = 0.0,
     ) -> SimulationResult:
         """Run an ODE simulation of the full model (core + edge species and reactions).
+
+        ``t_offset`` is the absolute time at which this run starts (a run resumed from the
+        model's current concentrations); dosing schedules are laid over absolute time.
 
         termination_rate_ratio / termination_conversion stop the stepwise pass as soon
         as R_char/peak drops below the ratio or a conversion target is met;
@@ -548,6 +651,7 @@ class ODESimulator:
                 stepwise_heartbeat_interval_s=stepwise_heartbeat_interval_s,
                 termination_rate_ratio=termination_rate_ratio,
                 termination_conversion=termination_conversion,
+                t_offset=t_offset,
             )
         return self._simulate_continuous(
             end_time=end_time,
@@ -555,6 +659,7 @@ class ODESimulator:
             method=method,
             rtol=rtol,
             atol=atol,
+            t_offset=t_offset,
         )
 
     def _simulate_continuous(
@@ -564,6 +669,7 @@ class ODESimulator:
         method: str,
         rtol: float,
         atol: float,
+        t_offset: float = 0.0,
     ) -> SimulationResult:
         """Full-span solve_ivp without flux-interrupt events."""
         species_labels = self.model.get_all_species_labels()
@@ -579,6 +685,9 @@ class ODESimulator:
             np.array(self.model.get_all_concentration_vector(), dtype=float)
         )
         reactions = self.model.core_reactions + self.model.edge_reactions
+        plan = self._dose_plan(species_labels, t_offset)
+        if plan is not None:
+            y0 = y0 + plan.y0_add
 
         t_eval = None
         if time_step is not None and time_step > 0:
@@ -594,6 +703,7 @@ class ODESimulator:
             n_core_species=len(self.model.core_species),
             n_core_reactions=len(self.model.core_reactions),
             options=self.options,
+            dose_plan=plan,
         )
         conservator = Conservator(species_labels)
 
@@ -603,12 +713,16 @@ class ODESimulator:
                 f"{len(reactions)} reactions, t=[0, {end_time}] s"
             )
 
-        sol = solve_ivp(
-            rhs, (0.0, end_time), y0,
-            method=method, t_eval=t_eval,
-            rtol=rtol, atol=atol,
-            max_step=end_time / 10 if end_time > 0 else np.inf,
-        )
+        max_step = end_time / 10 if end_time > 0 else np.inf
+        if plan is None or not (plan.breakpoints or plan.events):
+            sol = solve_ivp(
+                rhs, (0.0, end_time), y0,
+                method=method, t_eval=t_eval,
+                rtol=rtol, atol=atol,
+                max_step=max_step,
+            )
+        else:
+            sol = self._solve_segments(rhs, plan, y0, end_time, t_eval, method, rtol, atol, max_step)
 
         t_out = sol.t
         y_raw = sol.y
@@ -651,6 +765,43 @@ class ODESimulator:
                 )
         return result
 
+    @staticmethod
+    def _solve_segments(rhs, plan: DosePlan, y0, end_time, t_eval, method, rtol, atol, max_step):
+        """solve_ivp in pieces that end at every dosing breakpoint, so the integrator never
+        steps over a change of the source; impulses (boluses) are added between pieces."""
+        cuts = [0.0] + [p for p in plan.breakpoints if p < end_time] + [end_time]
+        t_all: List[np.ndarray] = []
+        y_all: List[np.ndarray] = []
+        y = y0.copy()
+        success, message = True, ""
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            for idx, amount in plan.impulses_at(a):
+                y[idx] += amount
+            if t_all and t_all[-1].size and t_all[-1][-1] == a and plan.impulses_at(a):
+                y_all[-1][:, -1] = y  # the state at a is the post-impulse one
+            sol = solve_ivp(
+                rhs, (a, b), y, method=method, rtol=rtol, atol=atol,
+                max_step=max_step, dense_output=t_eval is not None,
+            )
+            if not sol.success:
+                success, message = False, sol.message
+                t_all.append(sol.t)
+                y_all.append(sol.y)
+                break
+            if t_eval is None:
+                t_seg, y_seg = sol.t, sol.y
+            else:
+                grid = t_eval[(t_eval >= a) & (t_eval <= b)] if a == 0.0 else t_eval[(t_eval > a) & (t_eval <= b)]
+                t_seg, y_seg = grid, (sol.sol(grid) if len(grid) else np.empty((len(y), 0)))
+            if t_all and t_eval is None:
+                t_seg, y_seg = t_seg[1:], y_seg[:, 1:]
+            t_all.append(t_seg)
+            y_all.append(y_seg)
+            y = sol.y[:, -1].copy()
+        return SimpleNamespace(
+            t=np.concatenate(t_all), y=np.concatenate(y_all, axis=1), success=success, message=message,
+        )
+
     def _simulate_stepwise(
         self,
         end_time: float,
@@ -664,6 +815,7 @@ class ODESimulator:
         stepwise_heartbeat_interval_s: Optional[float] = None,
         termination_rate_ratio: Optional[float] = None,
         termination_conversion: Optional[Dict[str, float]] = None,
+        t_offset: float = 0.0,
     ) -> SimulationResult:
         """Advance by dt; interrupt when any edge flux ratio exceeds tolerance (earliest at t > 0).
 
@@ -682,6 +834,9 @@ class ODESimulator:
         y0 = self._concentrations_nonnegative(
             np.array(self.model.get_all_concentration_vector(), dtype=float)
         )
+        plan = self._dose_plan(species_labels, t_offset)
+        if plan is not None:
+            y0 = y0 + plan.y0_add
         reactions = self.model.core_reactions + self.model.edge_reactions
         edge_labels_lc_list = [sp.label.lower().strip() for sp in self.model.edge_species]
         n_core = len(self.model.core_species)
@@ -696,6 +851,7 @@ class ODESimulator:
             n_core_species=n_core,
             n_core_reactions=n_core_rxns,
             options=self.options,
+            dose_plan=plan,
         )
         conservator = Conservator(species_labels)
 
@@ -807,6 +963,12 @@ class ODESimulator:
 
             dt = min(max(dt, dt_min), dt_max)
             target_t = min(current_t + dt, end_time)
+            # Never step over a change of the dosing source; restart the solver after it.
+            at_dose_break = False
+            if plan is not None:
+                t_break = plan.next_break(current_t, end_time)
+                if t_break <= target_t:
+                    target_t, at_dose_break = t_break, t_break < end_time
             if target_t <= current_t:
                 break
 
@@ -853,6 +1015,10 @@ class ODESimulator:
 
             current_t = float(new_t)
             current_y = np.array(new_y, dtype=float)
+            if at_dose_break:
+                for idx, amount in plan.impulses_at(current_t):
+                    current_y[idx] += amount
+                solver = None
             outer_step_idx += 1
             if not np.isfinite(current_y).all():
                 state_invalid = True
@@ -1132,10 +1298,38 @@ class ODESimulator:
                         lambda lab: f"[{lab}]" if lab.lower().strip() in label_to_idx else None,
                         lambda lab, _e=enzyme: f"Kc({_e}, {lab})",
                     )
+                inh_specs = getattr(rxn, "inhibitors", None)
+                inh_specs = inh_specs if isinstance(inh_specs, (list, tuple)) else []
+                inh_params: List[str] = []
+                inh_v, inh_km = "1", {}
+                if inh_specs and spec.form != "zero":
+                    def _inh_param(kind, sp, value, _p=inh_params):
+                        name = f"{kind}({sp.inhibitor})" if sp.substrate is None else f"{kind}({sp.inhibitor}, {sp.substrate})"
+                        _p.append(f"{name}={value:.6g} mM")
+                        return name
+                    first_sub = spec.substrates[0][0] if spec.substrates else None
+                    inh_v, inh_km = format_inhibition_terms(
+                        inh_specs,
+                        lambda lab: f"[{lab}]" if lab in label_to_idx else None,
+                        _inh_param,
+                        first_sub,
+                    )
+                    for sp in inh_specs:
+                        if sp.type == "tight_binding" and sp.inhibitor in label_to_idx:
+                            ki_name = f"Ki({sp.inhibitor})"
+                            inh_params.append(f"{ki_name}={sp.ki:.6g} mM")
+                            inh_v += " * " + morrison_expression(f"[{sp.inhibitor}]", f"[{rxn.enzyme_label}]", ki_name)
+                    if inh_v.startswith("1 * "):
+                        inh_v = inh_v[4:]
+                    if inh_v != "1":
+                        vf = f"{vf} * {inh_v}"
                 expr = format_rate_law(
                     spec,
                     conc=lambda lab: f"[{lab}]" if lab.lower().strip() in label_to_idx else None,
-                    km=lambda lab, role: f"Km_{lab}",
+                    km=lambda lab, role: (
+                        f"Km_{lab} * {inh_km[lab.lower().strip()]}"
+                        if role == "S" and lab.lower().strip() in inh_km else f"Km_{lab}"
+                    ),
                     vf=vf,
                     others=others,
                 )
@@ -1172,6 +1366,7 @@ class ODESimulator:
                     params.append(f"Km={km_single:.6g} mM")
                     if getattr(kin, "km_sd", None) is not None:
                         params.append(f"Km_sd={kin.km_sd:.6g} mM")
+                params.extend(inh_params)
                 if params:
                     lines.append(f"    Parameters: {', '.join(params)}")
             if td is not None:
@@ -1193,15 +1388,29 @@ class ODESimulator:
         lines.append("ODEs (dC/dt for each species)")
         lines.append("-" * 80)
 
+        dose_terms: Dict[str, List[str]] = {}
+        eliminations: Dict[str, float] = {}
+        for n, sch in enumerate(self.dosing, 1):
+            lc = sch.species.lower().strip()
+            if lc not in label_to_idx:
+                continue
+            if sch.profile != "bolus":
+                dose_terms.setdefault(lc, []).append(f"+ u{n}(t)")
+            if sch.elimination_k:
+                eliminations[lc] = sch.elimination_k
+        for lc, k_el in eliminations.items():
+            dose_terms.setdefault(lc, []).append(f"- kel_{lc}*[{lc}]")
+
         for lab in species_labels:
             lc = lab.lower().strip()
             terms = species_terms.get(lc, [])
             is_edge = lc in edge_labels_lc
             is_const = constant_mask.get(lc, False)
+            extra = " ".join(dose_terms.get(lc, []))
 
             if is_const:
                 lines.append(f"d[{lab}]/dt = 0  (constant)")
-            elif not terms:
+            elif not terms and not extra:
                 lines.append(f"d[{lab}]/dt = 0")
             else:
                 term_strs = []
@@ -1211,8 +1420,34 @@ class ODESimulator:
                     else:
                         term_strs.append(f"{coeff}*v{r_idx}")
                 rhs = " ".join(term_strs).lstrip("+") or "0"
+                if extra:
+                    rhs = f"{rhs} {extra}" if terms else extra.lstrip("+ ")
                 suffix = "  (edge)" if is_edge else ""
                 lines.append(f"d[{lab}]/dt = {rhs}{suffix}")
+
+        if self.dosing:
+            lines.append("")
+            lines.append("-" * 80)
+            lines.append("Dosing (additive sources u(t) in mM/s and first-order elimination)")
+            lines.append("-" * 80)
+            for n, sch in enumerate(self.dosing, 1):
+                if sch.species.lower().strip() not in label_to_idx:
+                    lines.append(f"u{n}: {sch.species} is not in the model - ignored")
+                    continue
+                params = ", ".join(
+                    f"{k}={v:.6g}" if isinstance(v, float) else f"{k}=<{len(v)} rows>"
+                    for k, v in sch.params.items()
+                )
+                lines.append(
+                    f"u{n}(t): {sch.profile} release of {sch.dose:.6g} mM {sch.species} from "
+                    f"t_start={sch.t_start:g} s" + (f" ({params})" if params else "")
+                    + (" - an impulse at t_start, no rate term" if sch.profile == "bolus" else "")
+                )
+                if sch.elimination_k:
+                    lines.append(
+                        f"kel_{sch.species.lower().strip()} = {sch.elimination_k:.6g} 1/s "
+                        f"(half-life {math.log(2.0) / sch.elimination_k:.6g} s)"
+                    )
         lines.append("")
         lines.append("=" * 80)
 
@@ -1257,6 +1492,23 @@ class ODESimulator:
             }
         else:
             sim_result.max_edge_rate_ratio = {}
+
+    def _build_rhs(self, core_only: bool = False) -> "_VectorizedRHS":
+        """The RHS of the model (core + edge, or the core reactions only)."""
+        species_labels = self.model.get_all_species_labels()
+        return _VectorizedRHS(
+            species_labels=species_labels,
+            reactions=self.model.core_reactions + ([] if core_only else self.model.edge_reactions),
+            alias_to_model_label=build_alias_to_model_label(species_labels),
+            enzyme_conc_map=self._build_enzyme_concentration_map(),
+            constant_mask=np.array(
+                [s.constant for s in self.model.core_species] + [False] * len(self.model.edge_species),
+                dtype=bool,
+            ),
+            n_core_species=len(self.model.core_species),
+            n_core_reactions=len(self.model.core_reactions),
+            options=self.options,
+        )
 
     def unmatched_feedback_inhibitors(self) -> Dict[str, List[str]]:
         """{enzyme: [inhibitor labels]} of core reactions whose inhibitor is not a model species.
