@@ -87,7 +87,7 @@ def normalize_params(profile: str, params: Optional[Mapping]) -> Dict[str, objec
             raise ValueError(f"{what}: 'k' and 'n' must be positive")
         return {"k": k, "n": n}
     rows = params.get("table")
-    if not rows or len(rows) < 2:
+    if rows is None or len(rows) < 2:
         raise ValueError(f"{what}: 'table' needs at least two [t, rate] rows")
     arr = np.array([[float(x) for x in row] for row in rows], dtype=float)
     if arr.ndim != 2 or arr.shape[1] != 2:
@@ -252,6 +252,44 @@ class DoseSchedule:
         if self.profile == "table":
             pts.extend(self.t_start + self.params["table"][:, 0])
         return sorted({float(p) for p in pts})
+
+
+def rate_formula(schedule: "DoseSchedule", time: str = "time") -> str:
+    """Infix formula (SBML L3 syntax) of ``schedule.rate`` as a function of the symbol ``time``."""
+    p, prof, D, t0 = schedule.params, schedule.profile, repr(float(schedule.dose)), float(schedule.t_start)
+    x = f"({time} - {t0!r})"
+    start = t0 + (SINGULAR_START if schedule.singular else 0.0)
+    after = f"{time} >= {start!r}"
+
+    def within(t_end: float) -> str:
+        return f"{after} && {time} < {t0 + t_end!r}"
+
+    if prof == "bolus":
+        return "0"
+    if prof == "constant":
+        return f"piecewise({D} / {p['duration']!r}, {within(p['duration'])}, 0)"
+    if prof == "first_order":
+        return f"piecewise({D} * {p['k']!r} * exp(-{p['k']!r} * {x}), {after}, 0)"
+    if prof == "biexponential":
+        phi, kf, ks = p["fraction_fast"], p["k_fast"], p["k_slow"]
+        return (f"piecewise({D} * ({phi!r} * {kf!r} * exp(-{kf!r} * {x}) + {1.0 - phi!r} * {ks!r} * exp(-{ks!r} * {x})), "
+                f"{after}, 0)")
+    if prof == "weibull":
+        tau, beta = p["tau"], p["beta"]
+        return (f"piecewise({D} * {beta!r} / {tau!r} * ({x} / {tau!r})^{beta - 1.0!r} * exp(-(({x} / {tau!r})^{beta!r})), "
+                f"{after}, 0)")
+    if prof == "korsmeyer_peppas":
+        return f"piecewise({D} * {p['k']!r} * {p['n']!r} * {x}^{p['n'] - 1.0!r}, {within(release_end(prof, p))}, 0)"
+    tab = p["table"]
+    area = float(np.sum(0.5 * (tab[1:, 1] + tab[:-1, 1]) * np.diff(tab[:, 0])))
+    pieces = []
+    for (ta, ra), (tb, rb) in zip(tab[:-1], tab[1:]):
+        slope = (rb - ra) / (tb - ta)
+        pieces.append(
+            f"{D} * ({float(ra)!r} + {float(slope)!r} * ({x} - {float(ta)!r})) / {area!r}, "
+            f"{time} >= {t0 + float(ta)!r} && {time} < {t0 + float(tb)!r}"
+        )
+    return f"piecewise({', '.join(pieces)}, 0)"
 
 
 def schedules_from_spec(entries: Sequence) -> List[DoseSchedule]:

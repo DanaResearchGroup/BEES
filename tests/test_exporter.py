@@ -10,6 +10,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from bees.enlarger import IterativeEnlarger
@@ -895,3 +896,219 @@ class TestProductionOnlyInvariant:
         assert any("produced but never consumed" in m for m in warning_msgs), (
             f"expected production-only warning, got: {warning_msgs}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Inhibition and dosing in the SBML export, integrated independently of BEES
+# ---------------------------------------------------------------------------
+
+def _integrate_sbml(path, t_eval, rtol=1e-10, atol=1e-13):
+    """Integrate an exported SBML file from its own math (libsbml AST -> Python), not from BEES.
+
+    Handles what BEES writes: mass-action stoichiometry, kinetic laws over species and
+    parameters, the `time` symbol, piecewise/&&, and `time >= t` events that add to a species.
+    Returns {species name: concentrations at t_eval} (compartment size 1).
+    """
+    import math
+    import re
+
+    from scipy.integrate import solve_ivp
+
+    libsbml = pytest.importorskip("libsbml")
+    doc = libsbml.readSBML(path)
+    assert doc.getNumErrors(libsbml.LIBSBML_SEV_ERROR) == 0, doc.getErrorLog().toString()
+    model = doc.getModel()
+
+    ids = [model.getSpecies(i).getId() for i in range(model.getNumSpecies())]
+    pos = {sid: i for i, sid in enumerate(ids)}
+    fixed = {sid for sid in ids if model.getSpecies(sid).getBoundaryCondition()}
+    y0 = np.array([model.getSpecies(sid).getInitialConcentration() for sid in ids])
+    consts = {model.getParameter(i).getId(): model.getParameter(i).getValue() for i in range(model.getNumParameters())}
+    consts["compartment1"] = 1.0
+
+    def pw(*a):
+        for val, cond in zip(a[0::2], a[1::2]):
+            if cond:
+                return val
+        return a[-1]
+
+    def compile_expr(ast):
+        text = libsbml.formulaToL3String(ast).replace("^", "**").replace("&&", " and ")
+        text = re.sub(r"\bpiecewise\(", "_pw(", text)
+        return compile(text, "<sbml>", "eval"), text
+
+    reactions = []
+    breaks = set()
+    for r in (model.getReaction(i) for i in range(model.getNumReactions())):
+        code, text = compile_expr(r.getKineticLaw().getMath())
+        breaks.update(float(x) for x in re.findall(r"time (?:>=|<) ([0-9.eE+-]+)", text))
+        stoich = {}
+        for k in range(r.getNumReactants()):
+            ref = r.getReactant(k)
+            stoich[ref.getSpecies()] = stoich.get(ref.getSpecies(), 0.0) - ref.getStoichiometry()
+        for k in range(r.getNumProducts()):
+            ref = r.getProduct(k)
+            stoich[ref.getSpecies()] = stoich.get(ref.getSpecies(), 0.0) + ref.getStoichiometry()
+        reactions.append((code, stoich))
+
+    events = []
+    for ev in (model.getEvent(i) for i in range(model.getNumEvents())):
+        t_ev = float(re.search(r"time >= ([0-9.eE+-]+)", libsbml.formulaToL3String(ev.getTrigger().getMath())).group(1))
+        assign = ev.getEventAssignment(0)
+        events.append((t_ev, assign.getVariable(), float(re.search(r"\+ ([0-9.eE+-]+)", libsbml.formulaToL3String(assign.getMath())).group(1))))
+        breaks.add(t_ev)
+
+    funcs = {"_pw": pw, "exp": math.exp, "sqrt": math.sqrt}
+
+    def rhs(t, y):
+        scope = {**consts, **{sid: y[i] for sid, i in pos.items()}, "time": t}
+        d = np.zeros(len(ids))
+        for code, stoich in reactions:
+            try:
+                v = eval(code, funcs, scope)
+            except ZeroDivisionError:  # 0^-0.3 in a piecewise branch that is not selected at t = 0
+                v = 0.0
+            for sid, n in stoich.items():
+                if sid not in fixed:
+                    d[pos[sid]] += n * v
+        return d
+
+    t_end = float(max(t_eval))
+    cuts = sorted({0.0, t_end} | {b for b in breaks if 0.0 < b < t_end})
+    out_t, out_y = [], []
+    y = y0.copy()
+    for a, b in zip(cuts[:-1], cuts[1:]):
+        for t_ev, sid, amount in events:
+            if t_ev == a:
+                y[pos[sid]] += amount
+        grid = np.array([t for t in t_eval if a <= t <= b])
+        sol = solve_ivp(rhs, (a, b), y, method="BDF", rtol=rtol, atol=atol, dense_output=True)
+        out_t.append(grid)
+        out_y.append(sol.sol(grid))
+        y = sol.y[:, -1]
+    t_all = np.concatenate(out_t)
+    y_all = np.concatenate(out_y, axis=1)
+    keep = np.concatenate([np.diff(t_all) > 0, [True]])  # a cut time is on two segments: keep the later (post-event) one
+    names = {sid: model.getSpecies(sid).getName() for sid in ids}
+    return {names[sid]: y_all[pos[sid]][keep] for sid in ids}
+
+
+def _drug_model_and_bees(competition):
+    """Three inhibited reactions (competitive+mixed on S->P, tight-binding on a reversible P->Q,
+    competitive on S->W sharing the first enzyme) and a dosed, eliminated drug."""
+    from bees.core_edge_model import CoreEdgeModel, RateLawOptions, SpeciesData
+    from bees.inhibition import InhibitorSpec
+
+    concs = {"S": 5.0, "P": 0.0, "Q": 0.1, "W": 0.0, "E1": 0.02, "E2": 0.005, "Drug": 0.0, "Cmp": 0.4}
+    model = CoreEdgeModel()
+    model.rate_law_options = RateLawOptions(enzyme_competition=competition)
+    for lab, c in concs.items():
+        model.add_core_species(SpeciesData(
+            label=lab, concentration=c, initial_concentration=c,
+            is_enzyme=lab.startswith("E"), constant=lab.startswith("E") or lab == "Cmp",
+        ))
+
+    def rxn(enzyme, reactants, products, km_per, kcat, inhibitors, reversible=False, keq=None):
+        r = _make_reaction(enzyme_label=enzyme, reactant_labels=reactants, product_labels=products,
+                           stoichiometry={**{x: -1 for x in reactants}, **{x: 1 for x in products}}, kcat=kcat)
+        r.kinetics.km = None
+        r.kinetics.km_per_substrate = km_per
+        r.inhibitors = inhibitors
+        r.thermo = SimpleNamespace(source="test", irreversible=not reversible, keq=keq or float("nan"),
+                                   kcat_rev=0.0, dgr_prime_kJmol=-5.0, sigma_kJmol=1.0)
+        r.template.reversible = reversible
+        return r
+
+    drug = [InhibitorSpec("drug", "competitive", 0.08, None, "s"), InhibitorSpec("cmp", "mixed", 0.3, 2.5, "s")]
+    for r in (
+        rxn("E1", ["S"], ["P"], {"S": 1.5}, 8.0, drug),
+        rxn("E1", ["S"], ["W"], {"S": 3.0}, 2.0, [InhibitorSpec("drug", "uncompetitive", 0.2, None, "s")]),
+        rxn("E2", ["P"], ["Q"], {"P": 0.7, "Q": 1.2}, 30.0, [InhibitorSpec("drug", "tight_binding", 0.002)],
+            reversible=True, keq=40.0),
+    ):
+        model.add_reaction(r)
+
+    dosing = [
+        SimpleNamespace(species="Drug", profile="weibull", dose=0.3, params={"tau": 90.0, "beta": 0.7},
+                        t_start=0.0, elimination_k=None, elimination_half_life=150.0),
+        SimpleNamespace(species="Drug", profile="bolus", dose=0.05, params=None, t_start=60.0,
+                        elimination_k=None, elimination_half_life=None),
+    ]
+    bees = SimpleNamespace(
+        species=[SimpleNamespace(label=k, concentration=v) for k, v in concs.items() if not k.startswith("E")],
+        enzymes=[SimpleNamespace(label=k, concentration=v) for k, v in concs.items() if k.startswith("E")],
+        dosing=dosing, settings=SimpleNamespace(calibrations=[]),
+    )
+    return model, bees
+
+
+@pytest.mark.parametrize("competition", [False, True])
+def test_sbml_with_inhibitors_and_dosing_integrates_like_bees(output_dir, competition):
+    """The exported SBML, integrated from its own equations, reproduces the BEES trajectory."""
+    from bees.dosing import schedules_from_spec
+    from bees.simulator import ODESimulator
+
+    pytest.importorskip("libsbml")
+    model, bees = _drug_model_and_bees(competition)
+    schedules = schedules_from_spec(bees.dosing)
+    t_eval = np.arange(0.0, 301.0, 15.0)
+    ours = ODESimulator(model, dosing=schedules).simulate(
+        end_time=300.0, time_step=15.0, rtol=1e-10, atol=1e-13)
+    assert ours.success
+
+    exporter = EnlargerExporter(
+        model=model, profiles=[], output_directory=output_dir, logger=MagicMock(),
+        reaction_id_by_sig={}, reaction_first_seen_iter={}, reaction_core_enter_iter={},
+        reaction_obj_by_sig={}, iteration_summaries=[], bees_object=bees,
+    )
+    path = exporter.export_sbml(filename="drug.xml")
+    sbml = _integrate_sbml(path, t_eval)
+    for lab in ("S", "P", "Q", "W", "Drug"):
+        assert sbml[lab] == pytest.approx(ours.y[ours.species_labels.index(lab)], rel=2e-4, abs=1e-8), lab
+    # the drug really moved the chemistry
+    plain_model, _ = _drug_model_and_bees(competition)
+    for r in plain_model.core_reactions:
+        r.inhibitors = None
+    plain = ODESimulator(plain_model).simulate(end_time=300.0, time_step=15.0, rtol=1e-10, atol=1e-13)
+    assert ours.y[ours.species_labels.index("Q"), -1] < 0.8 * plain.y[plain.species_labels.index("Q"), -1]
+
+
+def test_sbml_has_inhibitor_modifiers_parameters_and_dose_reactions(output_dir):
+    libsbml = pytest.importorskip("libsbml")
+    model, bees = _drug_model_and_bees(False)
+    exporter = EnlargerExporter(
+        model=model, profiles=[], output_directory=output_dir, logger=MagicMock(),
+        reaction_id_by_sig={}, reaction_first_seen_iter={}, reaction_core_enter_iter={},
+        reaction_obj_by_sig={}, iteration_summaries=[], bees_object=bees,
+    )
+    doc = libsbml.readSBML(exporter.export_sbml(filename="drug.xml"))
+    m = doc.getModel()
+    assert doc.getNumErrors(libsbml.LIBSBML_SEV_ERROR) == 0
+    modifiers = {r.getId(): {r.getModifier(k).getSpecies() for k in range(r.getNumModifiers())}
+                 for r in (m.getReaction(i) for i in range(m.getNumReactions()))}
+    assert {"Drug", "Cmp"} <= modifiers["R1"]
+    params = {m.getParameter(i).getId() for i in range(m.getNumParameters())}
+    assert any(p.startswith("Ki_R1_Drug") for p in params)
+    assert any(p.startswith("alpha_R1_Cmp") for p in params) and any(p.startswith("Ki_R1_Cmp") for p in params)
+    assert any(p.startswith("Ki_R3_Drug") for p in params)
+    assert m.getReaction("DOSE_1_Drug") is not None and m.getReaction("ELIM_Drug") is not None
+    assert m.getReaction("DOSE_2_Drug") is None  # a bolus is not a rate
+    assert m.getNumEvents() == 1
+    # weibull beta < 1: the first instant (a few 1e-5 of the dose) is part of the initial concentration
+    assert m.getSpecies("Drug").getInitialConcentration() == pytest.approx(0.3 * (1 - np.exp(-(1e-3 / 90.0) ** 0.7)))
+
+
+def test_sbml_bolus_at_time_zero_is_the_initial_concentration(output_dir):
+    pytest.importorskip("libsbml")
+    model, bees = _drug_model_and_bees(False)
+    bees.dosing = [SimpleNamespace(species="Drug", profile="bolus", dose=0.25, params=None, t_start=0.0,
+                                   elimination_k=None, elimination_half_life=None)]
+    exporter = EnlargerExporter(
+        model=model, profiles=[], output_directory=output_dir, logger=MagicMock(),
+        reaction_id_by_sig={}, reaction_first_seen_iter={}, reaction_core_enter_iter={},
+        reaction_obj_by_sig={}, iteration_summaries=[], bees_object=bees,
+    )
+    libsbml = pytest.importorskip("libsbml")
+    m = libsbml.readSBML(exporter.export_sbml(filename="drug.xml")).getModel()
+    assert m.getSpecies("Drug").getInitialConcentration() == pytest.approx(0.25)
+    assert m.getNumEvents() == 0 and m.getReaction("ELIM_Drug") is None

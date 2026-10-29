@@ -24,7 +24,9 @@ import matplotlib.pyplot as plt
 from bees.cofactors import is_general_cofactor_label
 from bees.core_edge_model import CoreEdgeModel, SpeciesData
 from bees.enzyme_sharing import PartitionCompetition, format_sharing_terms
+from bees.dosing import DoseSchedule, rate_formula, schedules_from_spec
 from bees.flux_calculator import format_rate_law, rate_law_spec
+from bees.inhibition import format_inhibition_terms, morrison_expression
 from bees.reaction_generator import GeneratedReaction, reaction_signature
 from bees.rules import load_rules
 from bees.simulator import SimulationResult, build_alias_to_model_label, rate_law_options_of
@@ -497,6 +499,19 @@ class EnlargerExporter:
                     conc = conc[0]  # same lower bound the simulator starts from
                 input_concs[str(sp.label).lower().strip()] = conc
 
+        # Doses delivered at t = 0 (a bolus, a Weibull/Korsmeyer-Peppas first instant) are part of
+        # the initial concentration; later impulses become events below.
+        schedules: List[DoseSchedule] = schedules_from_spec(getattr(self.bees_object, "dosing", None))
+        start_amount: Dict[str, float] = {}
+        later_impulses: List[Tuple[float, str, float]] = []
+        for sch in schedules:
+            sp_lc = sch.species.lower().strip()
+            for t_imp, amount in sch.impulses():
+                if t_imp <= 0.0:
+                    start_amount[sp_lc] = start_amount.get(sp_lc, 0.0) + amount
+                else:
+                    later_impulses.append((t_imp, sp_lc, amount))
+
         for sd in species_list:
             lc = sd.label.lower().strip()
             sid = label_to_id[lc]
@@ -504,7 +519,7 @@ class EnlargerExporter:
             sp.setId(sid)
             sp.setName(sd.label)
             sp.setCompartment("compartment1")
-            conc = max(input_concs.get(lc, 0.0) or 0.0, 0.0)
+            conc = max(input_concs.get(lc, 0.0) or 0.0, 0.0) + start_amount.get(lc, 0.0)
             sp.setInitialConcentration(conc)
             sp.setHasOnlySubstanceUnits(False)
             is_enz = bool(getattr(sd, "is_enzyme", False))
@@ -751,10 +766,59 @@ class EnlargerExporter:
                         "its bound forms were left out of the rate law"
                     )
 
+            inh_specs = getattr(rxn, "inhibitors", None)
+            inh_specs = list(inh_specs) if isinstance(inh_specs, (list, tuple)) else []
+            inh_km: Dict[str, str] = {}
+            if inh_specs and spec.form != "zero":
+                ki_pids: Dict[int, str] = {}
+
+                def _ki_pid(sp, _rid=rid, _ki=ki_pids):
+                    pid = _ki.get(id(sp))
+                    if pid is None:
+                        pid = _new_param(
+                            f"Ki_{_rid}_{_species_id(sp.inhibitor) or _sbml_id(sp.inhibitor)}",
+                            f"Ki of {sp.inhibitor} for {rxn.enzyme_label} ({sp.type})", sp.ki,
+                        )
+                        _ki[id(sp)] = pid
+                    return pid
+
+                def _inh_param(kind, sp, value, _rid=rid):
+                    # Ki' of a mixed inhibitor is alpha * Ki; the others reuse the one Ki.
+                    if kind == "Ki'" and sp.type == "mixed":
+                        a_pid = _new_param(
+                            f"alpha_{_rid}_{_species_id(sp.inhibitor) or _sbml_id(sp.inhibitor)}",
+                            f"alpha of {sp.inhibitor} for {rxn.enzyme_label}", sp.alpha,
+                        )
+                        return f"({a_pid} * {_ki_pid(sp)})"
+                    return _ki_pid(sp)
+
+                inh_v, inh_km = format_inhibition_terms(
+                    inh_specs, _species_id, _inh_param,
+                    spec.substrates[0][0] if spec.substrates else None,
+                )
+                e_token = enzyme_param_ids.get(rxn.enzyme_label.lower().strip(), "0")
+                for sp_i in inh_specs:
+                    if sp_i.type == "tight_binding" and _species_id(sp_i.inhibitor) is not None:
+                        inh_v = f"{inh_v} * " + morrison_expression(_species_id(sp_i.inhibitor), e_token, _ki_pid(sp_i))
+                inh_v = inh_v[4:] if inh_v.startswith("1 * ") else inh_v
+                if inh_v != "1":
+                    vf = f"{vf} * {inh_v}"
+                existing_mods = {
+                    sbml_rxn.getModifier(j).getSpecies() for j in range(sbml_rxn.getNumModifiers())
+                }
+                for sp_i in inh_specs:
+                    sid_i = _species_id(sp_i.inhibitor)
+                    if sid_i is not None and sid_i not in existing_mods:
+                        sbml_rxn.createModifier().setSpecies(sid_i)
+                        existing_mods.add(sid_i)
+
             formula = format_rate_law(
                 spec,
                 conc=_species_id,
-                km=lambda lab, role: km_pids[(lab, role)],
+                km=lambda lab, role: (
+                    f"({km_pids[(lab, role)]} * {inh_km[lab.lower().strip()]})"
+                    if role == "S" and lab.lower().strip() in inh_km else km_pids[(lab, role)]
+                ),
                 vf=vf,
                 keq=keq_pid,
                 others=others,
@@ -844,6 +908,61 @@ class EnlargerExporter:
                     + "; ".join(notes_parts)
                     + "</p></body>"
                 )
+
+        # Dosing: each release profile is a source-only pseudo-reaction DOSE_<n>_<species> with
+        # u(t) in terms of the SBML time symbol; elimination is ELIM_<species>; impulses after
+        # t = 0 are events (those at t = 0 are in the initial concentrations above).
+        def _dose_reaction(rid_: str, name: str, sid_: str, formula_: str, *, product: bool) -> None:
+            r = model.createReaction()
+            r.setId(rid_)
+            r.setName(name)
+            r.setReversible(False)
+            ref = r.createProduct() if product else r.createReactant()
+            ref.setSpecies(sid_)
+            ref.setStoichiometry(1.0)
+            ref.setConstant(True)
+            ast_ = _libsbml.parseL3Formula(f"compartment1 * ({formula_})")
+            if ast_ is None:
+                raise ValueError(f"SBML: cannot parse {rid_}: {_libsbml.getLastParseL3Error()}")
+            r.createKineticLaw().setMath(ast_)
+
+        eliminated: Dict[str, float] = {}
+        for n_dose, sch in enumerate(schedules, start=1):
+            sid_d = label_to_id.get(sch.species.lower().strip())
+            if sid_d is None:
+                self.logger.warning(f"SBML: dosed species {sch.species!r} is not in the exported model; skipped")
+                continue
+            if sch.profile != "bolus":
+                _dose_reaction(
+                    f"DOSE_{n_dose}_{_sbml_id(sch.species)}",
+                    f"{sch.profile} release of {sch.dose:g} mM {sch.species} from t={sch.t_start:g} s",
+                    sid_d, rate_formula(sch), product=True,
+                )
+            if sch.elimination_k:
+                eliminated[sch.species.lower().strip()] = sch.elimination_k
+        for lc_e, k_el in eliminated.items():
+            sid_e = label_to_id[lc_e]
+            kel_pid = f"kel_{sid_e}"
+            p_el = model.createParameter()
+            p_el.setId(kel_pid)
+            p_el.setName(f"first-order elimination of {lc_e}")
+            p_el.setValue(float(k_el))
+            p_el.setConstant(True)
+            _dose_reaction(f"ELIM_{sid_e}", f"elimination of {lc_e}", sid_e, f"{kel_pid} * {sid_e}", product=False)
+        for n_ev, (t_imp, sp_lc, amount) in enumerate(sorted(later_impulses), start=1):
+            sid_v = label_to_id.get(sp_lc)
+            if sid_v is None:
+                continue
+            ev = model.createEvent()
+            ev.setId(f"DOSE_EVENT_{n_ev}_{sid_v}")
+            ev.setUseValuesFromTriggerTime(True)
+            trig = ev.createTrigger()
+            trig.setInitialValue(False)
+            trig.setPersistent(True)
+            trig.setMath(_libsbml.parseL3Formula(f"time >= {t_imp!r}"))
+            assign = ev.createEventAssignment()
+            assign.setVariable(sid_v)
+            assign.setMath(_libsbml.parseL3Formula(f"{sid_v} + {amount!r}"))
 
         # System observables (e.g. FAS palmitic equivalents) come from the enabled
         # calibration modules, so a generic run writes none.
