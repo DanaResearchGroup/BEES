@@ -244,3 +244,15 @@ class TestPlumbing:
         ode = ODESimulator(model, logger=logger).export_ode_equations(str(tmp_path / "ode.txt"), 1, 10.0)
         text = open(ode).read()
         assert "Kc(E1, A)" in text and "Kc(E1, B)" in text
+
+
+def test_competition_factor_stays_finite_when_a_denominator_overflows():
+    """d / (d + others) is inf / inf = nan for an overflowed denominator; 1 / (1 + others / d) is 1."""
+    g = {"rows": np.array([0, 1]), "notown": np.ones((2, 1)), "lig": None, "kc": None, "m": None, "mult": None}
+    pc = sharing.PartitionCompetition.__new__(sharing.PartitionCompetition)
+    pc.groups = [g]
+    pc._weights = lambda grp, y: np.array([3.0])
+    c = pc.factor(np.zeros(1), np.array([1.0, np.inf]))
+    assert c == pytest.approx([0.25, 1.0])
+    pc._weights = lambda grp, y: np.array([np.inf])
+    assert pc.factor(np.zeros(1), np.array([1.0, 2.0])) == pytest.approx([0.0, 0.0])
