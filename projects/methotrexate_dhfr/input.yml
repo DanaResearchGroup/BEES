@@ -1,0 +1,134 @@
+# Methotrexate on DHFR in the thymidylate cycle: does the release profile matter?
+#
+# PLACEHOLDER KINETICS. CatPred is not used here: every kcat / Km below is an
+# order-of-magnitude value typed in by hand (measured_kinetics) so that the example runs
+# anywhere. Absolute amounts (mM of dTMP) mean nothing; the example is about how the
+# SAME total dose, delivered differently, changes the output. Not a result about biology.
+#
+# Network (db/folate.csv): SHMT  serine + FH4 -> glycine + 5,10-methylene-FH4
+#                          TS    dUMP + 5,10-methylene-FH4 -> dTMP + FH2
+#                          DHFR  FH2 + NADPH -> FH4 + NADP
+# The folate pool is conserved; dTMP accumulation is the flux. Serine, glycine, dUMP,
+# NADPH and NADP are held constant. (FH4 and not "THF": BEES treats THF as a general
+# cofactor, which cannot seed reaction discovery.)
+#
+# Drug: methotrexate, tight-binding inhibitor of DHFR, Ki = 1e-7 mM (0.1 nM): median of
+# the unflagged human ChEMBL records for target CHEMBL202 / molecule CHEMBL34259
+# (activities 3055901 = 0.077 nM, 939069 = 0.179 nM, 18251252 = 0.01 nM).
+# The dosing block below is the liposome arm (biexponential release); devtools/release_sweep.py
+# compares it with a free bolus and a slow depot at an equal total dose.
+project: methotrexate_dhfr
+project_directory: projects/methotrexate_dhfr
+
+species:
+  - label: FH4
+    concentration: 0.01
+    smiles: Nc1nc2NCC(CNc3ccc(cc3)C(=O)NC(CCC(O)=O)C(O)=O)Nc2c(=O)[nH]1
+    reactive: true
+  - label: serine
+    concentration: 0.5
+    smiles: NC(CO)C(O)=O
+    constant: true
+    reactive: true
+  - label: dUMP
+    concentration: 0.005
+    smiles: O=c1ccn(c(=O)[nH]1)C1CC(O)C(COP(O)(O)=O)O1
+    constant: true
+    reactive: true
+  - label: glycine
+    concentration: 1.0
+    smiles: NCC(O)=O
+    constant: true
+    reactive: false
+  - label: NADPH
+    concentration: 0.1
+    smiles: NC(=O)C1=CN(C=CC1)[C@H]1O[C@@H](COP(O)(=O)OP(O)(=O)OC[C@@H]2O[C@@H]([C@@H](OP(O)(O)=O)[C@H]2O)N2C=NC3=C(N)N=CN=C23)[C@H](O)[C@@H]1O
+    constant: true
+    reactive: false
+  - label: NADP
+    concentration: 0.005
+    smiles: NC(=O)C1=C[N+](=CC=C1)[C@@H]1O[C@H](CO[P@](O)(=O)O[P@](O)(=O)OC[C@H]2O[C@H]([C@H](OP(O)(O)=O)[C@@H]2O)N2C=NC3=C(N)N=CN=C23)[C@@H](O)[C@H]1O
+    constant: true
+    reactive: false
+  - label: H2O
+    concentration: 55500.0
+    smiles: O
+    constant: true
+    solvent: true
+    reactive: false
+  - label: H+
+    concentration: 4.0e-5
+    smiles: "[H+]"
+    constant: true
+    reactive: false
+  # The drug only enters through `dosing`.
+  - label: methotrexate
+    concentration: 0
+    smiles: CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(cc1)C(=O)NC(CCC(O)=O)C(O)=O
+    reactive: false
+
+enzymes:
+  - label: SHMT
+    concentration: 5.0e-4
+    ecnumber: EC 2.1.2.1
+    reactive: true
+    measured_kinetics:
+      kcat: 5.0
+      km: {serine: 0.5, FH4: 0.05}
+      default_km: 0.05
+      source: placeholder (order of magnitude)
+  - label: TS
+    concentration: 5.0e-4
+    ecnumber: EC 2.1.1.45
+    reactive: true
+    measured_kinetics:
+      kcat: 2.0
+      km:
+        dUMP: 0.005
+        "5,10-methylene-FH4": 0.015
+      default_km: 0.01
+      source: placeholder (order of magnitude)
+  - label: DHFR
+    concentration: 1.0e-4
+    ecnumber: EC 1.5.1.3
+    reactive: true
+    measured_kinetics:
+      kcat: 12.0
+      km: {FH2: 2.0e-4, NADPH: 0.005}
+      default_km: 0.005
+      source: placeholder (order of magnitude)
+    inhibition:
+      - inhibitor: methotrexate
+        type: tight_binding
+        ki: 1.0e-7   # mM
+        source: median Ki of unflagged human ChEMBL records, CHEMBL202 / CHEMBL34259
+
+environment:
+  temperature: 310.15
+  pH: 7.4
+
+database:
+  name: folate
+
+# 2 uM of methotrexate (0.002 mM) in a liposome: 10 % released with a 2 h half-life, 90 %
+# with 45 h; the free drug is cleared with a 10000 s half-life.
+dosing:
+  - species: methotrexate
+    profile: biexponential
+    dose: 0.002
+    params: {fraction_fast: 0.1, half_life_fast: 7200, half_life_slow: 162000}
+    elimination_half_life: 10000
+
+settings:
+  end_time: 259200.0   # 72 h
+  time_step: 600.0
+  simulation_mode: iterative
+  estimate_kinetics: false
+  toleranceMoveToCore: 0.01
+  toleranceKeepInEdge: 0
+  toleranceInterruptSimulation: 0.1
+  max_iterations: 15
+  save_simulation_profiles: true
+  save_simulation_plots: true
+  save_ode_equations: true
+  verbose: 20
