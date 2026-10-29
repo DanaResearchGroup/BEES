@@ -56,6 +56,29 @@ low exposure does nothing: bolus 11.1 %, liposome 1.3 %, depot 13.0 %. Whether t
 depends on how close the target enzyme is to controlling the flux, which is what `target_scan.py` shows:
 kcat x 0.1 for TS or SHMT loses about 84 % of the dTMP, for DHFR about 14 %.
 
+## Exploring enzyme levels (healthy-like vs cancer-like)
+
+`devtools/enzyme_level_scan.py` scales DHFR (x0.3 ... x30 of 1e-4 mM) and TS/SHMT (x0.2, x1, x3). dTMP lost over 72 h:
+
+| DHFR x | TS/SHMT x | bolus | liposome | slow depot |
+|---|---|---|---|---|
+| 0.3 | 1 | 24.4 | 98.6 | 87.2 |
+| 1 | 1 | 16.7 | 22.1 | 31.5 |
+| 3 | 1 | 10.4 | 0.0 | 3.9 |
+| 10 | 1 | 3.6 | 0.0 | 0.0 |
+| 30 | 1 | 0.0 | 0.0 | 0.0 |
+| 1 | 0.2 / 3 | 15.7 / 17.7 | 15.0 / 33.6 | 26.9 / 36.7 |
+
+The DHFR level sets the outcome: a tight binder is titrated away by the enzyme, so the low free drug of a slow release
+stops inhibiting first when DHFR is raised (as in DHFR-amplified, methotrexate-resistant cells), whereas the
+bolus keeps a short window of full inhibition. With little DHFR the slow release wins. TS/SHMT matter much less.
+Literature found through PubMed (not absolute numbers): DHFR is up-regulated in breast tumours against adjacent
+normal tissue (A-to-I editing, [10.1074/jbc.M117.775684](https://doi.org/10.1074/jbc.M117.775684)) and amplified in methotrexate-resistant colon
+cancer cells ([10.1038/s41416-024-02664-0](https://doi.org/10.1038/s41416-024-02664-0)). I did not find absolute enzyme or metabolite
+concentrations for healthy vs tumour tissue with the search tools available; the fold changes above are a scan,
+not measured values. Next step: take absolute levels from a proteomics resource (for example copy-number datasets) and
+metabolomics tables for the tissues of interest.
+
 ## Still a placeholder
 
 All kcat / Km values and enzyme / metabolite concentrations; the Ki is a literature median across assays
