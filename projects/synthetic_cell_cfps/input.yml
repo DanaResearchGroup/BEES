@@ -1,0 +1,101 @@
+# Synthetic cell (cell-free protein synthesis in a liposome): energy and protein output.
+#
+# PLACEHOLDER ENZYME LEVELS AND KINETICS. The inner-solution recipe below (Table S.2 of the
+# final-year project report, 23/03/2024) is real; the S30-T7 lysate's enzyme content is NOT
+# given there, so every enzyme concentration, kcat and Km is a typed-in guess. Not a result
+# about biology.
+#
+# Network (db/cfps.csv): 3-PGA -> 2-PGA -> PEP -> pyruvate (+ ATP from ADP), the energy route of
+# the recipe, and ONE lumped translation step: amino acids + 4 ATP -> protein residue + 4 ADP +
+# 4 Pi (4 ATP-equivalents per residue; GTP is not modelled separately). The output "protein
+# residue" is in mM of residues. HEPES, salts, PEG, sucrose, IPTG and the plasmid are not modelled.
+#
+# Recipe: 3-PGA 40 mM, ATP 1.2 mM, amino acids 2.5 + 2.5 mM. Here 10 mM of the 3-PGA is inside at t = 0
+# and the other 30 mM is supplied through `dosing` (a first-order supply through the membrane,
+# half-life 1 h), so that devtools/release_sweep.py can compare supplying it all at once (the
+# recipe: 40 mM at t = 0) with slower supplies of the same total amount.
+project: synthetic_cell_cfps
+project_directory: projects/synthetic_cell_cfps
+
+species:
+  - label: 3-phospho-D-glycerate
+    concentration: 10.0
+    smiles: OC(COP(O)(O)=O)C(O)=O
+    reactive: true
+  - label: amino acids
+    concentration: 5.0
+    reactive: true
+  - label: ATP
+    concentration: 1.2
+    smiles: C1=NC(=C2C(=N1)N(C=N2)[C@H]3[C@@H]([C@@H]([C@H](O3)COP(=O)(O)OP(=O)(O)OP(=O)(O)O)O)O)N
+    reactive: false
+  - label: ADP
+    concentration: 0.1
+    smiles: C1=NC(=C2C(=N1)N(C=N2)[C@H]3[C@@H]([C@@H]([C@H](O3)COP(=O)(O)OP(=O)(O)O)O)O)N
+    reactive: false
+  - label: phosphate
+    concentration: 1.0
+    smiles: "[O-]P(=O)([O-])[O-]"
+    constant: true
+    reactive: false
+  - label: H2O
+    concentration: 55500.0
+    smiles: O
+    constant: true
+    solvent: true
+    reactive: false
+  - label: H+
+    concentration: 1.0e-5
+    smiles: "[H+]"
+    constant: true
+    reactive: false
+
+enzymes:
+  - label: PGM
+    concentration: 1.0e-3
+    ecnumber: EC 5.4.2.11
+    reactive: true
+    measured_kinetics: {kcat: 200.0, default_km: 0.5, source: placeholder}
+  - label: ENO
+    concentration: 1.0e-3
+    ecnumber: EC 4.2.1.11
+    reactive: true
+    measured_kinetics: {kcat: 100.0, default_km: 0.2, source: placeholder}
+  - label: PYK
+    concentration: 1.0e-3
+    ecnumber: EC 2.7.1.40
+    reactive: true
+    measured_kinetics: {kcat: 200.0, default_km: 0.3, source: placeholder}
+  - label: translation machinery
+    concentration: 2.0e-3
+    ecnumber: EC 3.6.5.3
+    reactive: true
+    measured_kinetics: {kcat: 2.0, default_km: 0.5, source: placeholder (about 2 residues/s per ribosome)}
+
+environment:
+  temperature: 303.15
+  pH: 8.0
+
+database:
+  name: cfps
+
+# 30 mM more 3-PGA, first-order supply with a 1 h half-life.
+dosing:
+  - species: 3-phospho-D-glycerate
+    profile: first_order
+    dose: 30.0
+    params: {half_life: 3600}
+
+settings:
+  end_time: 28800.0   # 8 h
+  time_step: 120.0
+  simulation_mode: iterative
+  estimate_kinetics: false
+  toleranceMoveToCore: 0.01
+  toleranceKeepInEdge: 0
+  toleranceInterruptSimulation: 0.1
+  max_iterations: 15
+  save_simulation_profiles: true
+  save_simulation_plots: true
+  save_ode_equations: true
+  verbose: 20
