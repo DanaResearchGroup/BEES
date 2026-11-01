@@ -16,7 +16,7 @@ Drugs (species with concentration 0, entering only through `dosing`):
 
 | drug | target | type | Ki | status |
 |---|---|---|---|---|
-| triclosan | FabI | tight binding | 7e-9 mM | Ward et al. 1999 - **VERIFY** |
+| triclosan | FabI | tight binding | 7e-9 mM (7 pM) | Ward et al. 1999, PMID 10493822: the koff/kon constant (7.1 pM); the steady-state Ki values of the same paper are 22 pM (uncompetitive) and 38 pM (competitive vs NADH) |
 | thiolactomycin | FabH / FabB / FabF | competitive vs malonyl-[ACP] | 0.05 / 0.02 / 0.02 mM | **placeholders** |
 
 Cerulenin (covalent) is out of scope. `end_time` 21600 s (6 h); sweeps run with `--time-scale 0.1`
@@ -73,5 +73,4 @@ before reading anything into it. Figures are in `figures/`.
 
 ## Still a placeholder
 
-All kcat / Km / enzyme concentrations, both thiolactomycin and the triclosan Ki (to be checked against the primary
-source), the doses.
+All kcat / Km / enzyme concentrations, the thiolactomycin Kis and the doses.

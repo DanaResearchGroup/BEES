@@ -12,9 +12,11 @@
 # NADPH and NADP are held constant. (FH4 and not "THF": BEES treats THF as a general
 # cofactor, which cannot seed reaction discovery.)
 #
-# Drug: methotrexate, tight-binding inhibitor of DHFR, Ki = 1e-7 mM (0.1 nM): median of
-# the unflagged human ChEMBL records for target CHEMBL202 / molecule CHEMBL34259
-# (activities 3055901 = 0.077 nM, 939069 = 0.179 nM, 18251252 = 0.01 nM).
+# Drug: methotrexate, tight-binding inhibitor of DHFR, Ki = 3.4e-9 mM (3.4 pM), the kinetically
+# determined value for wild-type human DHFR (Volpato et al. 2009, PMID 19478082). ChEMBL
+# binding records (CHEMBL202 / CHEMBL34259) give about 0.01-0.2 nM (median 0.077 nM of
+# activities 3055901, 939069, 18251252); with [DHFR] = 100 nM either is deep in the
+# stoichiometric regime, and the sweep result changes by 1-2 points between them.
 # The dosing block below is the liposome arm (biexponential release); devtools/release_sweep.py
 # compares it with a free bolus and a slow depot at an equal total dose.
 project: methotrexate_dhfr
@@ -100,8 +102,8 @@ enzymes:
     inhibition:
       - inhibitor: methotrexate
         type: tight_binding
-        ki: 1.0e-7   # mM
-        source: median Ki of unflagged human ChEMBL records, CHEMBL202 / CHEMBL34259
+        ki: 3.4e-9   # mM
+        source: Volpato et al. 2009 J Biol Chem, PMID 19478082 (human DHFR, slow tight-binding)
 
 environment:
   temperature: 310.15

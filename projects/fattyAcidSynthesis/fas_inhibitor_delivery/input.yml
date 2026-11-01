@@ -12,7 +12,7 @@
 # so the output is a flux and not a batch that runs out of malonyl-CoA within half an hour.
 #
 # Drugs
-#   triclosan      FabI, tight binding, Ki = 7e-9 mM (Ward et al. 1999 - VERIFY the value)
+#   triclosan      FabI, tight binding, Ki = 7e-9 mM (Ward et al. 1999, PMID 10493822: koff/kon = 7.1 pM; steady-state Ki 22-38 pM)
 #   thiolactomycin FabH / FabB / FabF, competitive against malonyl-[ACP],
 #                  Ki = 0.05 / 0.02 / 0.02 mM (PLACEHOLDERS)
 # Doses are the ones of the README; devtools/release_sweep.py compares delivery profiles of
@@ -218,8 +218,8 @@ enzymes:
     inhibition:
       - inhibitor: triclosan
         type: tight_binding
-        ki: 7.0e-9   # mM; Ward et al. 1999, VERIFY
-        source: Ward et al. 1999 Biochemistry (VERIFY)
+        ki: 7.0e-9   # mM; Ward et al. 1999 (koff/kon)
+        source: Ward et al. 1999 Biochemistry, PMID 10493822
 
   - label: FabZ
     concentration: 0.001

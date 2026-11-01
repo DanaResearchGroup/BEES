@@ -20,7 +20,7 @@ slow depot = Weibull (tau 24 h, beta 0.6).
 
 | system | drug, dose | free bolus | liposome | peak free drug (bolus : liposome) |
 |---|---|---|---|---|
-| thymidylate cycle (SHMT, TS, DHFR), 72 h | methotrexate, 2 uM, tight binding Ki 0.1 nM (ChEMBL median) | 16.7 % dTMP lost | 22.1 % | 2.0 : 0.15 uM (13 : 1) |
+| thymidylate cycle (SHMT, TS, DHFR), 72 h | methotrexate, 2 uM, tight binding Ki 3.4 pM (Volpato 2009) | 17.0 % dTMP lost | 24.0 % | 2.0 : 0.15 uM (13 : 1) |
 | upper glycolysis (HK, PGI, PFK), 2 h | 2-deoxyglucose, 5 mM, competitive Ki 0.3 mM (placeholder) | 0.1 % FBP lost | 0.0 % | 5000 : 121 uM |
 | E. coli FAS II, 6 h | thiolactomycin, 0.2 mM, competitive vs malonyl-ACP (placeholder Kis), free-drug half-life 30 min | 14.0 % fatty acids lost | 11.2 % | 200 : 21 uM (about 10 : 1) |
 
@@ -28,7 +28,7 @@ What the three show:
 
 - **Methotrexate:** the liposome loses *more* output than the bolus at 1/13 of the peak drug, because tight
   binding makes the effect depend on whether free drug stays above the enzyme concentration (0.1 uM), not on the peak.
-  The size of the effect depends strongly on [DHFR] (liposome 22 % at 0.1 uM, 84 % at 0.05 uM), so the enzyme level is the number to measure.
+  The size of the effect depends strongly on [DHFR] (liposome 24 % at 0.1 uM, about 84 % at 0.05 uM), so the enzyme level is the number to measure.
 - **2-DG:** a competitive drug against a high-affinity substrate is nearly harmless over the run; a 5 mM bolus delays
   the first minutes by about 80 % (about 20 % at 5 mM glucose), the liposome never gets there. (2-DG is also a substrate of
   hexokinase in reality; the model only has the competition.)
@@ -59,5 +59,4 @@ pathway cost in minutes.
 | BRENDA | kinetic parameters, reaction database (BKMS-react) | CC BY 4.0 |
 | SABIO-RK | kinetic parameters | academic use only |
 
-Methotrexate Ki (0.1 nM) is the median of unflagged ChEMBL binding records for human DHFR; the triclosan Ki (7 nM)
-is from the literature and is marked to be verified; the 2-DG and thiolactomycin constants are placeholders.
+Methotrexate Ki (3.4 pM) is the kinetic value of Volpato 2009 (ChEMBL binding records give 0.01-0.2 nM); the triclosan Ki (7 pM) is the koff/kon constant of Ward 1999 (steady-state values 22-38 pM); the 2-DG and thiolactomycin constants are placeholders.
