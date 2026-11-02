@@ -6,11 +6,11 @@
 # about biology.
 #
 # Network (db/cfps.csv): 3-PGA -> 2-PGA -> PEP -> pyruvate (+ ATP from ADP), the energy route of
-# the recipe, and ONE lumped translation step: amino acids + 4 ATP -> protein residue + 4 ADP +
-# 4 Pi (4 ATP-equivalents per residue; GTP is not modelled separately). The output "protein
+# the recipe, and ONE lumped translation step: amino acids + 5 ATP -> protein residue + 5 ADP +
+# 5 Pi (about 5 ATP-equivalents per residue, Ackerman et al. 2026; GTP is not modelled separately). The output "protein
 # residue" is in mM of residues. HEPES, salts, PEG, sucrose, IPTG and the plasmid are not modelled.
 #
-# Recipe: 3-PGA 40 mM, ATP 1.2 mM, amino acids 2.5 + 2.5 mM. Here 10 mM of the 3-PGA is inside at t = 0
+# Recipe: 3-PGA 40 mM, ATP 1.2 mM, 20 amino acids at 2.5 mM each (50 mM in all). Here 10 mM of the 3-PGA is inside at t = 0
 # and the other 30 mM is supplied through `dosing` (a first-order supply through the membrane,
 # half-life 1 h), so that devtools/release_sweep.py can compare supplying it all at once (the
 # recipe: 40 mM at t = 0) with slower supplies of the same total amount.
@@ -23,7 +23,7 @@ species:
     smiles: OC(COP(O)(O)=O)C(O)=O
     reactive: true
   - label: amino acids
-    concentration: 5.0
+    concentration: 50.0   # 20 amino acids x 2.5 mM (mixture I: 17 at 2.5 mM each, mixture II: 3 at 2.5 mM each)
     reactive: true
   - label: ATP
     concentration: 1.2
