@@ -1,0 +1,181 @@
+# Synthetic-cell energy metabolism on the REAL E. coli database (db/ecoli.csv), nothing curated.
+#
+# Purpose: check that the core/edge enlargement finds the 3-PGA energy route and its side
+# branches by itself, starting from the CFPS recipe (3-PGA 40 mM, ATP 1.2 mM, amino acids 2.5 mM
+# each; lab Table S.2 / Krinsky et al.) and a set of E. coli enzymes. Only the species 3-PGA seeds
+# the discovery; every other reaction comes from db/ecoli.csv.
+#
+# PLACEHOLDER enzyme levels and kinetics (the lysate's enzyme content is not known); NAD, NADH
+# and 2-oxoglutarate levels are guesses too. Translation is not in db/ecoli.csv, so no protein is made here.
+project: synthetic_cell_ecoli
+project_directory: projects/synthetic_cell_ecoli
+
+species:
+  # Seeds in the direction of the database rows: ecoli.csv lists PGM as 2-PGA -> 3-PGA and pyruvate kinase as
+  # pyruvate + ATP -> PEP, and BEES finds a row from its reactant side (it then runs both ways through the
+  # thermodynamics). Both start at 0; the energy route then runs backwards through them.
+  - label: "(2R)-2-phosphoglycerate"
+    concentration: 0
+    smiles: "O=P(O)(O)O[C@H](C(=O)O)CO"
+    reactive: true
+  - label: "Pyruvic acid"
+    concentration: 0
+    smiles: "CC(=O)C(O)=O"
+    reactive: true
+  - label: (2R)-3-phosphoglycerate
+    concentration: 40.0
+    smiles: "C([C@H](C(=O)[O-])O)OP(=O)([O-])[O-]"
+    reactive: true
+  - label: ATP
+    concentration: 1.2
+    smiles: "NC1=NC=NC2=C1N=CN2[C@@H]1O[C@H](COP(O)(=O)OP(O)(=O)OP(O)(O)=O)[C@@H](O)[C@H]1O"
+    reactive: false
+  - label: ADP
+    concentration: 0.1
+    smiles: "NC1=NC=NC2=C1N=CN2[C@@H]1O[C@H](COP(O)(=O)OP(O)(O)=O)[C@@H](O)[C@H]1O"
+    reactive: false
+  - label: NAD
+    concentration: 1.0
+    smiles: "NC(=O)C1=C[N+](=CC=C1)[C@@H]1O[C@H](COP(O)(=O)OP(O)(=O)OC[C@H]2O[C@H]([C@H](O)[C@@H]2O)N2C=NC3=C2N=CN=C3N)[C@@H](O)[C@H]1O"
+    reactive: false
+  - label: NADH
+    concentration: 0.1
+    smiles: "NC(=O)C1=CN(C=CC1)[C@@H]1O[C@H](CO[P@](O)(=O)O[P@](O)(=O)OC[C@H]2O[C@H]([C@H](O)[C@@H]2O)N2C=NC3=C(N)N=CN=C23)[C@@H](O)[C@H]1O"
+    reactive: false
+  - label: L-Glutamate
+    concentration: 2.5
+    smiles: "N[C@@H](CCC(O)=O)C(O)=O"
+    reactive: false
+  - label: 2-oxoglutarate
+    concentration: 0.1
+    smiles: "C(CC(=O)O)C(=O)C(=O)O"
+    reactive: false
+  - label: L-Serine
+    concentration: 2.5
+    smiles: "N[C@@H](CO)C(O)=O"
+    reactive: false
+  - label: Phosphate
+    concentration: 1.0
+    smiles: "[O-]P([O-])([O-])=O"
+    reactive: false
+    constant: true
+  - label: Water
+    concentration: 55500.0
+    smiles: "O"
+    reactive: false
+    constant: true
+    solvent: true
+  - label: H(+)
+    concentration: 1e-05
+    smiles: "[H+]"
+    reactive: false
+    constant: true
+
+enzymes:
+  - label: GpmM
+    concentration: 1.0e-3
+    ecnumber: EC 5.4.2.12
+    reactive: true
+    measured_kinetics:
+      kcat: 200
+      km:
+        "(2R)-3-phosphoglycerate": 0.5
+        "(2R)-2-phosphoglycerate": 0.2
+      default_km: 0.5
+      source: placeholder
+  - label: Eno
+    concentration: 1.0e-3
+    ecnumber: EC 4.2.1.11
+    reactive: true
+    measured_kinetics:
+      kcat: 100
+      km:
+        "(2R)-2-phosphoglycerate": 0.2
+        "phosphoenolpyruvate": 0.3
+      default_km: 0.5
+      source: placeholder
+  - label: Pyk
+    concentration: 1.0e-3
+    ecnumber: EC 2.7.1.40
+    reactive: true
+    measured_kinetics:
+      kcat: 200
+      km:
+        "phosphoenolpyruvate": 0.3
+        "ADP": 0.3
+        "Pyruvic acid": 5.0
+        "Adenosine triphosphate": 1.0
+      default_km: 0.5
+      source: placeholder
+  - label: Pgk
+    concentration: 1.0e-3
+    ecnumber: EC 2.7.2.3
+    reactive: true
+    measured_kinetics:
+      kcat: 200
+      km:
+        "(2R)-3-phosphoglycerate": 0.5
+        "Adenosine triphosphate": 0.3
+        "(2R)-3-phospho-glyceroyl phosphate": 0.05
+        "ADP": 0.3
+      default_km: 0.5
+      source: placeholder
+  - label: SerA
+    concentration: 1.0e-3
+    ecnumber: EC 1.1.1.95
+    reactive: true
+    measured_kinetics:
+      kcat: 20
+      km:
+        "(2R)-3-phosphoglycerate": 0.3
+        "NAD": 0.1
+        "3-phosphooxypyruvate": 0.01
+        "NADH": 0.1
+      default_km: 0.5
+      source: placeholder
+  - label: SerC
+    concentration: 1.0e-3
+    ecnumber: EC 2.6.1.52
+    reactive: true
+    measured_kinetics:
+      kcat: 50
+      km:
+        "O-phospho-L-serine": 0.3
+        "2-oxoglutarate": 0.1
+        "3-phosphooxypyruvate": 0.05
+        "L-Glutamate": 2.0
+      default_km: 0.5
+      source: placeholder
+  - label: SerB
+    concentration: 1.0e-3
+    ecnumber: EC 3.1.3.3
+    reactive: true
+    measured_kinetics:
+      kcat: 30
+      km:
+        "O-phospho-L-serine": 0.2
+        "L-Serine": 5.0
+      default_km: 0.5
+      source: placeholder
+
+environment:
+  temperature: 310.15
+  pH: 8.0
+
+database:
+  name: ecoli
+
+settings:
+  end_time: 7200.0
+  time_step: 60.0
+  simulation_mode: iterative
+  estimate_kinetics: false
+  toleranceMoveToCore: 0.01
+  toleranceKeepInEdge: 0
+  toleranceInterruptSimulation: 0.1
+  max_iterations: 30
+  enzyme_competition: true
+  save_simulation_profiles: true
+  save_simulation_plots: true
+  save_ode_equations: true
+  verbose: 20
