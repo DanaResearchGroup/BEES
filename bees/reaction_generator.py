@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Set, Tuple
 from dataclasses import dataclass
 import copy
 import os
+import re
 from types import SimpleNamespace
 
 from bees.reaction_template import (
@@ -74,6 +75,8 @@ class ReactionGenerator:
         self.kinetics_estimator = None
         self._species_alias_to_canonical_label: Dict[str, str] = {}
         self._species_smiles_to_canonical_label: Dict[str, str] = {}
+        # Distinct (EC, reaction) database rows dropped as pure translocations, for the run summary.
+        self._translocation_rows_skipped: Set[Tuple[str, str]] = set()
 
         # Seed registry from user-provided species so their names become preferred.
         for sp in getattr(self.bees_object, "species", []) or []:
@@ -273,8 +276,62 @@ class ReactionGenerator:
         
         self.logger.info("")
         self.logger.info(f"Generated {len(self.reactions)} total reaction(s) in {iteration} iteration(s)")
+        self.log_translocation_summary()
         return self.reactions
     
+    _TRANSLOCATION_SIDES = re.compile(r"\s(?:=|<=>|⇌|->)\s")
+    _COMPARTMENT_TAG = re.compile(r"^(.+?)\((in|out)\)$", re.IGNORECASE)
+    _COEFFICIENT = re.compile(r"^\d+\s+")
+    # What may remain once the in/out pairs are removed for the row to count as a pure move:
+    # the energy that pays for it.
+    _TRANSLOCATION_ENERGY = frozenset({
+        "adenosine triphosphate", "atp", "adp", "adenosine diphosphate",
+        "phosphate", "water", "h2o", "h(+)", "h+",
+    })
+
+    @classmethod
+    def _is_pure_translocation(cls, kinetic_data) -> bool:
+        """True if the row only moves compounds across a membrane (X(out) <-> X(in)).
+
+        BEES has one well-mixed compartment and X(out), X(in) share one SMILES, so a pair
+        merges into one species and cancels. If only ATP/ADP/phosphate/water/H(+) is
+        left, the row would be plain ATP hydrolysis, a fake energy sink, so it is skipped.
+        Anything else left over is real chemistry and the row is kept: PTS rows
+        (mannitol(out) -> mannitol 1-phosphate(in)) have no pair, and the transhydrogenase
+        (NADPH + H(+)(in) -> NADH + H(+)(out)) moves a proton but also changes the redox
+        pair. Read from the reaction text, because some stoichiometry keys lost their tags.
+        """
+        text = getattr(kinetic_data, "reaction_string", None) or ""
+        sides = cls._TRANSLOCATION_SIDES.split(text)
+        if len(sides) != 2:
+            return False
+        parsed = []
+        for side in sides:
+            parts = []
+            for part in side.split(" + "):
+                name = cls._COEFFICIENT.sub("", part.strip())
+                m = cls._COMPARTMENT_TAG.match(name)
+                parts.append((m.group(1).strip().lower(), m.group(2).lower()) if m else (name.lower(), None))
+            parsed.append(parts)
+        left, right = parsed
+        right_tags = {}
+        for base, tag in right:
+            if tag:
+                right_tags.setdefault(base, set()).add(tag)
+        paired = {base for base, tag in left if tag and right_tags.get(base, set()) - {tag}}
+        if not paired:
+            return False
+        leftover = [base for base, _ in left + right if base not in paired]
+        return all(base in cls._TRANSLOCATION_ENERGY for base in leftover)
+
+    def log_translocation_summary(self) -> None:
+        """One line per run: how many database rows were dropped as pure translocations."""
+        if self._translocation_rows_skipped:
+            self.logger.info(
+                f"Skipped {len(self._translocation_rows_skipped)} pure-translocation database row(s) "
+                f"(no compartments in BEES; they would only burn ATP)."
+            )
+
     def _resolve_smiles_for_compound(
         self,
         compound_label: str,
@@ -501,6 +558,15 @@ class ReactionGenerator:
                     f"  Skipping {substrate_label}/{enzyme_label} row "
                     f"({getattr(kinetic_data, 'ec_number', '?')}): generic placeholder "
                     f"participant(s) {placeholders} have no structure"
+                )
+                continue
+            if self._is_pure_translocation(kinetic_data):
+                self._translocation_rows_skipped.add(
+                    (str(getattr(kinetic_data, "ec_number", "")), str(kinetic_data.reaction_string))
+                )
+                self.logger.debug(
+                    f"  Skipping {substrate_label}/{enzyme_label} row "
+                    f"({getattr(kinetic_data, 'ec_number', '?')}): pure translocation"
                 )
                 continue
             # The database returns its stored row. Two enzymes with the same EC
