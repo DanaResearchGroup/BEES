@@ -455,6 +455,7 @@ class IterativeEnlarger:
         self.logger.info("=" * 60)
 
         self._log_thermo_fallback_prevalence()
+        self.reaction_generator.log_translocation_summary()
         self._warn_unmatched_feedback_inhibitors()
 
         return result

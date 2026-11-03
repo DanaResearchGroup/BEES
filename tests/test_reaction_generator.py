@@ -291,3 +291,49 @@ def test_reactions_summary_uses_stable_reaction_ids(tmp_path):
     assert text.index("Reaction 3:\n  Enzyme: E2") < text.index("Reaction 7:\n  Enzyme: E1")
     assert "Reaction 1:" not in text and "Reaction 2:" not in text
     assert "Consumed in reaction(s): R7" in text  # A is consumed only by E1
+
+
+def _rows(*pairs):
+    return [SimpleNamespace(reaction_string=r) for r in pairs]
+
+
+def test_pure_translocation_rule():
+    """X(out) on one side and X(in) on the other is a membrane move, not chemistry."""
+    pump, pump_merged, symport = _rows(
+        "K(+)(out) + Adenosine triphosphate + Water = K(+)(in) + ADP + Phosphate + H(+)",
+        "putrescine(out) + Adenosine triphosphate + Water = putrescine(in) + ADP + Phosphate + H(+)",
+        "lactose(out) + H(+)(out) = lactose(in) + H(+)(in)",
+    )
+    assert ReactionGenerator._is_pure_translocation(pump)
+    assert ReactionGenerator._is_pure_translocation(pump_merged)  # stoichiometry keys lost their tags
+    assert ReactionGenerator._is_pure_translocation(symport)
+
+
+def test_translocation_rule_keeps_real_chemistry():
+    # PTS: the sugar changes (mannitol -> mannitol 1-phosphate), so it is a reaction.
+    pts, plain, one_sided, empty, pntab = _rows(
+        "N(pros)-phospho-L-histidyl-[protein] + D-mannitol(out) = D-mannitol 1-phosphate(in) + L-histidyl-[protein]",
+        "Adenosine triphosphate + D-glucose = ADP + D-glucose 6-phosphate + H(+)",
+        "ATP + Water = ADP + Phosphate(in)",
+        "",
+        # Transhydrogenase (PntAB, EC 7.1.1.1): a proton moves, but NADPH -> NADH is real chemistry.
+        "NAD(+) + NADPH + H(+)(in) = NADH + NADP(+) + H(+)(out)",
+    )
+    for row in (pts, plain, one_sided, empty, pntab):
+        assert not ReactionGenerator._is_pure_translocation(row)
+    assert not ReactionGenerator._is_pure_translocation(SimpleNamespace())  # no reaction_string at all
+
+
+def test_translocation_row_is_skipped_and_counted(tmp_path):
+    """KdpB EC 7.2.2.6 (K+ pump) used to collapse to 'ATP + H2O -> ADP + Pi + H+'."""
+    gen = _ecoli_generator(tmp_path, ["Adenosine triphosphate", "Water"])
+    enzyme = SimpleNamespace(label="KdpB", ecnumber="EC 7.2.2.6", amino_acid_sequence=None)
+    rxns = gen._generate_reactions(
+        enzyme, SimpleNamespace(label="K(+)(out)", smiles=None),
+        available_species_labels_lc={"k(+)(out)", "adenosine triphosphate", "water", "k(+)(in)"},
+        provided_species_labels_lc=set(),
+    )
+    assert rxns == []
+    assert len(gen._translocation_rows_skipped) >= 1
+    gen.log_translocation_summary()
+    assert "pure-translocation" in str(gen.logger.info.call_args)
