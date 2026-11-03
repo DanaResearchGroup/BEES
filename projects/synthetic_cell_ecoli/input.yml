@@ -59,13 +59,13 @@ species:
     smiles: "[O-]P([O-])([O-])=O"
     reactive: false
     constant: true
-  - label: Water
+  - label: H2O
     concentration: 55500.0
     smiles: "O"
     reactive: false
     constant: true
     solvent: true
-  - label: H(+)
+  - label: H+
     concentration: 1e-05
     smiles: "[H+]"
     reactive: false
