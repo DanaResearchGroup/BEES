@@ -724,7 +724,7 @@ def identify_significant_species_from_peak_ratios(
     Promote edge species whose *peak* |R_edge|/R_char over a full (non-interrupted)
     run reached tol_move_to_core.
 
-    RMG adds any edge species whose rate ratio exceeds toleranceMoveToCore at any
+    In the original algorithm, they add any edge species whose rate ratio exceeds toleranceMoveToCore at any
     time during the simulation, not only at interrupt instants
     (rmgpy/solver/base.pyx, ``invalid_objects``). Without this, a species with
     tol_move_to_core <= rr < toleranceInterruptSimulation would never be promoted.

@@ -166,7 +166,6 @@ database:
 settings:
   simulation_mode: iterative
   end_time: 3000
-  termination_rate_ratio: 0.01
   toleranceMoveToCore: 1e-2
   toleranceKeepInEdge: 0
   toleranceInterruptSimulation: 10
