@@ -34,9 +34,10 @@ def _http_get(url: str, params: Optional[dict] = None) -> dict:
     return resp.json()
 
 
-def iter_activities(target: str, compound: Optional[str] = None, get: Callable = _http_get,
+def iter_activities(target: str, compound: Optional[str] = None, get: Optional[Callable] = None,
                     organism: str = "Homo sapiens", page_size: int = 1000) -> Iterator[dict]:
     """Every Ki activity of ``target`` (optionally one compound) that passes the ChEMBL-side filters."""
+    get = get or _http_get
     params = {
         "target_chembl_id": target, "standard_type": "Ki", "assay_type": "B",
         "target_organism": organism, "data_validity_comment__isnull": "true",
@@ -97,7 +98,7 @@ def write_csv(rows: List[dict], path: str) -> None:
             writer.writerow({k: (f"{v:.6g}" if isinstance(v, float) else v) for k, v in row.items()})
 
 
-def fetch(targets: Iterable[str], compounds: Optional[Iterable[str]] = None, get: Callable = _http_get) -> List[dict]:
+def fetch(targets: Iterable[str], compounds: Optional[Iterable[str]] = None, get: Optional[Callable] = None) -> List[dict]:
     activities: List[dict] = []
     for target in targets:
         for compound in (list(compounds) if compounds else [None]):
