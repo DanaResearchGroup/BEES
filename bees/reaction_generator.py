@@ -82,22 +82,29 @@ def apply_measured_kinetics(reaction: GeneratedReaction, measured) -> None:
     reactants = list(reaction.reactant_labels)
     if measured.km or measured.default_km is not None:
         km_per = dict(getattr(kin, "km_per_substrate", None) or {})
+        km_sd_per = dict(getattr(kin, "km_sd_per_substrate", None) or {})
         if not km_per and kin.km is not None:
             # A single estimated Km applies to every substrate; keep that when listing some.
             km_per = {r: kin.km for r in reactants}
+            if getattr(kin, "km_sd", None) is not None and not km_sd_per:
+                km_sd_per = {r: kin.km_sd for r in reactants}
         by_lc = {lab.lower().strip(): lab for lab in reactants + list(reaction.product_labels)}
         for key, value in (measured.km or {}).items():
             candidates = [str(key).lower().strip()] + get_ontology_equivalents(key)
             label = next((by_lc[c] for c in candidates if c in by_lc), None)
             if label is not None:
                 km_per[label] = float(value)
+                km_sd_per.pop(label, None)
         if measured.default_km is not None:
             have = {k.lower().strip() for k in km_per}
             for r in reactants:
                 lc = r.lower().strip()
                 if lc not in have and not is_rate_law_exempt_cofactor(lc) and lc not in _NON_SUBSTRATE_LABELS:
                     km_per[r] = float(measured.default_km)
+                    km_sd_per.pop(r, None)
         kin.km_per_substrate = km_per
+        # A measured Km carries no CatPred SD, so Monte Carlo does not perturb it.
+        kin.km_sd_per_substrate = km_sd_per or None
     if measured.source:
         kin.source = measured.source
     if reaction.rate_law is None:

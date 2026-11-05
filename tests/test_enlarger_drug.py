@@ -139,6 +139,20 @@ class TestMeasuredKinetics:
         apply_measured_kinetics(rxn, SimpleNamespace(kcat=None, km={"A": 9.0}, default_km=None, source=None))
         assert rxn.kinetics.km_per_substrate == {"A": 9.0, "B": 0.4}
 
+    def test_measured_kms_lose_their_catpred_sd_and_estimated_ones_keep_it(self):
+        """Monte Carlo samples a Km only when it has an SD, so a measured Km must not keep CatPred's."""
+        rxn = _reaction(reactants=("A", "B", "C"), km=None, kcat=None, km_per={"A": 7.0, "B": 2.0})
+        rxn.kinetics.km_sd_per_substrate = {"A": 3.0, "B": 1.0}
+        apply_measured_kinetics(rxn, SimpleNamespace(kcat=None, km={"a": 0.5}, default_km=0.02, source=None))
+        assert rxn.kinetics.km_per_substrate == {"A": 0.5, "B": 2.0, "C": 0.02}
+        assert rxn.kinetics.km_sd_per_substrate == {"B": 1.0}
+
+    def test_single_estimated_km_sd_follows_the_unlisted_substrates(self):
+        rxn = _reaction(reactants=("A", "B"), km=0.4, kcat=1.0)
+        rxn.kinetics.km_sd = 0.1
+        apply_measured_kinetics(rxn, SimpleNamespace(kcat=None, km={"A": 9.0}, default_km=None, source=None))
+        assert rxn.kinetics.km_sd_per_substrate == {"B": 0.1}
+
     def test_a_reaction_without_a_rate_law_gets_one(self):
         rxn = _reaction(kcat=None, km=None)
         rxn.rate_law = None
