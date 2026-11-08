@@ -772,6 +772,10 @@ class ReactionGenerator:
                 generated_reactions.append(reaction)
 
             except Exception as e:
+                # thermo_missing_data_policy="error" must abort the run, not soft-skip.
+                from bees.thermodynamics import ThermoMissingDataError
+                if isinstance(e, ThermoMissingDataError):
+                    raise
                 self.logger.warning(f"Failed to create reaction for {substrate_label}: {e}")
                 continue
 

@@ -75,12 +75,18 @@ Set `database.name` to a file in `db/` (without `.csv`):
 - `db` → `db/db.csv` (general BKMS-derived set)
 - `ecoli` → `db/ecoli.csv`
 
-Enable in the input
+Control fallback behavior with `database.missing_policy`:
 
 ```yaml
 database:
   name: db
+  missing_policy: error  # or "fallback_with_warning"
 ```
+
+- `error` (default): Fail immediately if the requested database file doesn't exist
+- `fallback_with_warning`: If the requested database is not found, fall back to `db/db.csv` with a warning
+
+The resolved database path is recorded in the execution results.
 
 ## Kinetics estimation (CatPred)
 
@@ -103,6 +109,19 @@ Predictions able to be cached on disk by default (`~/.cache/bees/catpred_predict
 BEES computes ΔG°′ / Keq at the model's pH, ionic strength, pMg, and temperature. The first run downloads Component-Contribution data (~hundreds of MB) into `~/.cache/equilibrator`.
 
 Set `BEES_DISABLE_THERMO=1` to skip this layer (every reaction is then treated as irreversible).
+
+Control behavior when thermodynamics data is unavailable with `thermo_missing_data_policy`:
+
+```yaml
+settings:
+  thermo_missing_data_policy: error  # "warn_assume_irreversible" or "silent_assume_irreversible"
+```
+
+- `error` (default): Fail immediately if thermodynamics cannot be computed
+- `warn_assume_irreversible`: Log a warning and assume the reaction is irreversible
+- `silent_assume_irreversible`: Assume irreversible without warning (log at debug level only)
+
+When thermodynamics fails, ensure all compounds have valid SMILES or set the policy to a lenient option. Affected reactions are summarized at the end of the run with their stoichiometry.
 
 ## Rules and calibrations
 
