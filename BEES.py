@@ -94,15 +94,28 @@ def main():
         print(f"\n{'='*60}")
         print("BEES Execution Summary:")
         print(f"  Project: {results['project']}")
-        print(f"  Reactions Generated: {results['n_reactions']}")
+        print(f"  Reactions Generated: {results.get('n_reactions', 0)}")
         print(f"  Execution Time: {results['execution_time']}")
+        if results.get('database_path'):
+            print(f"  Database: {results['database_path']}")
         if results.get('summary_path'):
             print(f"  Summary: {results['summary_path']}")
         print(f"{'='*60}\n")
+        sys.exit(0)
     else:
-        print("\nBEES execution completed with warnings or errors.")
-        if results and results.get('message'):
-            print(f"  {results['message']}\n")
+        print("\n" + "="*60)
+        print("BEES EXECUTION FAILED")
+        print("="*60)
+        if results:
+            print(f"  Project: {results.get('project', 'unknown')}")
+            if results.get('convergence_reason'):
+                print(f"  Reason: {results['convergence_reason']}")
+            if results.get('message'):
+                print(f"  Message: {results['message']}")
+        else:
+            print("  No results returned")
+        print("="*60 + "\n")
+        sys.exit(1)
     
     return results
 

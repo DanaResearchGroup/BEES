@@ -61,8 +61,23 @@ def _disabled_thermo() -> ThermoData:
         source="disabled",
     )
 
-def _fallback_thermo(reason: str) -> ThermoData:
-    logger.info("Thermo fallback: %s", reason)
+def _fallback_thermo(reason: str, policy: str = "warn_assume_irreversible") -> ThermoData:
+    """Return fallback thermo when ΔG cannot be computed.
+    
+    Args:
+        reason: Why thermo could not be computed.
+        policy: "error", "warn_assume_irreversible", or "silent_assume_irreversible".
+    
+    Raises:
+        ValueError: When policy is "error".
+    """
+    if policy == "error":
+        raise ValueError(f"Thermodynamics computation failed: {reason}")
+    elif policy == "warn_assume_irreversible":
+        logger.warning("Thermo fallback (assuming irreversible): %s", reason)
+    else:  # "silent_assume_irreversible"
+        logger.debug("Thermo fallback (assuming irreversible): %s", reason)
+    
     return ThermoData(
         dgr_prime_kJmol=float("nan"),
         sigma_kJmol=float("nan"),
@@ -114,6 +129,7 @@ class ThermoEngine:
         irreversible_cutoff_kJmol: float = _DGR_IRREVERSIBLE_KJMOL,
         cache: Optional[_DiskCache] = None,
         substitutor: Optional["CompoundSubstitutor"] = None,
+        missing_data_policy: str = "warn_assume_irreversible",
     ):
         self.pH = float(pH)
         self.ionic_strength_M = float(ionic_strength_M)
@@ -125,6 +141,7 @@ class ThermoEngine:
         self._cc_load_failed = False
         # None = pass-through; enlarger injects a CompoundSubstitutor at init.
         self.substitutor: Optional[CompoundSubstitutor] = substitutor
+        self.missing_data_policy = missing_data_policy
 
     def _load_cc(self):
         """Load ComponentContribution and set environmental conditions."""
@@ -400,7 +417,7 @@ class ThermoEngine:
 
         cc = self._load_cc()
         if cc is None:
-            return _fallback_thermo("equilibrator unavailable")
+            return _fallback_thermo("equilibrator unavailable", self.missing_data_policy)
 
         # Keyed by the chemistry equilibrator evaluates (post-substitution), so a
         # changed substitution can never reuse a ΔG computed for other compounds.
@@ -430,7 +447,8 @@ class ThermoEngine:
                 f"{c} {lab}" for lab, c in stoichiometry.items() if c != 0
             )
             return _fallback_thermo(
-                f"equilibrator returned no ΔG°' for: {stoich_str}"
+                f"equilibrator returned no ΔG°' for: {stoich_str}",
+                self.missing_data_policy
             )
 
         dgr, sigma = result

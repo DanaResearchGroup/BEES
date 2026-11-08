@@ -172,7 +172,8 @@ class BEES():
     
         
         # Resolve DB path from database.name (e.g. db -> db/db.csv)
-        db_path = resolve_db_path(self.bees_object.database.name, self.logger)
+        missing_policy = getattr(self.bees_object.database, "missing_policy", "fallback_with_warning")
+        db_path = resolve_db_path(self.bees_object.database.name, self.logger, missing_policy)
         reaction_generator = ReactionGenerator(
             bees_object=self.bees_object,
             logger=self.logger,
@@ -214,6 +215,25 @@ class BEES():
                 output_directory=self.output_directory,
             )
             enlarger_result = enlarger.run()
+
+            # Check for ODE failure
+            if enlarger_result.ode_failed:
+                execution_time = common.time_lapse(self.t0)
+                self.logger.error(
+                    f"BEES execution for project '{self.project}' FAILED after {execution_time}: "
+                    f"{enlarger_result.convergence_reason}"
+                )
+                self.logger.log_footer(success=False)
+                return {
+                    'success': False,
+                    'project': self.project,
+                    'mode': 'iterative',
+                    'converged': False,
+                    'convergence_reason': enlarger_result.convergence_reason,
+                    'execution_time': execution_time,
+                    'database_path': db_path,
+                    'message': f'ODE solver failed: {enlarger_result.convergence_reason}',
+                }
 
             # Export reactions summary 
             reaction_generator.reactions = (
@@ -278,6 +298,7 @@ class BEES():
                 'converged': enlarger_result.converged,
                 'convergence_reason': enlarger_result.convergence_reason,
                 'execution_time': execution_time,
+                'database_path': db_path,
                 'summary_path': summary_path,
                 'profiles_path': profiles_path,
                 'flux_path': flux_path,
@@ -315,18 +336,39 @@ class BEES():
                 'mode': 'batch',
                 'n_reactions': len(reactions),
                 'execution_time': execution_time,
+                'database_path': db_path,
                 'summary_path': summary_path,
                 'sbml_path': None,
                 'message': f'Execution completed successfully. Generated {len(reactions)} reaction(s).'
             }
 
 
-def resolve_db_path(db_name: str, logger) -> str:
-    """db/<name>.csv, or db/db.csv (with a warning) when that file does not exist."""
+def resolve_db_path(db_name: str, logger, missing_policy: str = "fallback_with_warning") -> str:
+    """Resolve db/<name>.csv with configurable missing-file policy.
+    
+    Args:
+        db_name: Database name (without .csv extension).
+        logger: Logger instance.
+        missing_policy: "error" (fail on missing DB) or "fallback_with_warning" (use db.csv).
+    
+    Returns:
+        Absolute path to the resolved database file.
+    
+    Raises:
+        FileNotFoundError: When missing_policy is "error" and the requested DB doesn't exist.
+    """
     db_name = db_name.strip()
     db_path = os.path.join(BEES_PATH, "db", f"{db_name}.csv")
     if os.path.exists(db_path):
         return db_path
+    
+    if missing_policy == "error":
+        raise FileNotFoundError(
+            f"Database '{db_name}' not found at {db_path}. "
+            f"Set database.missing_policy to 'fallback_with_warning' to fall back to db.csv."
+        )
+    
+    # missing_policy == "fallback_with_warning"
     default_db = os.path.join(BEES_PATH, "db", "db.csv")
     logger.warning(f"Database '{db_name}' not found at {db_path}; falling back to {default_db}.")
     return default_db

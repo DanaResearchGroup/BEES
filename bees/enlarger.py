@@ -27,6 +27,7 @@ class EnlargerResult:
     final_core_reactions: int = 0
     simulation_profiles: list = field(default_factory=list)
     model: Optional[CoreEdgeModel] = None
+    ode_failed: bool = False
 
 
 class IterativeEnlarger:
@@ -198,6 +199,7 @@ class IterativeEnlarger:
             if not sim_result.success:
                 self.logger.warning(f"ODE simulation failed: {sim_result.message}")
                 result.convergence_reason = f"ODE failure: {sim_result.message}"
+                result.ode_failed = True
                 ode_failed = True
                 break
 
@@ -241,6 +243,7 @@ class IterativeEnlarger:
                 self._record_edge_peaks(sim_result, iteration)
                 if not sim_result.success:
                     result.convergence_reason = f"ODE failure on resume: {sim_result.message}"
+                    result.ode_failed = True
                     ode_failed = True
                     self.logger.warning(f"  {result.convergence_reason}")
                     break
@@ -270,6 +273,7 @@ class IterativeEnlarger:
                     sim_result = self._simulate_full_trajectory()
                     if not sim_result.success:
                         result.convergence_reason = f"ODE failure: {sim_result.message}"
+                        result.ode_failed = True
                         ode_failed = True
                         self.logger.warning(f"  {result.convergence_reason}")
                         break
@@ -576,30 +580,62 @@ class IterativeEnlarger:
         fraction = n_fallback / n_total if n_total > 0 else 0.0
 
         threshold = 0.05
+        
+        missing_data_policy = getattr(
+            self.bees_object.settings, "thermo_missing_data_policy", "warn_assume_irreversible"
+        )
 
         if n_fallback == 0:
             self.logger.info(
-                f"Thermo fallback gate: 0 / {n_total} core reactions use fallback ΔG°' (all resolved)."
+                f"Thermodynamics: 0 / {n_total} core reactions use fallback ΔG°' (all resolved)."
             )
         else:
             rxn_ids = []
-            for rxn in fallback_rxns:
+            rxn_details = []
+            for rxn in fallback_rxns[:5]:  # Show details for first 5
+                sig = reaction_signature(rxn)
+                rid = self._reaction_id_by_sig.get(sig)
+                rxn_id_str = f"R{rid}" if rid is not None else "R?"
+                rxn_ids.append(rxn_id_str)
+                
+                # Format reaction equation
+                reactants = " + ".join(
+                    sp for sp, c in rxn.stoichiometry.items() if c < 0
+                )
+                products = " + ".join(
+                    sp for sp, c in rxn.stoichiometry.items() if c > 0
+                )
+                rxn_details.append(f"{rxn_id_str}: {reactants} -> {products}")
+            
+            # Collect all IDs
+            for rxn in fallback_rxns[5:]:
                 sig = reaction_signature(rxn)
                 rid = self._reaction_id_by_sig.get(sig)
                 rxn_ids.append(f"R{rid}" if rid is not None else "R?")
+            
             ids_str = ", ".join(rxn_ids[:10]) + (" ..." if len(rxn_ids) > 10 else "")
+            
             msg = (
-                f"Thermo fallback gate: {n_fallback} / {n_total} core reactions "
-                f"({100*fraction:.1f}%) use fallback ΔG°' (nan) — reactions: [{ids_str}]"
+                f"Thermodynamics: {n_fallback} / {n_total} core reactions "
+                f"({100*fraction:.1f}%) use fallback ΔG°' (assumed irreversible) — "
+                f"policy: {missing_data_policy}"
             )
+            
+            details_msg = "\n  ".join(["  Affected reactions (showing up to 5):"] + rxn_details)
+            
             if fraction > threshold:
                 self.logger.warning(
-                    f"{msg} — exceeds {100*threshold:.0f}% threshold; "
-                    "exported as irreversible forward-only MM. "
-                    "To resolve: add compound SMILES or review stoichiometry."
+                    f"{msg} — exceeds {100*threshold:.0f}% threshold. "
+                    f"These reactions are exported as irreversible forward-only MM. "
+                    f"To resolve: add compound SMILES, review stoichiometry, or set "
+                    f"thermo_missing_data_policy to 'error' to fail on missing data."
                 )
+                if rxn_details:
+                    self.logger.warning(details_msg)
             else:
-                self.logger.info(f"{msg} — exported as irreversible forward-only MM.")
+                self.logger.info(f"{msg}. Reaction IDs: [{ids_str}]")
+                if rxn_details:
+                    self.logger.info(details_msg)
 
 
     # ------------------------------------------------------------------
@@ -761,6 +797,9 @@ class IterativeEnlarger:
         pH = env.pH
         if isinstance(pH, tuple):
             pH = 0.5 * (pH[0] + pH[1])
+        missing_data_policy = getattr(
+            self.bees_object.settings, "thermo_missing_data_policy", "warn_assume_irreversible"
+        )
         return ThermoEngine(
             pH=float(pH),
             ionic_strength_M=float(getattr(env, "ionic_strength_M", 0.25)),
@@ -770,6 +809,7 @@ class IterativeEnlarger:
                 getattr(self.bees_object.settings, "thermo_irreversible_cutoff_kJmol", 30.0)
             ),
             substitutor=substitutor,
+            missing_data_policy=missing_data_policy,
         )
 
     def _build_global_smiles_map(self) -> Dict[str, str]:
