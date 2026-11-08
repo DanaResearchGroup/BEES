@@ -123,6 +123,20 @@ settings:
 
 When thermodynamics fails, ensure all compounds have valid SMILES or set the policy to a lenient option. Affected reactions are summarized at the end of the run with their stoichiometry.
 
+## Inhibition and dosing
+
+An enzyme may declare reversible `inhibition` (competitive, uncompetitive,
+noncompetitive, mixed, or tight-binding) and optional experimental
+`measured_kinetics`. A model-level `dosing` list adds bolus or release-profile
+inputs and first-order elimination. See `projects/commented/input.yml` for every
+key and parameter unit.
+
+The reversible-reaction implementation is a phenomenological rate overlay: it
+preserves the thermodynamic equilibrium but does not explicitly model enzyme
+binding states. Tight-binding inhibition uses the Morrison equation and is
+limited to one enzyme target per inhibitor because shared inhibitor depletion
+across multiple targets is not yet solved.
+
 ## Rules and calibrations
 
 Enable in the input:

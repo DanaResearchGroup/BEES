@@ -32,3 +32,32 @@ def test_project_input_validates(path):
     rules = load_rules()
     for name in parsed.settings.calibrations or []:
         rules.by_name(name)
+
+
+_COMMENTED = os.path.join(BEES_PATH, "projects", "commented", "input.yml")
+
+
+def test_commented_template_validates_and_uses_the_drug_keys():
+    with open(_COMMENTED) as fh:
+        data = yaml.safe_load(fh)
+    parsed = InputBase(**data)
+    enzyme = parsed.enzymes[0]
+    assert enzyme.inhibition and enzyme.measured_kinetics and parsed.dosing
+    assert any(sp.concentration == 0 for sp in parsed.species)
+
+
+def test_commented_template_documents_every_schema_key():
+    """A key the schema accepts but the template never mentions is undocumented."""
+    from bees import schema
+
+    with open(_COMMENTED) as fh:
+        text = fh.read()
+    models = [
+        schema.Species, schema.Enzyme, schema.FeedbackInhibition, schema.Inhibition,
+        schema.MeasuredKinetics, schema.Environment, schema.Settings, schema.Database, schema.Dosing,
+        schema.InputBase,
+    ]
+    missing = sorted(
+        f"{m.__name__}.{name}" for m in models for name in m.model_fields if f"{name}" not in text
+    )
+    assert not missing, f"keys missing from projects/commented/input.yml: {missing}"

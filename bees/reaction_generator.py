@@ -21,7 +21,7 @@ from bees.common import (
     canonical_smiles, 
     heavy_atom_count
 )
-from bees.cofactors import GENERAL_COFACTORS, COFACTORS_ALWAYS_AVAILABLE
+from bees.cofactors import GENERAL_COFACTORS, COFACTORS_ALWAYS_AVAILABLE, is_rate_law_exempt_cofactor
 from bees.cofactors import get_coenzyme_like_flags
 from bees.reaction_utils import (
     get_ec_aliases,
@@ -48,6 +48,8 @@ class GeneratedReaction:
     thermo: Optional[ThermoData] = None
     # Opt-in; enlarger attaches the map (match by enzyme label).
     feedback_inhibitors: Optional[Dict[str, tuple]] = None
+    # Reversible inhibitors (bees.inhibition.InhibitorSpec); the enlarger attaches them by enzyme label.
+    inhibitors: Optional[list] = None
 
     def __repr__(self):
         return f"Reaction: {' + '.join(self.reactant_labels)} → {' + '.join(self.product_labels)}"
@@ -61,6 +63,70 @@ def reaction_signature(
     reactants = tuple(sorted(str(r).lower().strip() for r in reaction.reactant_labels))
     products = tuple(sorted(str(p).lower().strip() for p in reaction.product_labels))
     return (enzyme, reactants, products)
+
+
+def apply_measured_kinetics(reaction: GeneratedReaction, measured) -> Set[str]:
+    """Overwrite a reaction's kinetics with an enzyme's ``measured_kinetics`` (schema.MeasuredKinetics).
+
+    kcat replaces the stored one; ``km`` entries replace (or add) the Km of the participant
+    with that label; ``default_km`` then fills every other substrate, which would otherwise
+    be left out of the rate law (treated as saturated). Buffered cofactors (H2O, H+, ...)
+    are not given one. Idempotent, so it can be re-applied after the rules layer.
+    """
+    kin = reaction.kinetics
+    if kin is None or measured is None:
+        return set()
+    matched_km_keys: Set[str] = set()
+    if measured.kcat is not None:
+        kin.kcat = float(measured.kcat)
+        kin.kcat_sd = None
+    reactants = list(reaction.reactant_labels)
+    if measured.km or measured.default_km is not None:
+        km_per = dict(getattr(kin, "km_per_substrate", None) or {})
+        km_sd_per = dict(getattr(kin, "km_sd_per_substrate", None) or {})
+        if not km_per and kin.km is not None:
+            # A single estimated Km applies to every substrate; keep that when listing some.
+            km_per = {r: kin.km for r in reactants}
+            if getattr(kin, "km_sd", None) is not None and not km_sd_per:
+                km_sd_per = {r: kin.km_sd for r in reactants}
+        by_lc = {lab.lower().strip(): lab for lab in reactants + list(reaction.product_labels)}
+        for key, value in (measured.km or {}).items():
+            candidates = [str(key).lower().strip()] + get_ontology_equivalents(key)
+            label = next((by_lc[c] for c in candidates if c in by_lc), None)
+            if label is not None:
+                km_per[label] = float(value)
+                km_sd_per.pop(label, None)
+                matched_km_keys.add(str(key).lower().strip())
+        if measured.default_km is not None:
+            have = {k.lower().strip() for k in km_per}
+            for r in reactants:
+                lc = r.lower().strip()
+                if lc not in have and not is_rate_law_exempt_cofactor(lc) and lc not in _NON_SUBSTRATE_LABELS:
+                    km_per[r] = float(measured.default_km)
+                    km_sd_per.pop(r, None)
+        kin.km_per_substrate = km_per
+        # A measured Km carries no CatPred SD, so Monte Carlo does not perturb it.
+        kin.km_sd_per_substrate = km_sd_per or None
+    if measured.source:
+        kin.source = measured.source
+    km_per = getattr(kin, "km_per_substrate", None) or {}
+    reactants_lc = {label.lower().strip() for label in reactants}
+    has_reactant_km = (
+        kin.km is not None
+        or any(label.lower().strip() in reactants_lc for label in km_per)
+    )
+    if reaction.rate_law is None and has_reactant_km:
+        reaction.rate_law = "Michaelis-Menten"
+    return matched_km_keys
+
+
+def measured_kinetics_by_enzyme(bees_object) -> Dict[str, object]:
+    """{enzyme label (lowercase): measured_kinetics} of the enzymes that declare one."""
+    return {
+        str(enz.label).lower().strip(): enz.measured_kinetics
+        for enz in getattr(bees_object, "enzymes", []) or []
+        if getattr(enz, "measured_kinetics", None) is not None
+    }
 
 
 class ReactionGenerator:
@@ -646,8 +712,13 @@ class ReactionGenerator:
                     self.logger.warning(f"  Kinetics estimation failed: {e}")
 
             # Estimation on: require kcat/Km. Off: topology-only is OK.
-            has_kcat = kinetic_data.kcat is not None
-            has_km = kinetic_data.km is not None or bool(getattr(kinetic_data, "km_per_substrate", None))
+            measured = getattr(enzyme, "measured_kinetics", None)
+            has_kcat = kinetic_data.kcat is not None or (measured is not None and measured.kcat is not None)
+            has_km = (
+                kinetic_data.km is not None
+                or bool(getattr(kinetic_data, "km_per_substrate", None))
+                or (measured is not None and (bool(measured.km) or measured.default_km is not None))
+            )
             estimation_enabled = getattr(
                 getattr(self.bees_object, "settings", None), "estimate_kinetics", False
             )
@@ -756,6 +827,7 @@ class ReactionGenerator:
                     stoichiometry=template.stoichiometry,
                     rate_law=rate_law
                 )
+                apply_measured_kinetics(reaction, measured)
 
                 if thermo_engine is not None:
                     self._attach_raw_thermo_eagerly(
