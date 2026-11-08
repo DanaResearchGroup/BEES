@@ -172,7 +172,7 @@ class BEES():
     
         
         # Resolve DB path from database.name (e.g. db -> db/db.csv)
-        missing_policy = getattr(self.bees_object.database, "missing_policy", "fallback_with_warning")
+        missing_policy = getattr(self.bees_object.database, "missing_policy", "error")
         db_path = resolve_db_path(self.bees_object.database.name, self.logger, missing_policy)
         reaction_generator = ReactionGenerator(
             bees_object=self.bees_object,
@@ -343,7 +343,7 @@ class BEES():
             }
 
 
-def resolve_db_path(db_name: str, logger, missing_policy: str = "fallback_with_warning") -> str:
+def resolve_db_path(db_name: str, logger, missing_policy: str = "error") -> str:
     """Resolve db/<name>.csv with configurable missing-file policy.
     
     Args:

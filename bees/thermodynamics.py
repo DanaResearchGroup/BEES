@@ -129,7 +129,7 @@ class ThermoEngine:
         irreversible_cutoff_kJmol: float = _DGR_IRREVERSIBLE_KJMOL,
         cache: Optional[_DiskCache] = None,
         substitutor: Optional["CompoundSubstitutor"] = None,
-        missing_data_policy: str = "warn_assume_irreversible",
+        missing_data_policy: str = "error",
     ):
         self.pH = float(pH)
         self.ionic_strength_M = float(ionic_strength_M)

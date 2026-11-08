@@ -238,12 +238,14 @@ def test_resolve_db_path_uses_named_db(tmp_path, monkeypatch):
     (tmp_path / "db").mkdir()
     (tmp_path / "db" / "ecoli.csv").write_text("")
     logger = mock.MagicMock()
-    assert main.resolve_db_path(" ecoli ", logger) == str(tmp_path / "db" / "ecoli.csv")
+    assert main.resolve_db_path(" ecoli ", logger, "error") == str(tmp_path / "db" / "ecoli.csv")
     logger.warning.assert_not_called()
 
 
 def test_resolve_db_path_warns_on_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "BEES_PATH", str(tmp_path))
+    (tmp_path / "db").mkdir()
+    (tmp_path / "db" / "db.csv").write_text("")
     logger = mock.MagicMock()
-    assert main.resolve_db_path("ecolli", logger) == str(tmp_path / "db" / "db.csv")
+    assert main.resolve_db_path("ecolli", logger, "fallback_with_warning") == str(tmp_path / "db" / "db.csv")
     assert "ecolli" in logger.warning.call_args.args[0]

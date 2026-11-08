@@ -105,7 +105,7 @@ class TestThermoEngineDisabled:
 
     @_skip_if_disabled
     def test_fallback_when_cc_unavailable(self, tmp_path: Path):
-        engine = ThermoEngine(pH=7.4, cache=_DiskCache(tmp_path))
+        engine = ThermoEngine(pH=7.4, cache=_DiskCache(tmp_path), missing_data_policy="warn_assume_irreversible")
         with patch.object(engine, "_load_cc", return_value=None):
             td = engine.compute_keq(
                 stoichiometry={"S": -1, "P": 1},
@@ -195,7 +195,7 @@ class TestThermoEngineWithMockedCC:
         assert third._compute_dgr_prime.call_count == 0
 
     def test_fallback_when_dgr_is_none(self, tmp_path: Path):
-        engine = ThermoEngine(pH=7.4, T_K=310.15, cache=_DiskCache(tmp_path))
+        engine = ThermoEngine(pH=7.4, T_K=310.15, cache=_DiskCache(tmp_path), missing_data_policy="warn_assume_irreversible")
         engine._cc = MagicMock()
         engine._compute_dgr_prime = MagicMock(return_value=(None, None))
         td = engine.compute_keq(**self._kwargs())

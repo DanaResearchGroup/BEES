@@ -41,8 +41,10 @@ environment:
 
 database:
   name: db
+  missing_policy: fallback_with_warning  # Lenient: fall back to db.csv if 'db' not found
 
 settings:
+  thermo_missing_data_policy: warn_assume_irreversible  # Lenient: warn but continue
   end_time: 1000.0
   simulation_mode: iterative
   time_step: 2.0

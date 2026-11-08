@@ -582,7 +582,7 @@ class IterativeEnlarger:
         threshold = 0.05
         
         missing_data_policy = getattr(
-            self.bees_object.settings, "thermo_missing_data_policy", "warn_assume_irreversible"
+            self.bees_object.settings, "thermo_missing_data_policy", "error"
         )
 
         if n_fallback == 0:
@@ -798,7 +798,7 @@ class IterativeEnlarger:
         if isinstance(pH, tuple):
             pH = 0.5 * (pH[0] + pH[1])
         missing_data_policy = getattr(
-            self.bees_object.settings, "thermo_missing_data_policy", "warn_assume_irreversible"
+            self.bees_object.settings, "thermo_missing_data_policy", "error"
         )
         return ThermoEngine(
             pH=float(pH),

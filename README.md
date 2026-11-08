@@ -80,11 +80,11 @@ Control fallback behavior with `database.missing_policy`:
 ```yaml
 database:
   name: db
-  missing_policy: fallback_with_warning  # or "error"
+  missing_policy: error  # or "fallback_with_warning"
 ```
 
-- `fallback_with_warning` (default): If the requested database is not found, fall back to `db/db.csv` with a warning
-- `error`: Fail immediately if the requested database file doesn't exist
+- `error` (default): Fail immediately if the requested database file doesn't exist
+- `fallback_with_warning`: If the requested database is not found, fall back to `db/db.csv` with a warning
 
 The resolved database path is recorded in the execution results.
 
@@ -114,14 +114,14 @@ Control behavior when thermodynamics data is unavailable with `thermo_missing_da
 
 ```yaml
 settings:
-  thermo_missing_data_policy: warn_assume_irreversible  # "error" or "silent_assume_irreversible"
+  thermo_missing_data_policy: error  # "warn_assume_irreversible" or "silent_assume_irreversible"
 ```
 
-- `warn_assume_irreversible` (default): Log a warning and assume the reaction is irreversible
+- `error` (default): Fail immediately if thermodynamics cannot be computed
+- `warn_assume_irreversible`: Log a warning and assume the reaction is irreversible
 - `silent_assume_irreversible`: Assume irreversible without warning (log at debug level only)
-- `error`: Fail immediately if thermodynamics cannot be computed
 
-Affected reactions are summarized at the end of the run with their stoichiometry.
+When thermodynamics fails, ensure all compounds have valid SMILES or set the policy to a lenient option. Affected reactions are summarized at the end of the run with their stoichiometry.
 
 ## Rules and calibrations
 

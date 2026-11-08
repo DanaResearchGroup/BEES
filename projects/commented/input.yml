@@ -90,9 +90,9 @@ database:
   ## name: database identifier (e.g., `db`)
   name: db
   ## missing_policy (optional): what to do when the requested database file doesn't exist
-  ##   - "fallback_with_warning" (default): fall back to db/db.csv with a warning
-  ##   - "error": fail immediately if the specified database is not found
-  missing_policy: fallback_with_warning
+  ##   - "error" (default): fail immediately if the specified database is not found
+  ##   - "fallback_with_warning": fall back to db/db.csv with a warning
+  # missing_policy: error
 
 ## --- Settings (all current schema attributes) ---
 settings:
@@ -201,9 +201,9 @@ settings:
   ## thermo_irreversible_cutoff_kJmol: reactions with dG'0 < -this (kJ/mol) are irreversible (> 0)
   thermo_irreversible_cutoff_kJmol: 30.0
   ## thermo_missing_data_policy (optional): what to do when thermodynamics cannot be computed
-  ##   - "warn_assume_irreversible" (default): log warning and assume reaction is irreversible
+  ##   - "error" (default): fail immediately if thermodynamics data is missing
+  ##   - "warn_assume_irreversible": log warning and assume reaction is irreversible
   ##   - "silent_assume_irreversible": silently assume irreversible (log at debug level)
-  ##   - "error": fail immediately if thermodynamics data is missing
-  thermo_missing_data_policy: warn_assume_irreversible
+  # thermo_missing_data_policy: error
   ## enzyme_competition: reactions of one enzyme share its free enzyme (competitive binding)
   enzyme_competition: true

@@ -178,7 +178,7 @@ class Settings(BaseModel):
 
     thermo_smiles_substitutions: Optional[Dict[str, str]] = None
     thermo_irreversible_cutoff_kJmol: Annotated[float, Field(gt=0)] = 30.0  # ΔG°' < −this kJ/mol
-    thermo_missing_data_policy: Literal["error", "warn_assume_irreversible", "silent_assume_irreversible"] = "warn_assume_irreversible"
+    thermo_missing_data_policy: Literal["error", "warn_assume_irreversible", "silent_assume_irreversible"] = "error"
 
     # Reactions of one enzyme share its free enzyme (partition function over CM bound forms).
     enzyme_competition: bool = True
@@ -233,7 +233,7 @@ class Settings(BaseModel):
 
 class Database(BaseModel):
     name: constr(min_length=1)
-    missing_policy: Literal["error", "fallback_with_warning"] = "fallback_with_warning"
+    missing_policy: Literal["error", "fallback_with_warning"] = "error"
 
     model_config = ConfigDict(extra="forbid")
 

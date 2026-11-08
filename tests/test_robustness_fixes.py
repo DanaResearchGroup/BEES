@@ -55,7 +55,7 @@ class TestODEFailurePropagation:
             species=species,
             enzymes=enzymes,
             project="TestProject",
-            database=SimpleNamespace(name="db", missing_policy="fallback_with_warning"),
+            database=SimpleNamespace(name="db", missing_policy="error"),
             environment=SimpleNamespace(temperature=298.15, pH=7.0),
         )
         return bees_obj
@@ -113,8 +113,8 @@ class TestODEFailurePropagation:
             "species": [{"label": "S", "concentration": 1.0, "reactive": True}],
             "enzymes": [{"label": "E", "concentration": 0.01, "ecnumber": "EC 1.1.1.1", "reactive": True}],
             "environment": {"temperature": 300.0, "pH": 7.0},
-            "database": {"name": "db", "missing_policy": "fallback_with_warning"},
-            "settings": {"end_time": 10.0, "toleranceMoveToCore": 1e-5},
+            "database": {"name": "db"},
+            "settings": {"end_time": 10.0, "toleranceMoveToCore": 1e-5, "thermo_missing_data_policy": "warn_assume_irreversible"},
         }
         
         bees_instance = main.BEES(input_data)
@@ -164,7 +164,7 @@ class TestThermodynamicsPolicy:
                 )
     
     def test_thermo_engine_warn_policy_logs_warning(self, tmp_path):
-        """ThermoEngine with policy='warn_assume_irreversible' logs warning."""
+        """ThermoEngine with policy='warn_assume_irreversible' logs warning (not default)."""
         engine = ThermoEngine(
             pH=7.4,
             cache=_DiskCache(tmp_path),
@@ -210,14 +210,19 @@ class TestThermodynamicsPolicy:
         with tempfile.TemporaryDirectory() as output_dir:
             settings = SimpleNamespace(
                 end_time=100.0,
+                time_step=None,
                 toleranceMoveToCore=1e-5,
+                toleranceKeepInEdge=0,
                 max_iterations=1,
+                max_edge_species=None,
+                termination_conversion=None,
+                termination_rate_ratio=None,
                 thermo_missing_data_policy="error",
                 thermo_irreversible_cutoff_kJmol=30.0,
             )
             bees_obj = SimpleNamespace(
                 settings=settings,
-                species=[SimpleNamespace(label="S", concentration=1.0, reactive=True, constant=False)],
+                species=[SimpleNamespace(label="S", concentration=1.0, reactive=True, constant=False, solvent=False)],
                 enzymes=[SimpleNamespace(label="E", concentration=0.01, reactive=True, constant=True, ecnumber="EC 1.1.1.1")],
                 environment=SimpleNamespace(temperature=300.0, pH=7.0),
             )
@@ -309,8 +314,8 @@ class TestDatabaseMissingPolicy:
             "species": [{"label": "S", "concentration": 1.0, "reactive": True}],
             "enzymes": [{"label": "E", "concentration": 0.01, "ecnumber": "EC 1.1.1.1", "reactive": True}],
             "environment": {"temperature": 300.0, "pH": 7.0},
-            "database": {"name": "testdb", "missing_policy": "fallback_with_warning"},
-            "settings": {"simulation_mode": "batch"},
+            "database": {"name": "testdb"},
+            "settings": {"simulation_mode": "batch", "thermo_missing_data_policy": "warn_assume_irreversible"},
         }
         
         bees_instance = main.BEES(input_data)
