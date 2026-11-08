@@ -7,7 +7,6 @@ Tests for the three robustness fixes:
 To run: pytest -v tests/test_robustness_fixes.py
 """
 
-import os
 import pytest
 import tempfile
 from pathlib import Path
@@ -17,7 +16,7 @@ from types import SimpleNamespace
 import bees.main as main
 from bees.enlarger import IterativeEnlarger, EnlargerResult
 from bees.simulator import SimulationResult
-from bees.thermodynamics import ThermoEngine, _DiskCache
+from bees.thermodynamics import ThermoEngine, ThermoMissingDataError, _DiskCache
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +156,70 @@ class TestThermodynamicsPolicy:
         )
         # Mock CC to be unavailable
         with patch.object(engine, "_load_cc", return_value=None):
-            with pytest.raises(ValueError, match="Thermodynamics computation failed"):
+            with pytest.raises(ThermoMissingDataError, match="Thermodynamics computation failed"):
                 engine.compute_keq(
                     stoichiometry={"S": -1, "P": 1},
                     smiles_map={"S": "C", "P": "C"},
+                )
+
+    def test_thermo_error_policy_not_swallowed_by_reaction_generator(self, tmp_path):
+        """Broad try/except in _generate_reactions must not soft-skip ThermoMissingDataError."""
+        from bees.reaction_generator import ReactionGenerator
+
+        logger = MagicMock()
+        settings = SimpleNamespace(estimate_kinetics=False)
+        bees_obj = SimpleNamespace(
+            settings=settings,
+            species=[],
+            enzymes=[],
+            environment=SimpleNamespace(temperature=298.15, pH=7.0),
+        )
+        rg = ReactionGenerator(bees_object=bees_obj, logger=logger, output_directory=str(tmp_path))
+
+        enzyme = SimpleNamespace(
+            label="E", ecnumber="EC 1.1.1.1", reactive=True, concentration=0.01,
+            amino_acid_sequence=None,
+        )
+        substrate = SimpleNamespace(label="S", reactive=True, solvent=False, smiles="C")
+
+        kinetic = MagicMock()
+        kinetic.kcat = 1.0
+        kinetic.km = 1.0
+        kinetic.km_per_substrate = None
+        kinetic.km_sd = None
+        kinetic.km_sd_per_substrate = None
+        kinetic.stoichiometry = {"S": -1, "P": 1}
+        kinetic.ec_number = "EC 1.1.1.1"
+        kinetic.compound_smiles = {"S": "C", "P": "C"}
+        kinetic.vmax = None
+        kinetic.reaction_string = "S -> P"
+
+        tpl = MagicMock()
+        tpl.stoichiometry = {"S": -1, "P": 1}
+        tpl.reactants = ["S"]
+        tpl.products = ["P"]
+        tpl.cofactors = []
+
+        with patch.object(rg, "kinetic_db") as mock_db, \
+             patch.object(rg, "_placeholder_participants", return_value=[]), \
+             patch.object(rg, "_is_pure_translocation", return_value=False), \
+             patch("bees.reaction_generator.create_reaction_from_database", return_value=tpl), \
+             patch("bees.reaction_generator.validate_reaction_reactants", return_value=(True, [])), \
+             patch.object(rg, "_check_heavy_atom_balance", return_value=True), \
+             patch.object(rg, "_determine_rate_law", return_value="Michaelis-Menten"), \
+             patch.object(
+                 rg, "_attach_raw_thermo_eagerly",
+                 side_effect=ThermoMissingDataError("Thermodynamics computation failed: test"),
+             ):
+            mock_db.query_by_enzyme_substrate.return_value = [kinetic]
+            with pytest.raises(ThermoMissingDataError, match="Thermodynamics computation failed"):
+                rg._generate_reactions(
+                    enzyme=enzyme,
+                    substrate=substrate,
+                    available_species_labels_lc={"s", "p"},
+                    provided_species_labels_lc={"s"},
+                    thermo_engine=MagicMock(),
+                    global_smiles_map={"S": "C", "P": "C"},
                 )
     
     def test_thermo_engine_warn_policy_logs_warning(self, tmp_path):

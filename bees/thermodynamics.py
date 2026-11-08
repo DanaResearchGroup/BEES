@@ -51,6 +51,15 @@ class ThermoData:
     irreversible: bool
     source: str
 
+
+class ThermoMissingDataError(ValueError):
+    """Raised when ΔG cannot be computed and thermo_missing_data_policy is 'error'.
+
+    Distinct from other ValueErrors so reaction generation can fail fast without
+    swallowing the policy into a soft per-reaction skip.
+    """
+
+
 def _disabled_thermo() -> ThermoData:
     return ThermoData(
         dgr_prime_kJmol=float("nan"),
@@ -69,10 +78,10 @@ def _fallback_thermo(reason: str, policy: str = "warn_assume_irreversible") -> T
         policy: "error", "warn_assume_irreversible", or "silent_assume_irreversible".
     
     Raises:
-        ValueError: When policy is "error".
+        ThermoMissingDataError: When policy is "error".
     """
     if policy == "error":
-        raise ValueError(f"Thermodynamics computation failed: {reason}")
+        raise ThermoMissingDataError(f"Thermodynamics computation failed: {reason}")
     elif policy == "warn_assume_irreversible":
         logger.warning("Thermo fallback (assuming irreversible): %s", reason)
     else:  # "silent_assume_irreversible"
