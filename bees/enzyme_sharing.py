@@ -23,6 +23,7 @@ import math
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
+from scipy.special import logsumexp
 
 from bees.flux_calculator import rate_law_spec
 
@@ -158,6 +159,7 @@ class PartitionCompetition:
                 "keys": keys,
                 "rows": np.array(members, dtype=np.int64),
                 "notown": np.array(notown, dtype=np.float64),
+                "sides": [sides[j] for j in members],
                 "lig": lig, "kc": kc, "m": m, "mult": mult,
             })
 
@@ -171,10 +173,69 @@ class PartitionCompetition:
         """c_r for every reaction (1 where the enzyme has no other bound forms)."""
         c = np.ones_like(den)
         for g in self.groups:
-            others = g["notown"] @ self._weights(g, y_ext)
             d = den[g["rows"]]
-            c[g["rows"]] = d / (d + others)
+            with np.errstate(over="ignore", invalid="ignore"):
+                others = g["notown"] @ self._weights(g, y_ext)
+                c_rows = d / (d + others)
+            bad = ~(np.isfinite(d) & np.isfinite(others) & np.isfinite(c_rows))
+            if bad.any():
+                c_rows = np.where(bad, self._log_factor(g, y_ext), c_rows)
+            c[g["rows"]] = c_rows
         return c
+
+    def _log_factor(self, g, y_ext: np.ndarray) -> np.ndarray:
+        """c_r computed in log space, for states where a weight or denominator overflows."""
+        log_weights = self._log_weights(g, y_ext)
+        log_others = np.asarray([
+            logsumexp(log_weights[row > 0], axis=0) if (row > 0).any()
+            else np.full(log_weights.shape[1:], -np.inf)
+            for row in g["notown"]
+        ])
+        log_den = np.asarray([self._log_denominator(sides, y_ext) for sides in g["sides"]])
+        return np.exp(log_den - np.logaddexp(log_den, log_others))
+
+    @staticmethod
+    def _log_denominator(sides, y_ext: np.ndarray):
+        """log of the reaction's own saturation denominator, without overflow."""
+        def side_log(terms):
+            out = np.zeros(y_ext.shape[1:]) if y_ext.ndim > 1 else 0.0
+            for idx, km, nu in terms:
+                concentration = np.maximum(y_ext[idx], 0.0)
+                with np.errstate(divide="ignore"):
+                    log_ratio = np.log(concentration) - math.log(km)
+                out = out + nu * np.logaddexp(0.0, log_ratio)
+            return out
+
+        substrates, products = sides
+        log_sub = side_log(substrates)
+        if not products:
+            return log_sub
+        log_prod = side_log(products)
+        scale = np.maximum(log_sub, log_prod)
+        reduced = np.exp(log_sub - scale) + np.exp(log_prod - scale) - np.exp(-scale)
+        return scale + np.log(reduced)
+
+    @staticmethod
+    def _log_weights(g, y_ext: np.ndarray) -> np.ndarray:
+        """log complex weights, retaining relative magnitudes beyond float overflow."""
+        s = np.maximum(y_ext[g["lig"]], 0.0)
+        if s.ndim == 3:
+            with np.errstate(divide="ignore"):
+                terms = np.where(
+                    g["m"][:, :, None] > 0,
+                    g["m"][:, :, None] * (
+                        np.log(s) - np.log(g["kc"][:, :, None])
+                    ),
+                    0.0,
+                )
+            return np.log(g["mult"])[:, None] + np.sum(terms, axis=1)
+        with np.errstate(divide="ignore"):
+            terms = np.where(
+                g["m"] > 0,
+                g["m"] * (np.log(s) - np.log(g["kc"])),
+                0.0,
+            )
+        return np.log(g["mult"]) + np.sum(terms, axis=1)
 
     def complex_label(self, k: Complex) -> str:
         return " + ".join(

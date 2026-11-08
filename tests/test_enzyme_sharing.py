@@ -244,3 +244,15 @@ class TestPlumbing:
         ode = ODESimulator(model, logger=logger).export_ode_equations(str(tmp_path / "ode.txt"), 1, 10.0)
         text = open(ode).read()
         assert "Kc(E1, A)" in text and "Kc(E1, B)" in text
+
+
+def test_competition_factor_stays_finite_when_own_and_other_weights_overflow():
+    """Equal astronomical ligand/Km ratios still split the enzyme equally."""
+    rhs = _rhs(_two_mm(ka=1e-300, kb=1e-300), SP2)
+    y = _y(SP2, {"A": 1e300, "B": 1e300})
+    c = rhs.competition_factor(y)
+    assert np.isfinite(c).all()
+    assert c == pytest.approx([0.5, 0.5])
+    c_mat = rhs.competition_factor(np.column_stack([y, _y(SP2, {"A": 1e-300, "B": 2e-300})]))
+    assert np.isfinite(c_mat).all()
+    assert c_mat[:, 0] == pytest.approx([0.5, 0.5])
