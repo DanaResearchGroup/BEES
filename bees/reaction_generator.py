@@ -34,6 +34,11 @@ from bees.thermodynamics import ThermoData
 _NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
 
 
+def _is_carrier_bound(label: str) -> bool:
+    """True when the label names a carrier-bound species, not a free molecule."""
+    return "[acp]" in str(label).lower()
+
+
 @dataclass
 class GeneratedReaction:
     enzyme_label: str
@@ -377,7 +382,11 @@ class ReactionGenerator:
         can_smi = canonical_smiles(smiles) if smiles else None
         if can_smi:
             existing_from_smiles = self._species_smiles_to_canonical_label.get(can_smi)
-            if existing_from_smiles is not None:
+            same_binding = (
+                existing_from_smiles is not None
+                and _is_carrier_bound(label_clean) == _is_carrier_bound(existing_from_smiles)
+            )
+            if same_binding:
                 self._species_alias_to_canonical_label[label_lc] = existing_from_smiles
                 for eq in get_ontology_equivalents(label_clean):
                     self._species_alias_to_canonical_label[str(eq).lower().strip()] = existing_from_smiles
@@ -391,6 +400,8 @@ class ReactionGenerator:
                 continue
             existing_from_alias = self._species_alias_to_canonical_label.get(eq_lc)
             if existing_from_alias is not None:
+                if _is_carrier_bound(label_clean) != _is_carrier_bound(existing_from_alias):
+                    continue
                 existing_smiles = self._species_smiles_to_canonical_label
                 existing_can_smi = next(
                     (s for s, lbl in existing_smiles.items() if lbl == existing_from_alias),
@@ -406,7 +417,7 @@ class ReactionGenerator:
         self._species_alias_to_canonical_label[label_lc] = canonical_label
         for eq in get_ontology_equivalents(label_clean):
             self._species_alias_to_canonical_label[str(eq).lower().strip()] = canonical_label
-        if can_smi:
+        if can_smi and can_smi not in self._species_smiles_to_canonical_label:
             self._species_smiles_to_canonical_label[can_smi] = canonical_label
         return canonical_label
 
@@ -453,11 +464,27 @@ class ReactionGenerator:
         kinetic_data,
         substrate_label: str,
     ) -> Optional[bool]:
-        """True if conserved, False if unbalanced (skip), None if check not possible."""
-        
-        for species in stoichiometry.keys():
-            if isinstance(species, str) and ("[ACP]" in species or "[acp]" in species):
+        """True if conserved, False if unbalanced (skip), None if check not possible.
+
+        A carrier is not given a full-molecule structure, so the atoms inside it
+        cannot be counted. The carrier names themselves still have to balance.
+        """
+        carrier_names = [s for s in stoichiometry if isinstance(s, str) and _is_carrier_bound(s)]
+        if carrier_names:
+            try:
+                carrier_sum = sum(int(stoichiometry[s]) for s in carrier_names)
+            except (TypeError, ValueError):
                 return None
+            if carrier_sum != 0:
+                self.logger.warning(
+                    f"ACP names do not balance ({carrier_sum:+d}) for {substrate_label}"
+                )
+                return False
+            self.logger.warning(
+                f"Atom balance checked ACP names only for {substrate_label}; "
+                f"atoms inside the carrier are not in the structure"
+            )
+            return True
 
         left = 0.0
         right = 0.0
