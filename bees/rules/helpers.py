@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from bees.cofactors import COFACTORS_ALWAYS_AVAILABLE
-
-_CO2_SMILES = "O=C=O"
-_CO2_LABELS = frozenset({"carbon dioxide", "co2", "carbon-dioxide", "co₂"})
+from bees.cofactors import COFACTORS_ALWAYS_AVAILABLE, is_co2_label
 
 def detect_acyl_chain_length(label: str, smiles: Optional[str] = None) -> Optional[int]:
     """Acyl carbon count (incl. carbonyl) from structure, or None.
@@ -15,7 +12,7 @@ def detect_acyl_chain_length(label: str, smiles: Optional[str] = None) -> Option
     The label only excludes buffered cofactors and CO2; no SMILES means no chain length.
     """
     lab = (label or "").lower().strip()
-    if lab in COFACTORS_ALWAYS_AVAILABLE or lab in _CO2_LABELS:
+    if lab in COFACTORS_ALWAYS_AVAILABLE or is_co2_label(lab):
         return None
     if not smiles:
         return None

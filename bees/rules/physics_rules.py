@@ -8,14 +8,16 @@ from __future__ import annotations
 import math
 from typing import Iterable, Optional
 
-from bees.cofactors import COFACTORS_ALWAYS_AVAILABLE
+from bees.cofactors import (
+    COFACTORS_ALWAYS_AVAILABLE,
+    FIXED_CO2_CONCENTRATION_MM,
+    is_co2_label,
+)
 from bees.rules.base import RULES, Reference, Rule
 from bees.thermodynamics import STANDARD_CONCENTRATION_MM
 from bees.rules.helpers import (  # noqa: F401  — re-export detect_acyl_chain_length
     detect_acyl_carrier,
     detect_acyl_chain_length,
-    _CO2_LABELS,
-    _CO2_SMILES,
 )
 
 DGR_IRREVERSIBLE_KJMOL = 30.0
@@ -69,30 +71,6 @@ def compute_haldane_reverse_kcat(
         return None
     return val
 
-def _has_co2_product(reaction) -> bool:
-    """True if CO2 is a product (label or SMILES)."""
-    stoich = getattr(reaction, "stoichiometry", None) or {}
-    product_labels = getattr(reaction, "product_labels", None) or [
-        lab for lab, c in stoich.items() if c > 0
-    ]
-    kin = getattr(reaction, "kinetics", None)
-    smiles_map = (getattr(kin, "compound_smiles", None) or {}) if kin is not None else {}
-
-    co2_canon = None
-    for lab in product_labels:
-        if stoich.get(lab, 0) <= 0 and lab in stoich:
-            continue
-        if lab.lower().strip() in _CO2_LABELS:
-            return True
-        smi = smiles_map.get(lab) or smiles_map.get(lab.lower().strip())
-        if smi:
-            from bees.common import canonical_smiles
-            if co2_canon is None:
-                co2_canon = canonical_smiles(_CO2_SMILES)
-            if canonical_smiles(smi) == co2_canon:
-                return True
-    return False
-
 class DgrIrreversibility(Rule):
     """Flag forward-irreversible when ΔG°' < −cutoff or Keq invalid.
 
@@ -120,19 +98,6 @@ class DgrIrreversibility(Rule):
         ):
             thermo.irreversible = True
             thermo.kcat_rev = None
-
-class DecarboxylationIrreversible(Rule):
-    """Flag irreversible when CO2 is a product."""
-
-    def applies_to(self, reaction) -> bool:
-        thermo = getattr(reaction, "thermo", None)
-        if thermo is None or getattr(thermo, "irreversible", True):
-            return False
-        return _has_co2_product(reaction)
-
-    def apply(self, reaction) -> None:
-        reaction.thermo.irreversible = True
-        reaction.thermo.kcat_rev = None
 
 class HydrophobicChainLengthKm(Rule):
     """Scale acyl Km by chain length.
@@ -213,15 +178,29 @@ class HaldaneReverseKcat(Rule):
             for lab, km in (getattr(kin, "km_per_substrate", None) or {}).items()
         }
         substrates, products = [], []
+        # CO₂ stays in Keq/Q at fixed dissolved activity but has no Km. Fold that
+        # activity into an apparent Keq so Haldane matches the truncated CM law
+        # (omitting CO₂ from Q would silently mean 1 M under eQuilibrator's SS).
+        keq_app = float(thermo.keq)
         for lab, coeff in stoich.items():
             lab_lc = lab.lower().strip()
+            if coeff == 0:
+                continue
+            if is_co2_label(lab_lc):
+                activity = FIXED_CO2_CONCENTRATION_MM / STANDARD_CONCENTRATION_MM
+                if activity <= 0.0:
+                    thermo.kcat_rev = None
+                    thermo.irreversible = True
+                    return
+                keq_app /= activity ** coeff
+                continue
             km = km_by_lc.get(lab_lc)
-            if coeff == 0 or lab_lc in COFACTORS_ALWAYS_AVAILABLE or not km or km <= 0:
+            if lab_lc in COFACTORS_ALWAYS_AVAILABLE or not km or km <= 0:
                 continue
             (substrates if coeff < 0 else products).append((km, abs(coeff)))
         kcat_rev = compute_haldane_reverse_kcat(
             kcat_fwd=kin.kcat,
-            keq=thermo.keq,
+            keq=keq_app,
             km_substrates=[km for km, _ in substrates],
             km_products=[km for km, _ in products],
             nu_substrates=[nu for _, nu in substrates],
@@ -257,17 +236,6 @@ _haldane_1930 = Reference(
     year="1930",
     journal="Longmans, Green and Co.",
 )
-_ruppe_fox_2018 = Reference(
-    authors=("Ruppe, A.", "Fox, J. M."),
-    title=(
-        "Analysis of interdependent kinetic controls of fatty acid synthases"
-    ),
-    year="2018",
-    journal="ACS Catalysis",
-    volume="8",
-    pages="11722-11734",
-    doi="10.1021/acscatal.8b03171",
-)
 _tanford_1980 = Reference(
     authors=("Tanford, C.",),
     title=(
@@ -285,16 +253,6 @@ RULES.register(
         reference=_noor_2014,
         reference_type="theoretical",
         params={"dgr_kjmol_cutoff": DGR_IRREVERSIBLE_KJMOL},
-    )
-)
-
-RULES.register(
-    DecarboxylationIrreversible(
-        name="decarboxylation_irreversible",
-        description="Flag irreversible when CO₂ is a product (gas escape).",
-        reference=_ruppe_fox_2018,
-        reference_type="experimental",
-        params={},
     )
 )
 

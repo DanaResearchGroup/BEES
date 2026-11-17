@@ -917,6 +917,8 @@ class IterativeEnlarger:
             self.model.add_core_species(sd)
 
     def _ingest_reactions(self, reactions: List[GeneratedReaction]) -> None:
+        from bees.cofactors import FIXED_CO2_CONCENTRATION_MM, is_co2_label
+
         for rxn in reactions:
             for label in rxn.reactant_labels + rxn.product_labels:
                 label= label.lower().strip()
@@ -924,12 +926,21 @@ class IterativeEnlarger:
                     not self.model.is_core_species(label)
                     and not self.model.is_edge_species(label)
                 ):
-                    self.model.add_edge_species(SpeciesData(
-                        label=label,
-                        concentration=0.0,
-                        initial_concentration=0.0,
-                    ))
-                    self._edge_species_created_iter[label] = self._ingest_iteration
+                    # Dissolved CO₂: fixed air-equilibrium activity in Q (not 0 / not 1 M).
+                    if is_co2_label(label):
+                        self.model.add_core_species(SpeciesData(
+                            label=label,
+                            concentration=FIXED_CO2_CONCENTRATION_MM,
+                            initial_concentration=FIXED_CO2_CONCENTRATION_MM,
+                            constant=True,
+                        ))
+                    else:
+                        self.model.add_edge_species(SpeciesData(
+                            label=label,
+                            concentration=0.0,
+                            initial_concentration=0.0,
+                        ))
+                        self._edge_species_created_iter[label] = self._ingest_iteration
             self.model.add_reaction(rxn)
 
     def _sync_reaction_tracking(self, iteration: int) -> None:
