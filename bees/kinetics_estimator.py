@@ -251,8 +251,8 @@ class CatPredEstimator(BaseKineticsEstimator):
             raise FileNotFoundError(
                 f"CatPred directory not found: {self.CATPRED_DIR!r}. "
                 "Set CATPRED_DIR to your CatPred clone path. "
-                "Run ./install.sh to install CatPred, or manually: clone CatPred, create the catpred conda env, "
-                "download pretrained data. Then run ./install.sh to create .env.bees (auto-loaded by BEES), "
+                "Run `make install` to install CatPred, or manually: clone CatPred, create the catpred conda env, "
+                "download pretrained data. Then run `make install` to create .env.bees (auto-loaded by BEES), "
                 "or export CATPRED_DIR=... CATPRED_CHECKPOINT_BASE=... CATPRED_CONDA_ENV=catpred."
             )
 

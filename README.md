@@ -22,7 +22,7 @@ Biochemical Engine for Enzymatic kinetic modelS
 
 2. **Install BEES + CatPred**
    ```bash
-   ./install.sh
+   make install
    ```
    This creates the `bees_env` conda env, clones CatPred into the **parent** of BEES (`../CatPred`, `../catpred_pipeline`), downloads pretrained data (~1 GB), and writes `.env.bees` in the BEES root. BEES loads `.env.bees` automatically (it is gitignored).
 
@@ -102,7 +102,7 @@ settings:
 
 Predictions able to be cached on disk by default (`~/.cache/bees/catpred_predictions.pkl`), so the first run of a network is slow and later runs skip the ML step. Disable with `BEES_CATPRED_CACHE=off`.
 
-**Manual CatPred setup (without install.sh):** clone CatPred into a sibling of BEES (`CatPred` and `catpred_pipeline`), download the pretrained archive into `catpred_pipeline`, extract it, then create the `catpred` conda env. Set `CATPRED_DIR` to the CatPred clone, `CATPRED_CHECKPOINT_BASE` to the directory that contains `kcat/` and `km/`, and `CATPRED_CONDA_ENV=catpred`.
+**Manual CatPred setup (without `make install`):** clone CatPred into a sibling of BEES (`CatPred` and `catpred_pipeline`), download the pretrained archive into `catpred_pipeline`, extract it, then create the `catpred` conda env. Set `CATPRED_DIR` to the CatPred clone, `CATPRED_CHECKPOINT_BASE` to the directory that contains `kcat/` and `km/`, and `CATPRED_CONDA_ENV=catpred`.
 
 ## Thermodynamics (equilibrator-api)
 
