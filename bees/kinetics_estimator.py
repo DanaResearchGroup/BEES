@@ -259,7 +259,6 @@ class CatPredEstimator(BaseKineticsEstimator):
         # 1. Create a unique ID for this prediction request to avoid file collisions
         run_id = f"bees_{uuid.uuid4().hex[:8]}"
         
-        # Ensure a local writable temp directory exists
         local_tmp = os.path.join(os.getcwd(), ".tmp")
         os.makedirs(local_tmp, exist_ok=True)
         

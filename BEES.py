@@ -38,7 +38,6 @@ if os.path.isfile(_env_bees):
                     val = val[1:-1]
                 os.environ[key] = val
 
-# Import necessary modules from BEES
 import bees.common as common
 from bees.main import BEES
 
@@ -89,7 +88,6 @@ def main():
     bees_instance = BEES(input_data=input_data)
     results = bees_instance.execute()
     
-    # Print summary of results
     if results and results.get('success'):
         print(f"\n{'='*60}")
         print("BEES Execution Summary:")

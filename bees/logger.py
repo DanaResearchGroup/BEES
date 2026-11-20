@@ -33,7 +33,7 @@ class Logger(object):
     It should be instantiated once at the very beginning of the BEES application's
     execution (typically in main.py) to configure the logging system.
 
-    It manages console output, a comprehensive main log file, and a dedicated error log file.
+    It manages console output, a main log file, and a dedicated error log file.
   
 
     Args:
@@ -75,7 +75,6 @@ class Logger(object):
         self.console_level = verbose if verbose != None else logging.INFO
 
 
-        # Define full paths for log files, based on project name and directory.
         self.main_log_file_path = os.path.join(self.project_directory, f'{self.project}.log')
         self.error_log_file_path = os.path.join(self.project_directory, f'{self.project}_errors.log')
 
@@ -143,7 +142,7 @@ class Logger(object):
         """
         
         log_archive_dir = os.path.join(self.project_directory, 'log_archive')
-        os.makedirs(log_archive_dir, exist_ok=True) # Ensure archive directory exists
+        os.makedirs(log_archive_dir, exist_ok=True)
 
         local_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         archived_file_name = f'{base_name}.{local_time}.log'
