@@ -44,6 +44,21 @@ COFACTORS_ALWAYS_AVAILABLE = {
     'ca2+', 'calcium',
 }
 
+# Dissolved CO₂ at air equilibrium (~10 µM; BioNumbers BNID 108697). eQuilibrator
+# Keq uses a 1 M standard state, so Q must carry this activity rather than omitting
+# CO₂ (which silently means 1 M) or forcing decarboxylations irreversible by fiat.
+FIXED_CO2_CONCENTRATION_MM = 0.01
+_CO2_LABELS = frozenset({
+    'co2', 'carbon dioxide', 'carbon-dioxide', 'co₂',
+})
+
+
+def is_co2_label(label: str) -> bool:
+    """True for aqueous CO₂ labels (not bicarbonate)."""
+    if not label:
+        return False
+    return label.lower().strip() in _CO2_LABELS
+
 # Species absent from the apparent reaction quotient Q′ (IUBMB 1994; Alberty 2003):
 # water is the solvent, H+ and Mg2+ are fixed by pH and pMg, which eQuilibrator's
 # transformed ΔG°′ already accounts for. Every other species, including buffered

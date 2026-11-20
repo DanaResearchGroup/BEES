@@ -87,6 +87,70 @@ class TestReactionGenerator:
         stoich = {"A": -1, "B": 1}
         assert gen._check_heavy_atom_balance(stoich, kinetic_data=None, substrate_label="A") is None
 
+    def test_acp_carrier_not_merged_with_free_small_molecule(self):
+        """A carrier and a free molecule stay distinct even when the structure is the same."""
+        gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        arm = "CC(C)(COP(=O)(O)O)[C@@H](O)C(=O)NCCC(=O)NCCS"
+        assert gen._register_species_label("holo-[ACP]", smiles=arm) == "holo-[ACP]"
+        assert gen._register_species_label("(R)-4'-phosphopantetheine", smiles=arm) == "(R)-4'-phosphopantetheine"
+        gen2 = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        assert gen2._register_species_label("(R)-4'-phosphopantetheine", smiles=arm) == "(R)-4'-phosphopantetheine"
+        assert gen2._register_species_label("holo-[ACP]", smiles=arm) == "holo-[ACP]"
+
+    def test_acp_names_must_balance_and_are_not_silently_skipped(self):
+        gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        balanced = {
+            "holo-[ACP]": -1,
+            "Water": -1,
+            "apo-[ACP]": 1,
+            "(R)-4'-phosphopantetheine": 1,
+            "H(+)": 1,
+        }
+        assert gen._check_heavy_atom_balance(balanced, kinetic_data=None, substrate_label="holo-[ACP]") is True
+        assert gen.logger.warning.called
+
+        dropped = {"H2O": -1, "apo-[ACP]": 1, "H(+)": 1}
+        gen.logger.warning.reset_mock()
+        assert gen._check_heavy_atom_balance(dropped, kinetic_data=None, substrate_label="H2O") is False
+        assert gen.logger.warning.called
+
+    def test_carrier_detected_in_both_database_spellings(self):
+        from bees.reaction_generator import _is_carrier_bound
+
+        for label in ("holo-[ACP]", "holo-[acp]", "holo-[acyl-carrier protein]",
+                      "malonyl-[acyl-carrier protein]", "an [acyl-carrier protein]"):
+            assert _is_carrier_bound(label) is True, label
+        for label in ("(R)-4'-phosphopantetheine", "Water", "Malonyl-CoA"):
+            assert _is_carrier_bound(label) is False, label
+
+    def test_both_carrier_spellings_with_same_structure_unify(self):
+        gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        arm = "CC(C)(COP(=O)(O)O)[C@@H](O)C(=O)NCCC(=O)NCCS"
+        first = gen._register_species_label("holo-[ACP]", smiles=arm)
+        second = gen._register_species_label("holo-[acyl-carrier protein]", smiles=arm)
+        assert second == first
+
+    def test_mixed_carrier_spellings_still_balance(self):
+        gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        stoich = {
+            "malonyl-[acyl-carrier protein]": -1,
+            "holo-[ACP]": 1,
+            "Water": -1,
+            "H(+)": 1,
+        }
+        assert gen._check_heavy_atom_balance(
+            stoich, kinetic_data=None, substrate_label="malonyl-[acyl-carrier protein]"
+        ) is True
+
+    def test_free_synonyms_unify_after_a_carrier_took_the_structure_first(self):
+        gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
+        arm = "CC(C)(COP(=O)(O)O)[C@@H](O)C(=O)NCCC(=O)NCCS"
+        assert gen._register_species_label("holo-[ACP]", smiles=arm) == "holo-[ACP]"
+        free = gen._register_species_label("(R)-4'-phosphopantetheine", smiles=arm)
+        assert free == "(R)-4'-phosphopantetheine"
+        # A third label for the free molecule must find the free entry, not the carrier.
+        assert gen._register_species_label("4'-phosphopantetheine", smiles=arm) == free
+
     def test_check_heavy_atom_balance_invalid_coeff_returns_none(self):
         gen = ReactionGenerator(MagicMock(), MagicMock(), "/tmp/out")
         gen._resolve_smiles_for_compound = MagicMock(return_value="CC")  # type: ignore[method-assign]

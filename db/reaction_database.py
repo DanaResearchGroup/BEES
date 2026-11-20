@@ -44,6 +44,34 @@ class KineticData:
         return (f"KineticData(ec={self.ec_number}, reaction={self.reaction_string}, "
                 f"Km={self.km} mM, ΔG={self.delta_g} kJ/mol)")
 
+# Fields on a row that identify its enzyme. The second name is the accession
+# column already stored in the database file.
+_ROW_ID_KEYS = ("entry_name", "uniprot_entry")
+
+
+def _ec_is_complete(ec_number: str) -> bool:
+    """True when an EC number has four all-digit parts. A dash makes it incomplete."""
+    body = (ec_number or "").strip()
+    if body.upper().startswith("EC "):
+        body = body[3:].strip()
+    parts = body.split(".")
+    return len(parts) == 4 and all(part.isdigit() for part in parts)
+
+
+def _row_is_this_enzyme(reaction: KineticData, enzyme_label: Optional[str]) -> bool:
+    """True when the row's enzyme name or a stored identifier matches this enzyme."""
+    if not enzyme_label:
+        return False
+    label = enzyme_label.lower().strip()
+    if str(reaction.enzyme_name or "").lower().strip() == label:
+        return True
+    meta = reaction.meta if isinstance(reaction.meta, dict) else {}
+    for key in _ROW_ID_KEYS:
+        if str(meta.get(key) or "").lower().strip() == label:
+            return True
+    return False
+
+
 class ReactionDatabase:
     """Load/query enzyme reactions from CSV."""
     
@@ -417,6 +445,13 @@ class ReactionDatabase:
                 # creates duplicate forward/reverse pairs that require post-hoc
                 # deduplication and inflates the reaction count.
                 if needs_reversal:
+                    continue
+
+                # An incomplete EC number is shared by unrelated proteins. Reject
+                # another protein's row before dedup, so an identical equation
+                # cannot hide this enzyme's own copy. A complete EC number may
+                # still be shared by more than one enzyme.
+                if not _ec_is_complete(ec_number) and not _row_is_this_enzyme(match_rxn, enzyme_label):
                     continue
 
                 dkey = _dedup_key(match_rxn, needs_reversal)

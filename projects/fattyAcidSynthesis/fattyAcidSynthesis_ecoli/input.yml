@@ -45,6 +45,14 @@ species:
     constant: true
     reactive: true
 
+  # Dissolved CO2 at air equilibrium (~10 µM). Stays in Q at this fixed activity
+  # (eQuilibrator standard state is 1 M; omitting CO2 would silently mean 1 M).
+  - label: Carbon dioxide
+    concentration: 0.01
+    smiles: O=C=O
+    constant: true
+    reactive: true
+
 # Buffers
   - label: sodium phosphate 
     concentration: 100.0

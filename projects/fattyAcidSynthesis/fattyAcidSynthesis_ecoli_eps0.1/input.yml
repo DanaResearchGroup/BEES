@@ -47,6 +47,11 @@ species:
     constant: true
     reactive: true
 
+  - label: Carbon dioxide
+    concentration: 0.01
+    smiles: O=C=O
+    constant: true
+    reactive: true
 
   - label: sodium phosphate 
     concentration: 100.0

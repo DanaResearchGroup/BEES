@@ -49,6 +49,12 @@ species:
     constant: true
     reactive: true
 
+  - label: Carbon dioxide
+    concentration: 0.01
+    smiles: O=C=O
+    constant: true
+    reactive: true
+
 # Buffer (Yu et al. 2011): 100 mM sodium phosphate pH 7.5, 1 mM TCEP.
 # Inert: constant, non-reactive; they act only through ionic_strength_M (environment).
   - label: sodium phosphate # buffer; Na2HPO4/NaH2PO4 mix, HPO4(2-) dominant at pH 7.5

@@ -69,6 +69,9 @@ venv/
 .claude/
 CLAUDE.md
 
+# Editor settings
+.vscode/
+
 # Temporary files
 .tmp/
 .env.bees

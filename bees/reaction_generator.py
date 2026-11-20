@@ -34,6 +34,15 @@ from bees.thermodynamics import ThermoData
 _NON_SUBSTRATE_LABELS = {"h+", "h(+)", "proton", "h2o", "water"}
 
 
+def _is_carrier_bound(label: str) -> bool:
+    """True when the label names a carrier-bound species, not a free molecule.
+
+    The database spells the carrier two ways: `[ACP]` and `[acyl-carrier protein]`.
+    """
+    lc = str(label).lower()
+    return "[acp]" in lc or "acyl-carrier protein" in lc
+
+
 @dataclass
 class GeneratedReaction:
     enzyme_label: str
@@ -74,7 +83,9 @@ class ReactionGenerator:
         self.reactions: List[GeneratedReaction] = []
         self.kinetics_estimator = None
         self._species_alias_to_canonical_label: Dict[str, str] = {}
-        self._species_smiles_to_canonical_label: Dict[str, str] = {}
+        # Keyed by (structure, carrier-bound): a carrier and a free molecule can share
+        # a SMILES, and each kind needs its own entry to unify later synonyms.
+        self._species_smiles_to_canonical_label: Dict[Tuple[str, bool], str] = {}
         # Distinct (EC, reaction) database rows dropped as pure translocations, for the run summary.
         self._translocation_rows_skipped: Set[Tuple[str, str]] = set()
 
@@ -375,8 +386,9 @@ class ReactionGenerator:
             return existing
 
         can_smi = canonical_smiles(smiles) if smiles else None
+        bound = _is_carrier_bound(label_clean)
         if can_smi:
-            existing_from_smiles = self._species_smiles_to_canonical_label.get(can_smi)
+            existing_from_smiles = self._species_smiles_to_canonical_label.get((can_smi, bound))
             if existing_from_smiles is not None:
                 self._species_alias_to_canonical_label[label_lc] = existing_from_smiles
                 for eq in get_ontology_equivalents(label_clean):
@@ -391,9 +403,11 @@ class ReactionGenerator:
                 continue
             existing_from_alias = self._species_alias_to_canonical_label.get(eq_lc)
             if existing_from_alias is not None:
+                if bound != _is_carrier_bound(existing_from_alias):
+                    continue
                 existing_smiles = self._species_smiles_to_canonical_label
                 existing_can_smi = next(
-                    (s for s, lbl in existing_smiles.items() if lbl == existing_from_alias),
+                    (s for (s, _b), lbl in existing_smiles.items() if lbl == existing_from_alias),
                     None,
                 )
                 if existing_can_smi is not None:
@@ -407,7 +421,7 @@ class ReactionGenerator:
         for eq in get_ontology_equivalents(label_clean):
             self._species_alias_to_canonical_label[str(eq).lower().strip()] = canonical_label
         if can_smi:
-            self._species_smiles_to_canonical_label[can_smi] = canonical_label
+            self._species_smiles_to_canonical_label[(can_smi, bound)] = canonical_label
         return canonical_label
 
     def _canonicalize_species_label(
@@ -453,11 +467,27 @@ class ReactionGenerator:
         kinetic_data,
         substrate_label: str,
     ) -> Optional[bool]:
-        """True if conserved, False if unbalanced (skip), None if check not possible."""
-        
-        for species in stoichiometry.keys():
-            if isinstance(species, str) and ("[ACP]" in species or "[acp]" in species):
+        """True if conserved, False if unbalanced (skip), None if check not possible.
+
+        A carrier is not given a full-molecule structure, so the atoms inside it
+        cannot be counted. The carrier names themselves still have to balance.
+        """
+        carrier_names = [s for s in stoichiometry if isinstance(s, str) and _is_carrier_bound(s)]
+        if carrier_names:
+            try:
+                carrier_sum = sum(int(stoichiometry[s]) for s in carrier_names)
+            except (TypeError, ValueError):
                 return None
+            if carrier_sum != 0:
+                self.logger.warning(
+                    f"ACP names do not balance ({carrier_sum:+d}) for {substrate_label}"
+                )
+                return False
+            self.logger.warning(
+                f"Atom balance checked ACP names only for {substrate_label}; "
+                f"atoms inside the carrier are not in the structure"
+            )
+            return True
 
         left = 0.0
         right = 0.0

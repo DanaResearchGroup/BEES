@@ -19,8 +19,9 @@ import math
 
 from bees.cofactors import ACYL_CHAIN_SMILES, ACYL_FREE_ACID_SMILES, PPANT_HANDLE
 from bees.rules import RuleRegistry
+from bees.cofactors import FIXED_CO2_CONCENTRATION_MM
+from bees.thermodynamics import STANDARD_CONCENTRATION_MM
 from bees.rules.physics_rules import (
-    DecarboxylationIrreversible,
     DgrIrreversibility,
     HaldaneReverseKcat,
     HydrophobicChainLengthKm,
@@ -180,69 +181,46 @@ class TestDgrIrreversibility:
 
 
 # ---------------------------------------------------------------------------
-# DecarboxylationIrreversible
+# CO2 fixed activity in Haldane (replaces decarboxylation_irreversible)
 # ---------------------------------------------------------------------------
 
-class TestDecarboxylationIrreversible:
-    @staticmethod
-    def _rule():
-        return _rule(DecarboxylationIrreversible)
-
-    def test_flags_irreversible_on_co2_label_product(self):
-        # CO2 as a product (positive coeff) → irreversible, kcat_rev cleared.
-        rxn = FakeReaction(
-            product_labels=["3-oxoacyl-[ACP]", "Carbon dioxide"],
-            stoichiometry={"acyl-[ACP]": -1, "malonyl-[ACP]": -1,
-                           "3-oxoacyl-[ACP]": 1, "Carbon dioxide": 1},
-            kinetics=FakeKinetics(kcat=50.0),
-            thermo=FakeThermo(kcat_rev=12.0),
-        )
-        assert self._rule().applies_to(rxn) is True
-        self._rule().apply(rxn)
-        assert rxn.thermo.irreversible is True
-        assert rxn.thermo.kcat_rev is None
-
-    def test_detects_co2_by_smiles(self):
-        # Label isn't "carbon dioxide" but SMILES canonicalizes to O=C=O.
-        rxn = FakeReaction(
-            product_labels=["P", "co2_species"],
-            stoichiometry={"S": -1, "P": 1, "co2_species": 1},
-            kinetics=FakeKinetics(
-                kcat=50.0,
-                km_per_substrate={},
-            ),
-            thermo=FakeThermo(),
-        )
-        rxn.kinetics.compound_smiles = {"co2_species": "O=C=O", "P": "CCO"}
-        assert self._rule().applies_to(rxn) is True
-
-    def test_does_not_flag_when_co2_is_reactant(self):
-        # Carboxylation (CO2 consumed, negative coeff) must NOT be flagged.
-        rxn = FakeReaction(
-            product_labels=["malonyl-CoA"],
-            stoichiometry={"acetyl-CoA": -1, "Carbon dioxide": -1, "malonyl-CoA": 1},
-            kinetics=FakeKinetics(kcat=50.0),
-            thermo=FakeThermo(),
-        )
-        assert self._rule().applies_to(rxn) is False
-
-    def test_skips_when_already_irreversible(self):
+class TestCo2FixedActivityHaldane:
+    def test_co2_product_folds_activity_into_keq(self):
+        # Condensation with CO2 product stays reversible; Haldane uses Keq /
+        # (c_CO2/c°), not the 1 M-implied reverse.
+        keq = 1e-3
         rxn = FakeReaction(
             product_labels=["P", "Carbon dioxide"],
             stoichiometry={"S": -1, "P": 1, "Carbon dioxide": 1},
-            kinetics=FakeKinetics(kcat=50.0),
-            thermo=FakeThermo(irreversible=True),
+            kinetics=FakeKinetics(
+                kcat=100.0,
+                km_per_substrate={"S": 0.5, "P": 2.0},
+            ),
+            thermo=FakeThermo(dgr_prime_kJmol=5.0, keq=keq),
         )
-        assert self._rule().applies_to(rxn) is False
+        reg = RuleRegistry()
+        reg.register(_rule(DgrIrreversibility, params={"dgr_kjmol_cutoff": 30.0}))
+        reg.register(_rule(HaldaneReverseKcat))
+        reg.apply_all([rxn])
+        assert rxn.thermo.irreversible is False
+        activity = FIXED_CO2_CONCENTRATION_MM / STANDARD_CONCENTRATION_MM
+        expected = compute_haldane_reverse_kcat(
+            kcat_fwd=100.0,
+            keq=keq / activity,
+            km_substrates=[0.5],
+            km_products=[2.0],
+        )
+        assert rxn.thermo.kcat_rev == pytest.approx(expected)
+        # Without the activity fold, reverse would be ~1/activity larger.
+        naive = compute_haldane_reverse_kcat(
+            kcat_fwd=100.0, keq=keq, km_substrates=[0.5], km_products=[2.0],
+        )
+        assert naive / expected == pytest.approx(1.0 / activity)
 
-    def test_no_co2_does_not_apply(self):
-        rxn = FakeReaction(
-            product_labels=["P"],
-            stoichiometry={"S": -1, "P": 1},
-            kinetics=FakeKinetics(kcat=50.0),
-            thermo=FakeThermo(),
-        )
-        assert self._rule().applies_to(rxn) is False
+    def test_production_registry_has_no_decarboxylation_rule(self):
+        from bees.rules import load_rules
+        names = [r.name for r in load_rules()]
+        assert "decarboxylation_irreversible" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -706,24 +684,24 @@ class TestRegistryOrderingAndIdempotence:
         assert rxn.thermo.irreversible is True
         assert rxn.thermo.kcat_rev is None
 
-    def test_decarboxylation_makes_haldane_skip(self):
-        # A CO2-releasing condensation with otherwise-valid Haldane inputs.
-        # DecarboxylationIrreversible flags it first; Haldane then skips, so
-        # kcat_rev stays None rather than the spurious large reverse rate.
+    def test_co2_condensation_stays_reversible_with_haldane(self):
+        # CO2 product no longer forces irreversible; Haldane returns a finite reverse.
         rxn = FakeReaction(
             product_labels=["3-oxoacyl-[ACP]", "Carbon dioxide"],
             stoichiometry={"acyl": -1, "malonyl": -1,
                            "3-oxoacyl-[ACP]": 1, "Carbon dioxide": 1},
-            kinetics=FakeKinetics(kcat=100.0, km_per_substrate={"acyl": 0.5}),
-            thermo=FakeThermo(dgr_prime_kJmol=-5.0, keq=1e-3),
+            kinetics=FakeKinetics(
+                kcat=100.0,
+                km_per_substrate={"acyl": 0.5, "malonyl": 0.4, "3-oxoacyl-[ACP]": 0.3},
+            ),
+            thermo=FakeThermo(dgr_prime_kJmol=5.0, keq=1e-3),
         )
         reg = RuleRegistry()
         reg.register(_rule(DgrIrreversibility, params={"dgr_kjmol_cutoff": 30.0}))
-        reg.register(_rule(DecarboxylationIrreversible))
         reg.register(_rule(HaldaneReverseKcat))
         reg.apply_all([rxn])
-        assert rxn.thermo.irreversible is True
-        assert rxn.thermo.kcat_rev is None
+        assert rxn.thermo.irreversible is False
+        assert rxn.thermo.kcat_rev is not None and rxn.thermo.kcat_rev > 0
 
 
 # ---------------------------------------------------------------------------
@@ -732,17 +710,15 @@ class TestRegistryOrderingAndIdempotence:
 
 class TestProductionRegistry:
     def test_rule_order_flags_and_km_before_haldane(self):
-        """All four laws are registered (index() raises otherwise) and run before Haldane."""
+        """Physics laws are registered and Km/ΔG rules run before Haldane."""
         from bees.rules import load_rules
         rules = list(load_rules())
         names = [r.name for r in rules]
         i_dgr = names.index("dgr_irreversibility")
-        i_decarb = names.index("decarboxylation_irreversible")
         i_hydro = names.index("hydrophobic_chain_length_km")
         i_haldane = names.index("haldane_reverse_kcat")
-        # Flag rules and the Km-mutating rule all run before Haldane.
+        assert "decarboxylation_irreversible" not in names
         assert i_dgr < i_haldane
-        assert i_decarb < i_haldane
         assert i_hydro < i_haldane
 
 
