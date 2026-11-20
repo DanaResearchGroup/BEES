@@ -31,8 +31,8 @@ curl -s "https://rest.uniprot.org/uniprotkb/stream?format=tsv&query=proteome:UP0
 > `added_rows.csv`) refer to rows by their position in the 2026-04-20 file, so they do not
 > line up with a newer download. Use the 2026-04-20 file to reproduce the release.
 >
-> Where to get the 2026-04-20 file if UniProt no longer serves it: an archived copy will be
-> published with the BEES Zenodo record (link to be added by the maintainer).
+> A newer download gives a slightly different database, because UniProt keeps changing. To get
+> the original 2026-04-20 file, contact the author (Omer Kfir, odkfir@gmail.com).
 
 ## 2. Build and compare
 
