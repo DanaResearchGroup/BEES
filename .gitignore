@@ -80,6 +80,10 @@ CLAUDE.md
 # LibreOffice lock files for CSVs
 .~lock.*.csv#
 
+# --- Generated databases (rebuild: see db/db_build/*/REBUILD_INSTRUCTIONS.md) ---
+db/db.csv
+db/ecoli.csv
+
 # --- Knowledge ---
 knowledge
 
