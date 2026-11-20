@@ -137,7 +137,6 @@ def check_reactant_availability(
     # the input species list or produced in the network.
     if r_lc in COFACTORS_ALWAYS_AVAILABLE:
         return True, "always_available_cofactor"
-    # Check if it's directly available
     if r_lc in available_species_labels_lc:
         return True, "direct_match"
 
@@ -145,7 +144,6 @@ def check_reactant_availability(
     # in this version Skip for acyl-ACP: acetyl-ACP, hexanoyl-ACP etc. must come from prior reactions, not the domain
     if enzyme_label and not coenzyme_flags.get("is_acyl_acp", False):
         domain_cofactors = get_enzyme_domain_cofactors(enzyme_label)
-        # Ensure patterns are lowercase for consistent matching
         domain_cofactors_lc = [pattern.lower() for pattern in domain_cofactors]
         if any(pattern in r_lc for pattern in domain_cofactors_lc):
             return True, "domain_cofactor"

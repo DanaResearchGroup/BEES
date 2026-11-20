@@ -180,7 +180,6 @@ class BEES():
             output_directory=self.output_directory
         )
         
-        # Load kinetic database with ontology
         reaction_generator.load_kinetic_database(db_path, ontology=self.ontology)
 
         # Decide execution mode: iterative (rate-based enlargement) vs batch (discovery only)
