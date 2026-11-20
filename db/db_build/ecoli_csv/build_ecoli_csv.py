@@ -5,10 +5,10 @@ Source data:
   UniProt proteome UP000000625 (E. coli K-12, https://www.uniprot.org/proteomes/UP000000625),
   as a TSV with the columns Entry, Reviewed, Entry Name, Protein names, Gene Names,
   Organism, Length, Catalytic activity, Sequence, EC number. Not shipped (CC BY 4.0, but
-  UniProt changes between releases): download it as described in the README and pass it
+  UniProt changes between releases): download it as described in REBUILD_INSTRUCTIONS.md and pass it
   with --uniprot. The released db/ecoli.csv comes from the 2026-04-20 download.
 
-Data files shipped with this script (see README for how each was made):
+Data files shipped with this script (see REBUILD_INSTRUCTIONS.md for how each was made):
   data/ecmdb_name_map.csv        UniProt compound name -> ECMDB compound name
   data/compound_smiles.csv       compound name -> SMILES
   data/smiles_source_labels.csv  compound name -> where its SMILES came from
@@ -297,7 +297,7 @@ def compare(rows: list[dict], released: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build BEES ecoli.csv from UniProt.")
     ap.add_argument("--uniprot", type=Path, required=True,
-                    help="UniProt TSV.gz with catalytic activity (see README for the download)")
+                    help="UniProt TSV.gz with catalytic activity (see REBUILD_INSTRUCTIONS.md for the download)")
     ap.add_argument("--out", type=Path, default=Path("ecoli.csv"))
     ap.add_argument("--check", type=Path, help="released ecoli.csv to compare with")
     args = ap.parse_args()

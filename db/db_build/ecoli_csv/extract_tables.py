@@ -2,7 +2,7 @@
 """Create the data tables used by build_ecoli_csv.py (run once; kept for transparency).
 
 Inputs:
-  --uniprot   the UniProt TSV.gz with catalytic activity, 2026-04-20 (see README; not shipped)
+  --uniprot   the UniProt TSV.gz with catalytic activity, 2026-04-20 (see REBUILD_INSTRUCTIONS.md; not shipped)
   --ecmdb     ecmdb.json (ECMDB 2015 download, not shipped: https://ecmdb.ca/downloads),
               used only for the name map
   --released  the released db/ecoli.csv (BEES v1.0.0)

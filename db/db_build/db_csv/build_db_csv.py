@@ -6,7 +6,7 @@ Source data (not included; download it yourself, see the BKMS-react license):
   https://bkms.brenda-enzymes.org/download.php
 
 Data files shipped with this script:
-  data/compound_smiles.csv        compound name -> SMILES lookup (frozen, see README)
+  data/compound_smiles.csv        compound name -> SMILES lookup (frozen, see REBUILD_INSTRUCTIONS.md)
   data/curated_fas_reactions.csv  56 hand-curated fatty-acid-synthesis reactions
 
 Steps:

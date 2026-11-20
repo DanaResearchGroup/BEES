@@ -90,6 +90,8 @@ Written to `<project_directory>/output/` (or `settings.output_directory`):
 
 Set `database.name` to a file in `db/` without `.csv` (`db` = general BKMS-derived set, `ecoli` = *E. coli*). If the file is missing, `missing_policy: error` (default) stops the run; `fallback_with_warning` uses `db/db.csv` instead.
 
+To rebuild `db/db.csv` or `db/ecoli.csv` from scratch, read the `REBUILD_INSTRUCTIONS.md` in each folder: [`db/db_build/db_csv/`](db/db_build/db_csv/REBUILD_INSTRUCTIONS.md) and [`db/db_build/ecoli_csv/`](db/db_build/ecoli_csv/REBUILD_INSTRUCTIONS.md). They explain which raw data to download (not shipped) and how to run the build.
+
 ### Kinetics (CatPred)
 
 ```yaml
