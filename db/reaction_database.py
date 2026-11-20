@@ -438,7 +438,7 @@ class ReactionDatabase:
 
             seen_keys: Set[Tuple[str, Tuple[str, ...]]] = set()
             result_list = []
-            for match_rxn, needs_reversal, score in matches:
+            for match_rxn, needs_reversal, _score in matches:
                 # Skip reversed matches: the forward direction will be discovered
                 # naturally when the DB row's true reactants are processed as
                 # substrates in a later iteration. Emitting a reversed clone

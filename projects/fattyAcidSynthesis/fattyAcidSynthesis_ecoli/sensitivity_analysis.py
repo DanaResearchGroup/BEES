@@ -529,14 +529,14 @@ def ki_timecourse(enlarger, model, t_star, enzyme="FabH", out_stem=None, panel_l
     rel_pct = 100.0 * (math.exp(KI_LN_STEP) - 1.0)
     print(f"  baseline Ki = {ki_uM:.3f} uM; t* = {t_star:.1f} s (fixed)")
     print(f"  S_Ki ln-step h={KI_LN_STEP} (Ki ×e^{{±h}} ≈ ±{rel_pct:.1f}%)")
-    print(f"  other enzyme Ki held at production lock")
+    print("  other enzyme Ki held at production lock")
     curves = (
         ("baseline", sim_base),
         (f"Ki x{ki_lo_f:g}", sim_lo),
         (f"Ki x{ki_hi_f:g}", sim_hi),
         (f"no {enzyme} feedback", sim_off),
     )
-    print(f"  PE (uM) at t = " + " / ".join(f"{m:g}" for m in KI_REPORT_MIN) + " min:")
+    print("  PE (uM) at t = " + " / ".join(f"{m:g}" for m in KI_REPORT_MIN) + " min:")
     for name, sim in curves:
         vals = " / ".join(f"{_pe_at(sim, 60.0 * m):.1f}" for m in KI_REPORT_MIN)
         print(f"    {name:<22}{vals}", flush=True)

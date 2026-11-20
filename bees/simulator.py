@@ -785,7 +785,6 @@ class ODESimulator:
         interrupt_char = 0.0
         interrupt_edge: Dict[str, float] = {}
         first_step = True
-        outer_step_idx = 0
         state_invalid = False
         invalid_message = ""
         solver_failed = False
@@ -853,7 +852,6 @@ class ODESimulator:
 
             current_t = float(new_t)
             current_y = np.array(new_y, dtype=float)
-            outer_step_idx += 1
             if not np.isfinite(current_y).all():
                 state_invalid = True
                 invalid_message = (

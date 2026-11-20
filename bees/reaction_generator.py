@@ -198,7 +198,6 @@ class ReactionGenerator:
             iteration += 1
             new_reactions_this_iteration = 0
             substrates_this_iteration = initial_substrates.copy()
-            new_products_added = 0
             substrates_this_iteration_lc = {
                 s.label.lower().strip()
                 for s in substrates_this_iteration
@@ -220,7 +219,6 @@ class ReactionGenerator:
                             )
                             substrates_this_iteration.append(virtual_substrate)
                             substrates_this_iteration_lc.add(product_lc)
-                            new_products_added += 1
                         
                         provided_species_labels_lc.add(product_lc)
                         available_species_labels_lc.update(get_ontology_equivalents(product_label))
@@ -277,7 +275,7 @@ class ReactionGenerator:
                                 f"(source={kin.source}){sd_part}"
                             )
                         else:
-                            self.logger.info(f"      ├─ No database match (will need parameter estimation)")
+                            self.logger.info("      ├─ No database match (will need parameter estimation)")
                         self.logger.info(f"      └─ Type: {reaction.template.template_type} "
                                        f"({reaction.template.ec_class.name})")
             
@@ -1095,7 +1093,7 @@ class ReactionGenerator:
                     rxns_producing = species_as_product[species]
                     f.write(f"    Produced in reaction(s): {', '.join(f'R{i}' for i in rxns_producing)}\n")
                 if species not in species_as_reactant and species not in species_as_product:
-                    f.write(f"    (Only in stoichiometry, not in main reaction equation)\n")
+                    f.write("    (Only in stoichiometry, not in main reaction equation)\n")
             
             f.write("\n" + "-" * 80 + "\n\n")
 
@@ -1120,7 +1118,7 @@ class ReactionGenerator:
                         substrate = rxn.substrate_label
                         enzyme = rxn.enzyme_label
                         kin = rxn.kinetics
-                        f.write(f"  Kinetic Parameters:\n")
+                        f.write("  Kinetic Parameters:\n")
                         km_per = getattr(kin, "km_per_substrate", None)
                         if km_per:
                             for rname, val in km_per.items():
@@ -1149,11 +1147,11 @@ class ReactionGenerator:
                         if getattr(kin, "ki_sd", None) is not None:
                             f.write(f"    Ki SD = {kin.ki_sd:.4g} mM\n")
                     else:
-                        f.write(f"  Kinetic Parameters: NOT FOUND IN DATABASE\n")
-                        f.write(f"    (Parameters will need to be estimated)\n")
+                        f.write("  Kinetic Parameters: NOT FOUND IN DATABASE\n")
+                        f.write("    (Parameters will need to be estimated)\n")
 
                     if td is not None:
-                        f.write(f"  Thermodynamics:\n")
+                        f.write("  Thermodynamics:\n")
                         f.write(f"    Reversible: {'Yes' if _is_rev else 'No'}\n")
                         if td.dgr_prime_kJmol is not None:
                             f.write(f"    ΔG°' = {td.dgr_prime_kJmol:.2f} kJ/mol\n")
