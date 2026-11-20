@@ -4,9 +4,7 @@
 the curation tables in `data/`. Standard-library Python 3.10+, no internet needed for the build.
 
 Result with the 2026-04-20 UniProt file (checked 2026-11-20, from a clean copy of this folder):
-- Byte-identical to the released `db/ecoli.csv`, except for 2 lines (the last two rows) that
-  have Windows line endings (CRLF) in the released file and LF in the rebuild. Every row and
-  every column is equal; JSON cells are equal as data.
+- Byte-identical to `db/ecoli.csv`. Every row and every column is equal; JSON cells are equal as data.
 
 ## 1. Download the raw input (not shipped)
 
@@ -32,6 +30,9 @@ curl -s "https://rest.uniprot.org/uniprotkb/stream?format=tsv&query=proteome:UP0
 > The hand-curation tables (`dropped_rows.csv`, `row_exceptions.csv`, `enzyme_names.csv`,
 > `added_rows.csv`) refer to rows by their position in the 2026-04-20 file, so they do not
 > line up with a newer download. Use the 2026-04-20 file to reproduce the release.
+>
+> Where to get the 2026-04-20 file if UniProt no longer serves it: an archived copy will be
+> published with the BEES Zenodo record (link to be added by the maintainer).
 
 ## 2. Build and compare
 
@@ -42,8 +43,7 @@ python build_ecoli_csv.py --uniprot uniprot_UP000000625.tsv.gz --out ecoli.csv
 python build_ecoli_csv.py --uniprot uniprot_UP000000625.tsv.gz --out ecoli.csv --check ../../ecoli.csv
 ```
 
-The second command prints `Same content as the released file` and `Not byte-identical`
-(the CRLF lines above). Use `cmp ecoli.csv ../../ecoli.csv` to see the byte difference.
+The second command prints `Same content as the released file` and `Byte-identical`.
 
 ## What the build does
 1. **UniProt** (the TSV from step 1):
@@ -96,6 +96,9 @@ independently. Result on 2026-11-09:
 - `added_rows.csv` `row_number` values are positions in the released file. They were
   re-based on 2026-11-20 after the SurE removal (each added row moved up 5 places).
 
+2026-11-20: the last two rows of `db/ecoli.csv` had Windows (CRLF) line endings; they were
+changed to LF. No cell changed.
+
 Earlier simulation check: on 2026-11-09 (before the SurE removal) the production FAS model run
 with the rebuilt files gave byte-identical `reactions_summary.txt`, core/edge CSVs and SBML
 (date line aside). Not re-run since.
@@ -116,4 +119,3 @@ with the rebuilt files gave byte-identical `reactions_summary.txt`, core/edge CS
   9 compounds, so the chemistry is unaffected.
 - ECMDB ion entries are coarse: Fe(3+) carries the Fe(2+) SMILES, and Zn(2+) is neutral `[Zn]`.
 - Wrong ECMDB structures for CMP, CO and two sugar phosphates were fixed on 2026-11-03 (label "manual fix 2026-11").
-- Two released rows have CRLF line endings (see the top of this file).
