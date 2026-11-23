@@ -311,9 +311,10 @@ class TestDatabaseMissingPolicy:
         
         logger = MagicMock()
         
-        with pytest.raises(FileNotFoundError, match="not found"):
+        with pytest.raises(FileNotFoundError, match="REBUILD_INSTRUCTIONS") as exc_info:
             main.resolve_db_path("nonexistent", logger, missing_policy="error")
         
+        assert "not found" in str(exc_info.value)
         # Should not have logged a warning (it raised instead)
         logger.warning.assert_not_called()
     
@@ -335,6 +336,19 @@ class TestDatabaseMissingPolicy:
         # Should have logged a warning
         assert logger.warning.call_count == 1
         assert "nonexistent" in logger.warning.call_args[0][0]
+
+    def test_resolve_db_path_fallback_raises_when_default_missing(self, tmp_path, monkeypatch):
+        """fallback_with_warning still fails clearly if db/db.csv is also absent."""
+        monkeypatch.setattr(main, "BEES_PATH", str(tmp_path))
+        (tmp_path / "db").mkdir()
+
+        logger = MagicMock()
+
+        with pytest.raises(FileNotFoundError, match="REBUILD_INSTRUCTIONS") as exc_info:
+            main.resolve_db_path("nonexistent", logger, missing_policy="fallback_with_warning")
+
+        assert "fallback" in str(exc_info.value).lower()
+        logger.warning.assert_not_called()
     
     def test_resolve_db_path_succeeds_when_db_exists(self, tmp_path, monkeypatch):
         """resolve_db_path returns correct path when DB exists (both policies)."""
