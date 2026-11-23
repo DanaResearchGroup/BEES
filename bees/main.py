@@ -342,32 +342,44 @@ class BEES():
             }
 
 
+_DB_REBUILD_HINT = (
+    "Database CSVs are not stored in git. Rebuild them first; see "
+    "db/db_build/*/REBUILD_INSTRUCTIONS.md (or the Database section in README.md)."
+)
+
+
 def resolve_db_path(db_name: str, logger, missing_policy: str = "error") -> str:
     """Resolve db/<name>.csv with configurable missing-file policy.
-    
+
     Args:
         db_name: Database name (without .csv extension).
         logger: Logger instance.
         missing_policy: "error" (fail on missing DB) or "fallback_with_warning" (use db.csv).
-    
+
     Returns:
         Absolute path to the resolved database file.
-    
+
     Raises:
-        FileNotFoundError: When missing_policy is "error" and the requested DB doesn't exist.
+        FileNotFoundError: When the requested DB is missing (error policy), or when
+            fallback is requested but db/db.csv is also missing.
     """
     db_name = db_name.strip()
     db_path = os.path.join(BEES_PATH, "db", f"{db_name}.csv")
     if os.path.exists(db_path):
         return db_path
-    
+
     if missing_policy == "error":
         raise FileNotFoundError(
-            f"Database '{db_name}' not found at {db_path}. "
-            f"Set database.missing_policy to 'fallback_with_warning' to fall back to db.csv."
+            f"Database '{db_name}' not found at {db_path}. {_DB_REBUILD_HINT} "
+            f"Or set database.missing_policy to 'fallback_with_warning' to try db/db.csv."
         )
-    
+
     # missing_policy == "fallback_with_warning"
     default_db = os.path.join(BEES_PATH, "db", "db.csv")
+    if not os.path.exists(default_db):
+        raise FileNotFoundError(
+            f"Database '{db_name}' not found at {db_path}, and fallback {default_db} "
+            f"is also missing. {_DB_REBUILD_HINT}"
+        )
     logger.warning(f"Database '{db_name}' not found at {db_path}; falling back to {default_db}.")
     return default_db

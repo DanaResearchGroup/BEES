@@ -1,0 +1,15 @@
+index,Entry,reaction
+220,P0A6Q3,(3R)-hydroxydecanoyl-[ACP] = (2E)-decenoyl-[ACP] + H2O
+223,P0A6Q3,(3R)-hydroxybutanoyl-[ACP] = (2E)-butenoyl-[ACP] + H2O
+225,P0A6Q3,(3R)-hydroxyhexanoyl-[ACP] = (2E)-hexenoyl-[ACP] + H2O
+227,P0A6Q3,(3R)-hydroxyoctanoyl-[ACP] = (2E)-octenoyl-[ACP] + H2O
+229,P0A6Q3,(3R)-hydroxydodecanoyl-[ACP] = (2E)-dodecenoyl-[ACP] + H2O
+231,P0A6Q3,(3R)-hydroxytetradecanoyl-[ACP] = (2E)-tetradecenoyl-[ACP] + H2O
+233,P0A6Q3,(3R)-hydroxyhexadecanoyl-[ACP] = (2E)-hexadecenoyl-[ACP] + H2O
+235,P0A6Q3,(3R)-hydroxy-5-methylhexanoyl-[ACP] = (2E)-5-methylhexenoyl-[ACP] + H2O
+547,P0ADA1,a fatty acyl-CoA + H2O = a fatty acid + CoA + H(+)
+316,P0A840,Adenosine monophosphate + Water = Adenosine + Phosphate
+319,P0A840,GMP + Water = Guanosine + Phosphate
+322,P0A840,dGMP + Water = 2'-deoxyguanosine + Phosphate
+325,P0A840,3'-AMP + Water = Adenosine + Phosphate
+328,P0A840,3'-CMP + Water = Cytidine + Phosphate

@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from bees.reaction_generator import GeneratedReaction, ReactionGenerator
 from bees.reaction_template import ECClass, ReactionTemplate
 
@@ -280,6 +282,10 @@ def _ecoli_generator(tmp_path, species_labels):
     import bees.common as common
     from bees.logger import Logger
 
+    ecoli_csv = os.path.join(common.BEES_PATH, "db", "ecoli.csv")
+    if not os.path.isfile(ecoli_csv):
+        pytest.skip("db/ecoli.csv not built (see db/db_build/ecoli_csv/REBUILD_INSTRUCTIONS.md)")
+
     ontology = common.load_and_invert_ontology(os.path.join(common.BEES_PATH, "db", "ontology.yaml"))
     bees = SimpleNamespace(
         species=[SimpleNamespace(label=lab, smiles=None) for lab in species_labels],
@@ -288,7 +294,7 @@ def _ecoli_generator(tmp_path, species_labels):
         settings=SimpleNamespace(estimate_kinetics=False, smiles_mode="auto"),
     )
     gen = ReactionGenerator(bees, Logger(str(tmp_path), None, 0.0), str(tmp_path))
-    gen.load_kinetic_database(os.path.join(common.BEES_PATH, "db", "ecoli.csv"), ontology=ontology)
+    gen.load_kinetic_database(ecoli_csv, ontology=ontology)
     gen.logger = MagicMock()
     return gen
 

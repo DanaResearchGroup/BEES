@@ -53,7 +53,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import bees.common as common
-from bees.main import BEES
+from bees.main import BEES, resolve_db_path
 from bees.reaction_generator import ReactionGenerator
 from bees.enlarger import IterativeEnlarger
 from bees.simulator import ODESimulator
@@ -154,10 +154,8 @@ def build_model():
     bees = BEES(input_data=input_data)
     obj = bees.bees_object
 
-    db_name = obj.database.name.strip()
-    db_path = os.path.join(common.BEES_PATH, "db", f"{db_name}.csv")
-    if not os.path.exists(db_path):
-        db_path = os.path.join(common.BEES_PATH, "db", "db.csv")
+    missing_policy = getattr(obj.database, "missing_policy", "error")
+    db_path = resolve_db_path(obj.database.name, bees.logger, missing_policy)
 
     rgen = ReactionGenerator(
         bees_object=obj, logger=bees.logger, output_directory=bees.output_directory

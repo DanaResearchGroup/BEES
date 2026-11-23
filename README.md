@@ -46,6 +46,8 @@ conda activate bees_env
 python BEES.py -i projects/minimal/input.yml
 ```
 
+The examples need the database files in `db/` (not in git). Build them first, see [Database](#database).
+
 | Flag | Meaning |
 |------|---------|
 | `-i <file>` | Input YAML |
@@ -89,6 +91,22 @@ Written to `<project_directory>/output/` (or `settings.output_directory`):
 ### Database
 
 Set `database.name` to a file in `db/` without `.csv` (`db` = general BKMS-derived set, `ecoli` = *E. coli*). If the file is missing, `missing_policy: error` (default) stops the run; `fallback_with_warning` uses `db/db.csv` instead.
+
+The two database files are generated and not stored in git (they are gitignored). Build them once after cloning:
+
+| File | Content | Raw input (not shipped) | Full instructions |
+|---|---|---|---|
+| `db/db.csv` | general reaction database, 37,175 rows (BKMS-react reactions with an EC number, plus 56 curated FAS reactions) | BKMS-react 2023.1, `Reactions_BKMS.tar.gz` | [db_csv/REBUILD_INSTRUCTIONS.md](db/db_build/db_csv/REBUILD_INSTRUCTIONS.md) |
+| `db/ecoli.csv` | *E. coli* K-12 reaction database, 2,327 rows | UniProt UP000000625, 2026-04-20 snapshot | [ecoli_csv/REBUILD_INSTRUCTIONS.md](db/db_build/ecoli_csv/REBUILD_INSTRUCTIONS.md) |
+
+Short version (download the raw input first, as described in each instruction file):
+
+```bash
+cd db/db_build/db_csv && python build_db_csv.py --bkms Reactions_BKMS.tar.gz --out ../../db.csv
+cd ../ecoli_csv && python build_ecoli_csv.py --uniprot uniprot_UP000000625.tsv.gz --out ../../ecoli.csv
+```
+
+Both scripts need only Python 3.10+ (standard library). The E. coli build needs the 2026-04-20 UniProt file; a newer download gives different rows (see its instruction file).
 
 ### Kinetics (CatPred)
 
