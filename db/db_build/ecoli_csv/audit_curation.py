@@ -33,8 +33,11 @@ def history(repo: Path) -> list[tuple[str, list[dict]]]:
         if not line:
             continue
         commit = line.split()[0]
-        text = subprocess.run(["git", "-C", str(repo), "show", f"{commit}:db/ecoli.csv"],
-                              capture_output=True, text=True, check=True).stdout
+        shown = subprocess.run(["git", "-C", str(repo), "show", f"{commit}:db/ecoli.csv"],
+                               capture_output=True, text=True)
+        if shown.returncode != 0:
+            continue  # the commit stopped tracking the file
+        text = shown.stdout
         out.append((line, list(csv.DictReader(io.StringIO(text, newline="")))))
     return out
 

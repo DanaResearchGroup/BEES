@@ -35,7 +35,7 @@ released file (`4ab531f5...481586e`). Checked 2026-11-20 from a clean copy: byte
 | `build_db_csv.py` | the build |
 | `data/compound_smiles.csv` | 18,050 compound names with SMILES: 17,995 from PubChem name search, 54 from a second PubChem pass with cleaned names, 1 manual (CO) |
 | `data/curated_fas_reactions.csv` | 56 hand-curated fatty-acid-synthesis reactions (ACP and phosphopantetheine forms), as they are in v1.0.0. First added 2026-05-05 (commit `9f9b5aae`) and edited later. 36 rows have index `fas_ppant_9000xx` and meta `curated-fas-ppant`; 20 have empty index and meta |
-| `fetch_smiles.py` | how the SMILES table was made (PubChem lookup). Not needed for the build; PubChem changes over time, so a rerun gives a close but not identical table (`--compare` reports agreement; a 15-name test on 2026-11-09 agreed 8/8 on the names PubChem resolved). A full run is ~18,000 web requests (hours) |
+| `fetch_smiles.py` | how the SMILES table was made (PubChem lookup). Not needed for the build; PubChem changes over time, so a rerun gives a close but not identical table (`--compare` reports agreement). A full run is ~18,000 web requests (hours) |
 | `extract_tables.py` | one-time script that cut the two data tables out of the released `db.csv` |
 
 ## Data sources and licences
@@ -50,4 +50,14 @@ released file (`4ab531f5...481586e`). Checked 2026-11-20 from a clean copy: byte
 - Some second-pass SMILES are only partial structures. For carrier-protein compounds
   PubChem returns the acyl thioacid stub, for example (3R)-3-hydroxyacyl-[acyl-carrier
   protein] -> `C(CO)C(=O)S`. They are kept because the paper version used them.
-- A ChEMBL fallback was tried in 2026 but never merged; it returns wrong molecules for vague names.
+
+## Recover the released file without BKMS
+
+`db/db.csv` is gitignored. The released file is the blob at `7eb568f^`. From the repo root:
+
+```bash
+git show 7eb568f^:db/db.csv > db/db.csv
+sha256sum db/db.csv
+```
+
+This overwrites the local file. The hash must start `4ab531f5`.
