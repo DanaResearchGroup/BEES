@@ -1,6 +1,6 @@
 # BEES
 
-**Biochemical Engine for Enzymatic kinetic modelS** — build kinetic models of enzymatic reaction networks from a list of species and enzymes.
+**Biochemical Engine for Enzymatic Systems** — build kinetic models of enzymatic reaction networks from a list of species and enzymes.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
