@@ -34,6 +34,21 @@ curl -s "https://rest.uniprot.org/uniprotkb/stream?format=tsv&query=proteome:UP0
 > A newer download gives a slightly different database, because UniProt keeps changing. To get
 > the original 2026-04-20 file, contact the author (Omer Kfir, odkfir@gmail.com).
 
+## Recover the paper copy without UniProt
+
+`db/ecoli.csv` is gitignored. A copy from another workspace may be a different database, so check the hash below.
+The file that reproduces the 20 Nov 2026 paper bars (PE at 12 min 46.60 µM, C16 7.01 µM)
+is the blob at commit `f70fe78` (same reaction rows as `7eb568f^`; that later blob
+differs only by line endings). From the repo root:
+
+```bash
+git show f70fe78:db/ecoli.csv > db/ecoli.csv
+sha256sum db/ecoli.csv
+```
+
+The paper file starts `f4ea42bb1bb88662`. Do not replace it with a file that drops the
+FabF elongations of dodecanoyl-ACP and tetradecanoyl-ACP.
+
 ## 2. Build and compare
 
 Run from this folder (`db/db_build/ecoli_csv/`):
@@ -98,10 +113,6 @@ independently. Result on 2026-11-09:
 
 2026-11-20: the last two rows of `db/ecoli.csv` had Windows (CRLF) line endings; they were
 changed to LF. No cell changed.
-
-Earlier simulation check: on 2026-11-09 (before the SurE removal) the production FAS model run
-with the rebuilt files gave byte-identical `reactions_summary.txt`, core/edge CSVs and SBML
-(date line aside). Not re-run since.
 
 ## Data sources and licences
 | Source | Used for | Terms |

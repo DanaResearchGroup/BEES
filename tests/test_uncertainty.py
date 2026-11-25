@@ -1,5 +1,5 @@
 """
-Tests for the Monte Carlo uncertainty plumbing (FAS-II band).
+Tests for FAS-II parameter sampling (inventory, tied Km, and draw indexing).
 
 To run:  pytest -v tests/test_uncertainty.py
 
@@ -360,106 +360,64 @@ class TestBaselineIsolation:
 
 
 # ---------------------------------------------------------------------------
-# Monte Carlo sampling helpers (project script)
+# Parameter sampling helpers (project script)
 # ---------------------------------------------------------------------------
 
-_PROJECT = Path(__file__).resolve().parents[1] / "projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli"
+_PROJECT = (Path(__file__).resolve().parents[1]
+            / "projects/fattyAcidSynthesis/fattyAcidSynthesis_ecoli")
 
 
 @pytest.fixture(scope="module")
-def mc():
+def sampling():
     sys.path.insert(0, str(_PROJECT))
     try:
         import uncertainty as mod
     except FileNotFoundError as exc:  # S2A experiment CSV lives in local-only knowledge/
-        pytest.skip(f"Monte Carlo script data unavailable: {exc}")
+        pytest.skip(f"FAS sampling script data unavailable: {exc}")
     return mod
 
 
-def _inventory(mc):
-    D = mc.Dim
+def _inventory(sampling):
+    D = sampling.Dim
     kcat = [D("kcat", 0, None, 5.0, 0.7, "FabB", "r0", rxns=(0,)),
             D("kcat", 1, None, 2.0, 0.3, "FabF", "r1", rxns=(1, 2))]
     km = [D("km", 0, "S", 0.04, 0.6, "FabB", "r0", "reactant", rxns=(0,)),
           D("km", 1, "S", 0.01, 0.5, "FabF", "r1", "reactant", rxns=(1, 2))]
     dg = [D("dg", 0, None, -10.0, 2.0, "FabB", "r0", rxns=(0,)),
           D("dg", 1, None, -29.0, 1.5, "FabF", "r1", rxns=(1,))]
-    chol = mc._psd_factor(np.array([[4.0, 1.0], [1.0, 2.25]]))
-    return mc.Inventory(kcat, km, dg, chol, 0.021, [])
+    chol = sampling._psd_factor(np.array([[4.0, 1.0], [1.0, 2.25]]))
+    return sampling.Inventory(kcat, km, dg, chol, 0.021, [])
 
 
 class TestSampling:
-    def test_same_index_same_draw_regardless_of_n_or_sources(self, mc):
-        inv = _inventory(mc)
-        a = mc.draw_sample(inv, 7, 3, mc.SOURCES)
-        b = mc.draw_sample(inv, 7, 3, mc.SOURCES)
-        only_kcat = mc.draw_sample(inv, 7, 3, ["kcat"])
-        for k in a:
-            np.testing.assert_array_equal(a[k], b[k])
-        np.testing.assert_array_equal(a["kcat"], only_kcat["kcat"])
-        np.testing.assert_array_equal(only_kcat["km"], [0.04, 0.01])
-        c = mc.draw_sample(inv, 7, 4, mc.SOURCES)
-        assert not np.array_equal(a["kcat"], c["kcat"])
-
-    def test_zero_sources_returns_means_exactly(self, mc):
-        inv = _inventory(mc)
-        d = mc.draw_sample(inv, 1, 0, [])
-        np.testing.assert_array_equal(d["kcat"], [5.0, 2.0])
-        np.testing.assert_array_equal(d["dg"], [-10.0, -29.0])
-        assert float(d["fabi_kcat"]) == mc.FABI_KCAT_MEAN
-        assert float(d["fabh_ki_factor"]) == 1.0
-
-    def test_log10_draws_match_target_distribution(self, mc):
-        inv = _inventory(mc)
-        draws = np.array([mc.draw_sample(inv, 11, i, ["kcat"])["kcat"] for i in range(4000)])
-        z = np.log10(draws / np.array([5.0, 2.0]))
-        assert z.mean(axis=0) == pytest.approx([0.0, 0.0], abs=0.05)
-        assert z.std(axis=0) == pytest.approx([0.7, 0.3], rel=0.05)
-
-    def test_dg_draws_match_joint_covariance(self, mc):
-        inv = _inventory(mc)
-        dg = np.array([mc.draw_sample(inv, 5, i, ["dg"])["dg"] for i in range(6000)])
-        np.testing.assert_allclose(np.cov(dg.T), [[4.0, 1.0], [1.0, 2.25]], rtol=0.08, atol=0.08)
-
-    def test_shared_scheme_one_factor_per_enzyme(self, mc):
-        D = mc.Dim
-        dims = [D("kcat", 0, None, 1.0, 0.5, "FabB", "a", rxns=(0,)),
-                D("kcat", 1, None, 3.0, 0.5, "FabB", "b", rxns=(1,)),
-                D("kcat", 2, None, 2.0, 0.5, "FabF", "c", rxns=(2,))]
-        inv = mc.Inventory(dims, [], [], np.zeros((0, 0)), 0.021, [])
-        d = mc.draw_sample(inv, 3, 0, ["kcat"], scheme="shared")
-        r = np.log10(d["kcat"] / np.array([1.0, 3.0, 2.0]))
-        assert r[0] == pytest.approx(r[1])
-        assert r[0] != pytest.approx(r[2])
-
-    def test_tie_merges_batch_noise_repeats_only(self, mc):
-        D = mc.Dim
+    def test_tie_merges_batch_noise_repeats_only(self, sampling):
+        D = sampling.Dim
         dims = [D("km", 0, "NADPH", 0.1198231657, 0.536, "FabG", "a", "reactant"),
                 D("km", 1, "nadph", 0.1198231764, 0.536, "FabG", "b", "reactant"),
                 D("km", 2, "NADPH", 0.1198231700, 0.536, "FabI", "c", "reactant"),
                 D("km", 3, "holo-[ACP]", 0.039, 0.3, "FabD", "d", "product"),
                 D("km", 4, "holo-[ACP]", 0.076, 0.3, "FabD", "e", "product"),
                 D("km", 5, None, 0.5, 0.2, "FabB", "f", "scalar")]
-        tied = mc.tie_identical_km(dims)
+        tied = sampling.tie_identical_km(dims)
         assert len(tied) == 5
         assert tied[0].km_targets() == ((0, "NADPH"), (1, "nadph"))
         assert [d.km_targets() for d in tied[1:]] == [
             ((2, "NADPH"),), ((3, "holo-[ACP]"),), ((4, "holo-[ACP]"),), ((5, None),)]
 
-    def test_perturbed_snapshots_write_tied_km_under_each_label(self, mc):
-        D = mc.Dim
-        km = mc.tie_identical_km([D("km", 0, "NADPH", 0.12, 0.5, "FabG", "a"),
-                                  D("km", 1, "nadph", 0.12, 0.5, "FabG", "b")])
-        inv = mc.Inventory([], km, [], np.zeros((0, 0)), 0.021, [])
+    def test_perturbed_snapshots_write_tied_km_under_each_label(self, sampling):
+        D = sampling.Dim
+        km = sampling.tie_identical_km([D("km", 0, "NADPH", 0.12, 0.5, "FabG", "a"),
+                                        D("km", 1, "nadph", 0.12, 0.5, "FabG", "b")])
+        inv = sampling.Inventory([], km, [], np.zeros((0, 0)), 0.021, [])
         base = [{"kinetics": {"kcat": 1.0, "km": 0.12, "km_per_substrate": {"NADPH": 0.12}}},
                 {"kinetics": {"kcat": 1.0, "km": 0.12, "km_per_substrate": {"nadph": 0.12}}}]
-        vals = mc.draw_sample(inv, 1, 0, ["km"])
-        snaps = mc.perturbed_snapshots(base, inv, vals, 298.15)
+        vals = {"kcat": np.array([]), "km": np.array([0.5]), "dg": np.array([])}
+        snaps = sampling.perturbed_snapshots(base, inv, vals, 298.15)
         assert snaps[0]["kinetics"]["km_per_substrate"]["NADPH"] == vals["km"][0]
         assert snaps[1]["kinetics"]["km_per_substrate"]["nadph"] == vals["km"][0]
 
-    def test_perturbed_snapshots_write_shared_groups_and_keep_baseline(self, mc):
-        inv = _inventory(mc)
+    def test_perturbed_snapshots_write_shared_groups_and_keep_baseline(self, sampling):
+        inv = _inventory(sampling)
         base = [
             {"kinetics": {"kcat": 5.0, "km": 0.04, "km_per_substrate": {"S": 0.04}},
              "thermo": {"dgr_prime_kJmol": -10.0, "keq": 50.0}},
@@ -468,10 +426,18 @@ class TestSampling:
             {"kinetics": {"kcat": 2.0, "km": 0.01, "km_per_substrate": {"S": 0.01}},
              "thermo": {"dgr_prime_kJmol": -29.0, "keq": 1e5}},
         ]
-        zero = mc.perturbed_snapshots(base, inv, mc.draw_sample(inv, 1, 0, []), 298.15)
+        zero = sampling.perturbed_snapshots(base, inv, {
+            "kcat": np.array([5.0, 2.0]),
+            "km": np.array([0.04, 0.01]),
+            "dg": np.array([-10.0, -29.0]),
+        }, 298.15)
         assert zero == base
-        vals = mc.draw_sample(inv, 1, 0, mc.SOURCES)
-        snaps = mc.perturbed_snapshots(base, inv, vals, 298.15)
+        vals = {
+            "kcat": np.array([9.0, 4.0]),
+            "km": np.array([0.2, 0.08]),
+            "dg": np.array([-12.0, -20.0]),
+        }
+        snaps = sampling.perturbed_snapshots(base, inv, vals, 298.15)
         assert base[1]["kinetics"]["kcat"] == 2.0
         assert snaps[1]["kinetics"]["kcat"] == snaps[2]["kinetics"]["kcat"] == vals["kcat"][1]
         assert snaps[1]["kinetics"]["km_per_substrate"]["S"] == vals["km"][1]
@@ -480,3 +446,113 @@ class TestSampling:
         assert snaps[0]["thermo"]["dgr_prime_kJmol"] == vals["dg"][0]
         assert snaps[0]["thermo"]["keq"] == pytest.approx(
             math.exp(-vals["dg"][0] * 1000 / (8.314462618 * 298.15)), rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Published ranking and band statistics
+# ---------------------------------------------------------------------------
+
+_PROJECT = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "projects",
+    "fattyAcidSynthesis",
+    "fattyAcidSynthesis_ecoli",
+)
+sys.path.insert(0, os.path.abspath(_PROJECT))
+
+import uncertainty as unc  # noqa: E402
+
+
+def test_baseline_values_are_the_unperturbed_means():
+    D = unc.Dim
+    inv = unc.Inventory(
+        [D("kcat", 0, None, 5.0, 0.7, "FabB", "r0", rxns=(0,))],
+        [D("km", 0, "S", 0.04, 0.6, "FabB", "r0", "reactant", rxns=(0,))],
+        [D("dg", 0, None, -10.0, 2.0, "FabB", "r0", rxns=(0,))],
+        np.zeros((0, 0)),
+        0.021,
+        [],
+    )
+    base = unc._baseline_values(inv)
+    np.testing.assert_array_equal(base["kcat"], [5.0])
+    np.testing.assert_array_equal(base["km"], [0.04])
+    np.testing.assert_array_equal(base["dg"], [-10.0])
+    assert float(base["fabi_kcat"]) == unc.FABI_KCAT_MEAN
+    assert float(base["fabh_ki_factor"]) == 1.0
+    assert float(base["fabi_ki_factor"]) == 1.0
+
+
+def test_ln_sd_converts_log10():
+    assert unc.ln_sd(1.0) == pytest.approx(math.log(10.0))
+    assert unc.ln_sd(0.5) == pytest.approx(0.5 * math.log(10.0))
+
+
+def test_coeff_of_sums_slope_times_sigma():
+    assert unc.coeff_of([(2.0, 0.5), (-1.0, 1.0)]) == pytest.approx(0.0)
+    assert unc.coeff_of([(0.2, unc.ln_sd(1.0))]) == pytest.approx(0.2 * math.log(10.0))
+
+
+def test_zero_coeff_gives_zero_variance_share():
+    assert unc.coeff_of([]) == 0.0
+    groups = [
+        unc.Group("a", "kcat", 1.0, 1.0),
+        unc.Group("b", "km", 0.0, 0.0),
+    ]
+    chosen, ridge = unc.select_groups(groups)
+    assert [g.name for g in chosen] == ["a"]
+    assert ridge is False
+
+
+def test_dg_variance_is_quadratic_form():
+    s = np.array([1.0, 0.0])
+    cov = np.array([[4.0, 0.0], [0.0, 9.0]])
+    assert unc.dg_variance(s, cov) == pytest.approx(4.0)
+
+
+def test_select_top_ode_skips_dg_and_fabi_kcat():
+    groups = [
+        unc.Group("FabI Km", "km", 1.0, 1.0, sd_log10=0.5),
+        unc.Group("dG joint", "dg", 0.5, 0.25, sd_log10=0.0),
+        unc.Group("FabG kcat", "kcat", 0.4, 0.16, sd_log10=0.6),
+        unc.Group("FabI kcat", "kcat", 0.01, 1e-4, sd_log10=0.0, is_fabi_kcat=True),
+        unc.Group("FabF kcat", "kcat", 0.3, 0.09, sd_log10=0.4),
+    ]
+    chosen = unc.select_top_ode(groups, n=3)
+    assert [g.name for g in chosen] == ["FabI Km", "FabG kcat", "FabF kcat"]
+
+
+def test_design_loguniform_in_unit_interval():
+    u = unc.design_loguniform(32, 3, seed=1)
+    assert u.shape == (32, 3)
+    assert np.all(u >= -1.0) and np.all(u <= 1.0)
+
+
+def test_bootstrap_percentile_ci_covers_point_estimate():
+    rng = np.random.default_rng(0)
+    x = rng.normal(10.0, 2.0, size=200)
+    q = 5.0
+    point = float(np.percentile(x, q))
+    lo, hi = unc.bootstrap_percentile_ci(x, q, n_boot=500, seed=1)
+    assert lo <= point <= hi
+
+
+def test_stability_ok_relative_and_absolute():
+    assert unc.stability_ok(10.0, 10.5) is True
+    assert unc.stability_ok(10.0, 13.0) is False
+    assert unc.stability_ok(0.2, 0.5) is True  # both < 1 µM, |Δ| < 1
+    assert unc.stability_ok(0.1, 2.0) is False
+
+
+def test_stability_at_12min_on_identical_halves():
+    x = np.linspace(5.0, 50.0, 128)
+    stab = unc.stability_at_12min(x, split=64)
+    assert stab["n_first"] == 64
+    assert stab["n_all"] == 128
+    # The first half is systematically lower, so mean and percentiles should fail.
+    assert stab["pass"] is False
+
+
+def test_band_label_is_the_sd_box():
+    assert unc.BAND_LABEL == "±1 CatPred SD box, top 4 groups"
+    assert "5–95% of CatPred" not in unc.BAND_LABEL
